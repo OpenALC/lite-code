@@ -1,0 +1,25 @@
+[package]
+name = "lc-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Lite Code 唯一契约层：DTO、Command、Event、ErrorCode 与 TS 绑定生成"
+
+# 契约规则（docs/README.md 三条不可退让约束之一）：
+# - 本 crate 定稿后只读不写，变更走独立 [contract] PR 并 bump 契约版本
+# - TS 绑定为生成产物，进仓；CI contract job 重新生成并 git diff --exit-code
+[features]
+# codegen 只在生成 TS 绑定时启用；普通构建不引入 ts-rs
+codegen = ["dep:ts-rs"]
+
+[[bin]]
+name = "codegen"
+path = "src/bin/codegen.rs"
+required-features = ["codegen"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+ts-rs = { workspace = true, optional = true }

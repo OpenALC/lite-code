@@ -1,0 +1,20 @@
+{
+  "name": "lite-code",
+  "private": true,
+  "version": "0.0.1-preview.1",
+  "packageManager": "pnpm@10.33.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "pnpm --filter @lite-code/web lint",
+    "typecheck": "pnpm --filter @lite-code/web typecheck",
+    "test": "pnpm --filter @lite-code/web test",
+    "build": "pnpm --filter @lite-code/web build",
+    "tauri": "tauri",
+    "contract:codegen": "cargo run --locked -p lc-proto --features codegen --bin codegen"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

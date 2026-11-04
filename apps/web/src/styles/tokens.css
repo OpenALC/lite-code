@@ -1,0 +1,75 @@
+/* 视觉基调来自 demo/index.html（UI.md §2）：高密度、低装饰、工具感。
+   不用玻璃拟态、不用 backdrop-filter；明度层级靠背景而非阴影。 */
+:root {
+  --font-ui: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --bg: #17181c;
+  --panel: #1d1f24;
+  --panel-2: #222429;
+  --panel-3: #292c33;
+  --border: #2a2d34;
+  --border-strong: #3a3e47;
+
+  --fg: #d9dade;
+  --fg-2: #b3b7bf;
+  --fg-dim: #878c96;
+  --fg-faint: #5c616b;
+
+  --accent: #e8875a;
+  --accent-hov: #f39b70;
+  --accent-fg: #1b1410;
+  --accent-soft: rgba(232, 135, 90, 0.10);
+  --accent-line: rgba(232, 135, 90, 0.34);
+
+  --green: #79b98a;
+  --yellow: #d9ae5f;
+  --red: #d97a70;
+
+  --r: 6px;
+  --r-sm: 4px;
+  --dur: 140ms;
+  --ease: cubic-bezier(0.2, 0.6, 0.3, 1);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

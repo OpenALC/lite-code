@@ -1,0 +1,7 @@
+{
+  "shell": {
+    "path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "kind": "pwsh",
+    "version_major": 7
+  }
+}

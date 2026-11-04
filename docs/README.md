@@ -44,7 +44,7 @@
 
 ## UI demo
 
-[`ui-demo.html`](ui-demo.html) — 单文件，浏览器直接打开，无外部依赖。用于确认布局、密度与视觉基调，非最终实现。
+[`demo/index.html`](../demo/index.html) — 单文件，浏览器直接打开，无外部依赖。用于确认布局、密度与视觉基调，非最终实现。P0 已迁入真实壳：`apps/web`（Vue 3 + Monaco）。
 
 ## 三条不可退让的架构约束
 

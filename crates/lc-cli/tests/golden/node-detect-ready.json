@@ -1,0 +1,13 @@
+{
+  "kind": "ready",
+  "runtime": {
+    "path": "C:\\Program Files\\nodejs\\node.exe",
+    "version": {
+      "major": 24,
+      "minor": 15,
+      "patch": 0
+    },
+    "source": "official_installer",
+    "health": "supported"
+  }
+}

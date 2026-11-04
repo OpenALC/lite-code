@@ -163,8 +163,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+        # version 省略 → 读取根 package.json 的 packageManager 字段，单一来源
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -177,7 +176,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
-          path: dist
+          path: apps/web/dist
+          if-no-files-found: error
           retention-days: 3
 
   deny:

@@ -5,3 +5,11 @@ dist/
 .DS_Store
 Thumbs.db
 .playwright-mcp/
+
+# vite
+.vite/
+*.tsbuildinfo
+
+# 覆盖率与本地产物
+coverage/
+scripts/perf/out/

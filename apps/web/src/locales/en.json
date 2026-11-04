@@ -1,0 +1,31 @@
+{
+  "app": { "title": "Lite Code" },
+  "mode": {
+    "editor": "Editor",
+    "agent": "Agent",
+    "hint": "Ctrl+Shift+M to switch"
+  },
+  "tabs": {
+    "aria": "Open tabs",
+    "empty": "No open tabs",
+    "dirty": "Unsaved changes",
+    "close": "Close tab",
+    "closeConfirm": "Unsaved changes — click again to confirm close"
+  },
+  "editor": {
+    "ready": "Monaco ready: this buffer is editable (P0 shell validation)"
+  },
+  "agent": {
+    "placeholderTitle": "Agent mode",
+    "placeholderDesc": "P0 placeholder. Session stream, tool cards and inline approvals land in P3."
+  },
+  "bottom": {
+    "terminal": "Terminal",
+    "output": "Output",
+    "problems": "Problems"
+  },
+  "status": {
+    "branch": "main",
+    "sessions": "0 running sessions"
+  }
+}

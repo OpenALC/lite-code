@@ -1,0 +1,10 @@
+{
+  "kind": "need_manual",
+  "attempts": [
+    {
+      "path": "C:\\Users\\t\\AppData\\Local\\Microsoft\\WindowsApps\\node.exe",
+      "source": "registry_path",
+      "reason": "store_alias"
+    }
+  ]
+}

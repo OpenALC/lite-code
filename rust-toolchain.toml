@@ -1,0 +1,6 @@
+# 锁定 MSRV，不跟随 stable（见 docs/README.md 技术栈基线与 PLAN.md R8）。
+# 与 ci.yml 的 env.RUST_TOOLCHAIN、根 Cargo.toml 的 rust-version 三处一致，
+# ci.yml prep 阶段断言一致性，漂移直接 fail。
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

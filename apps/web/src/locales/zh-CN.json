@@ -1,0 +1,31 @@
+{
+  "app": { "title": "Lite Code" },
+  "mode": {
+    "editor": "编辑器",
+    "agent": "Agent",
+    "hint": "Ctrl+Shift+M 切换"
+  },
+  "tabs": {
+    "aria": "打开的标签页",
+    "empty": "无打开的标签页",
+    "dirty": "未保存的更改",
+    "close": "关闭标签页",
+    "closeConfirm": "有未保存更改：再次点击确认关闭"
+  },
+  "editor": {
+    "ready": "Monaco 已就绪：本缓冲区可编辑（P0 起壳验证）"
+  },
+  "agent": {
+    "placeholderTitle": "Agent 模式",
+    "placeholderDesc": "P0 占位。会话流、工具卡片与内联审批在 P3（Agent 模式可用）落地。"
+  },
+  "bottom": {
+    "terminal": "终端",
+    "output": "输出",
+    "problems": "问题"
+  },
+  "status": {
+    "branch": "main",
+    "sessions": "0 个运行中会话"
+  }
+}

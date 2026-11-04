@@ -1,0 +1,25 @@
+[package]
+name = "lc-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Lite Code Tauri 薄壳：窗口、命令注册与转发"
+
+# 分层约束（docs/ARCHITECTURE.md L2）：薄壳只做命令注册与转发，
+# 任何业务逻辑必须下沉到 lc-core。
+
+[lib]
+name = "lc_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+lc-core = { workspace = true }
+lc-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

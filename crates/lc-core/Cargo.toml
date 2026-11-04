@@ -1,0 +1,24 @@
+[package]
+name = "lc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Lite Code 核心服务：零 tauri 依赖，可 headless 运行"
+
+# 三条不可退让约束之一（docs/README.md）：
+# 本 crate 不依赖 tauri。所有服务通过 CoreHandle trait 暴露给外壳。
+[dependencies]
+lc-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# fs lane（docs/ARCHITECTURE.md §5.2）：ignore 遍历 + notify 监听
+ignore = "0.4"
+notify = "8"
+notify-debouncer-full = "0.5"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"

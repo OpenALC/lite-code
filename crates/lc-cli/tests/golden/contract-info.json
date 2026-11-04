@@ -1,0 +1,42 @@
+{
+  "name": "lc-proto",
+  "contract_version": "0.0.1",
+  "commands": [
+    "node_detect",
+    "node_set_manual",
+    "node_download_portable",
+    "shell_detect",
+    "fs_read_dir",
+    "fs_read_file",
+    "contract_info"
+  ],
+  "events": [
+    "node:status",
+    "shell:status",
+    "fs:tree",
+    "fs:entry",
+    "task:created",
+    "task:status",
+    "task:needs_input",
+    "task:merged",
+    "agent:text_delta",
+    "agent:tool_start",
+    "agent:usage",
+    "agent:done",
+    "error"
+  ],
+  "error_codes": [
+    "internal",
+    "not_implemented",
+    "invalid_argument",
+    "timeout",
+    "cancelled",
+    "path_outside_root",
+    "not_found",
+    "io",
+    "node_unavailable",
+    "node_broken",
+    "shell_unavailable",
+    "contract_mismatch"
+  ]
+}

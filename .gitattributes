@@ -1,0 +1,10 @@
+# 统一 LF：契约漂移检查（codegen 重新生成后 git diff --exit-code）
+# 在 Windows/Ubuntu 两侧必须字节一致；本仓库无任何需要 CRLF 的文件。
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
