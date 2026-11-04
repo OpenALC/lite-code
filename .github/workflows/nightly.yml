@@ -1,0 +1,110 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  prep:
+    name: prep
+    runs-on: ubuntu-22.04
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      agent_sit: ${{ steps.detect.outputs.agent_sit }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "rust=$([ -f Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # P3 起 lc-cli 提供 headless agent 冒烟入口
+          echo "agent_sit=$([ -x scripts/sit/agent.sh ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: prep
+    if: needs.prep.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-${{ matrix.os }}
+      - name: system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ matrix.os }}
+          path: target/release/lc-cli*
+          retention-days: 7
+          if-no-files-found: warn
+
+  smoke:
+    name: smoke
+    needs: [prep, build]
+    if: needs.prep.outputs.rust == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-windows-latest
+          path: bin
+      - name: lc-cli smoke
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem bin -Filter lc-cli.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Host "::warning::lc-cli 未产出，跳过冒烟"; exit 0 }
+          & $exe.FullName --version
+          & $exe.FullName node detect --json
+      - name: headless agent sit
+        if: needs.prep.outputs.agent_sit == 'true'
+        shell: pwsh
+        env:
+          LLM_TEST_API_KEY: ${{ secrets.LLM_TEST_API_KEY }}
+        run: ./scripts/sit/agent.sh
+
+  notify:
+    name: notify failure
+    needs: [prep, build, smoke]
+    if: failure()
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: open or update issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="nightly 构建失败"
+          existing=$(gh issue list --label nightly --state open --search "$title" --json number --jq '.[0].number // empty')
+          body="工作流：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label nightly --body "$body"
+          fi

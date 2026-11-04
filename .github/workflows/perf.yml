@@ -1,0 +1,92 @@
+name: perf
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+  schedule:
+    - cron: "0 3 * * *"
+
+concurrency:
+  group: perf-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  # PLAN.md §4：回归超过 15% 直接 fail。
+  REGRESSION_PCT: "15"
+
+jobs:
+  prep:
+    name: prep
+    runs-on: windows-latest
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      harness: ${{ steps.detect.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "rust=$([ -f Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "harness=$([ -f scripts/perf/run.ps1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  measure:
+    name: measure (windows)
+    needs: prep
+    if: |
+      needs.prep.outputs.rust == 'true' &&
+      needs.prep.outputs.harness == 'true' &&
+      (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'perf'))
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: build release
+        run: cargo build --release --locked
+
+      # scripts/perf/run.ps1 输出 scripts/perf/out/metrics.json：
+      #   { trayRssMb, activeRssMb, coldStartMs, warmStartMs, residualProcs }
+      - name: measure
+        shell: pwsh
+        run: ./scripts/perf/run.ps1 -Out scripts/perf/out/metrics.json
+
+      - name: compare against baseline
+        shell: pwsh
+        run: ./scripts/perf/compare.ps1 `
+          -Baseline scripts/perf/baseline.json `
+          -Current scripts/perf/out/metrics.json `
+          -MaxRegressionPct $env:REGRESSION_PCT
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-metrics
+          path: scripts/perf/out/metrics.json
+          retention-days: 30
+
+      - name: comment on PR
+        if: always() && github.event_name == 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/perf/comment.ps1 -Metrics scripts/perf/out/metrics.json
+
+  skip-notice:
+    name: perf skipped
+    needs: prep
+    if: needs.prep.outputs.harness != 'true' || needs.prep.outputs.rust != 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - run: echo "::notice::性能基线或 harness 尚未落地，跳过测量（见 docs/CI.md §3）"

@@ -1,0 +1,2926 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>lite-code · UI Demo</title>
+<link rel="icon" href="data:,">
+<style>
+/* ============================================================
+   tokens
+   ============================================================ */
+:root{
+  --font-ui: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --bg:#17181c;
+  --panel:#1d1f24;
+  --panel-2:#222429;
+  --panel-3:#292c33;
+  --border:#2a2d34;
+  --border-strong:#3a3e47;
+
+  --fg:#d9dade;
+  --fg-2:#b3b7bf;
+  --fg-dim:#878c96;
+  --fg-faint:#5c616b;
+
+  --accent:#e8875a;
+  --accent-hov:#f39b70;
+  --accent-fg:#1b1410;
+  --accent-soft:rgba(232,135,90,.10);
+  --accent-line:rgba(232,135,90,.34);
+
+  --green:#79b98a;
+  --yellow:#d9ae5f;
+  --red:#d97a70;
+
+  --sel:rgba(232,135,90,.09);
+
+  --syn-kw:#d69a74;
+  --syn-str:#9dbd8f;
+  --syn-num:#cfa86a;
+  --syn-com:#5f646e;
+
+  --shadow:0 14px 40px rgba(0,0,0,.42), 0 2px 8px rgba(0,0,0,.26);
+
+  --r:6px;
+  --r-sm:4px;
+  --dur:140ms;
+  --ease:cubic-bezier(.2,.6,.3,1);
+
+  --side-w:300px;
+  --agent-w:400px;
+  --panel-h:240px;
+
+  --z-pop:1000;
+  --z-palette:1100;
+  --z-toast:1200;
+
+  color-scheme: dark;
+}
+html[data-theme="light"]{
+  --bg:#faf9f5;
+  --panel:#f1efe8;
+  --panel-2:#fbfaf7;
+  --panel-3:#ffffff;
+  --border:#e4e0d5;
+  --border-strong:#d2ccbd;
+
+  --fg:#26251f;
+  --fg-2:#4d4a42;
+  --fg-dim:#7a766b;
+  --fg-faint:#a6a194;
+
+  --accent:#c66339;
+  --accent-hov:#b5562e;
+  --accent-fg:#ffffff;
+  --accent-soft:rgba(198,99,57,.08);
+  --accent-line:rgba(198,99,57,.30);
+
+  --green:#4d8a5e;
+  --yellow:#a87a1e;
+  --red:#b04941;
+
+  --sel:rgba(198,99,57,.07);
+
+  --syn-kw:#a9552e;
+  --syn-str:#4f7f45;
+  --syn-num:#8d6a1c;
+  --syn-com:#9a958a;
+
+  --shadow:0 14px 40px rgba(60,50,30,.14), 0 2px 8px rgba(60,50,30,.07);
+
+  color-scheme: light;
+}
+
+/* ============================================================
+   base
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--fg);
+  font:13px/1.5 var(--font-ui);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+input,textarea,select{font:inherit;color:inherit}
+svg{display:block}
+[hidden]{display:none !important}
+::selection{background:var(--accent-soft)}
+:focus{outline:none}
+:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
+.mono{font-family:var(--font-mono)}
+.dim{color:var(--fg-dim)}
+.flex-1{flex:1;min-width:0}
+.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.icon{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+
+*{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--fg-faint)}
+::-webkit-scrollbar-corner{background:transparent}
+
+/* ============================================================
+   shell
+   ============================================================ */
+.app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+.shell{
+  flex:1;min-height:0;
+  display:grid;
+  grid-template-columns:48px var(--side-w) 1px minmax(0,1fr) 1px var(--agent-w);
+}
+.shell.agent-collapsed{grid-template-columns:48px var(--side-w) 1px minmax(0,1fr) 1px 40px}
+.shell.side-closed .side,
+.shell.side-closed .splitter[data-split="side"]{display:none}
+
+/* rail */
+.rail{
+  background:var(--bg);
+  display:flex;flex-direction:column;align-items:center;
+  padding:6px 0;gap:2px;
+  min-height:0;
+}
+.rail-btn{
+  position:relative;
+  width:40px;height:40px;border-radius:var(--r-sm);
+  display:grid;place-items:center;color:var(--fg-dim);
+  transition:color var(--dur) var(--ease),background var(--dur) var(--ease);
+}
+.rail-btn:hover{color:var(--fg-2);background:var(--panel-2)}
+.rail-btn.is-active{color:var(--fg)}
+.rail-btn.is-active::before{
+  content:"";position:absolute;left:-4px;top:10px;bottom:10px;width:2px;
+  background:var(--accent);border-radius:2px;
+}
+.rail-spacer{flex:1}
+
+/* side */
+.side{
+  background:var(--panel);
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
+}
+.side-head{
+  flex:none;height:36px;display:flex;align-items:center;gap:6px;
+  padding:0 8px 0 12px;
+}
+.side-title{
+  flex:1;min-width:0;
+  font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--fg-dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.icon-btn{
+  width:24px;height:24px;border-radius:var(--r-sm);
+  display:grid;place-items:center;color:var(--fg-dim);
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+}
+.icon-btn:hover{background:var(--panel-3);color:var(--fg)}
+.icon-btn .icon{width:15px;height:15px}
+
+.side-body{flex:1;min-height:0;position:relative}
+.view{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding-bottom:10px}
+.view.enter{animation:fade-in 120ms var(--ease)}
+@keyframes fade-in{from{opacity:0;transform:translateY(1px)}to{opacity:1;transform:none}}
+
+/* splitter */
+.splitter,.hsplitter{
+  position:relative;z-index:3;
+  background:var(--border);
+  transition:background var(--dur) var(--ease);
+}
+.splitter{cursor:col-resize}
+.hsplitter{cursor:row-resize;flex:none;height:1px}
+.splitter::before{content:"";position:absolute;left:-3px;right:-3px;top:0;bottom:0;cursor:col-resize}
+.hsplitter::before{content:"";position:absolute;left:0;right:0;top:-3px;bottom:-3px;cursor:row-resize}
+.splitter:hover,.splitter:focus-visible,.hsplitter:hover,.hsplitter:focus-visible{background:var(--accent-line);outline:none}
+body.dragging{user-select:none}
+body.dragging.col,body.dragging.col *{cursor:col-resize !important}
+body.dragging.row,body.dragging.row *{cursor:row-resize !important}
+
+/* ============================================================
+   file tree
+   ============================================================ */
+.tree{padding-top:2px}
+.row{
+  position:relative;
+  height:26px;display:flex;align-items:center;gap:6px;
+  padding-left:calc(8px + var(--d,0) * 12px);
+  padding-right:16px;
+  color:var(--fg-2);font-size:12.5px;
+  cursor:pointer;user-select:none;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+}
+.row:hover{background:var(--panel-2)}
+.row.is-active{background:var(--sel);color:var(--fg)}
+.row.is-active .row-name{color:var(--accent)}
+.row-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .chev{width:13px;height:13px;color:var(--fg-faint);flex:none;transition:transform 120ms var(--ease)}
+.row.is-open > .chev{transform:rotate(90deg)}
+.row .ficon{width:14px;height:14px;color:var(--fg-faint);flex:none}
+.row.is-active .ficon{color:var(--accent)}
+.row .spacer{width:13px;flex:none}
+.gstatus{font:11px var(--font-mono);width:10px;text-align:center;flex:none}
+.gbar{position:absolute;right:0;top:4px;bottom:4px;width:2px;border-radius:2px;background:var(--sc)}
+.row[data-s="M"]{--sc:var(--yellow)} .row[data-s="M"] .gstatus{color:var(--yellow)}
+.row[data-s="A"]{--sc:var(--green)}  .row[data-s="A"] .gstatus{color:var(--green)}
+.row[data-s="D"]{--sc:var(--red)}    .row[data-s="D"] .gstatus{color:var(--red)}
+.row[data-s="U"]{--sc:var(--fg-faint)} .row[data-s="U"] .gstatus{color:var(--fg-dim)}
+.tree-children{animation:fade-in 80ms var(--ease)}
+
+/* ============================================================
+   providers view
+   ============================================================ */
+.prov-bar{
+  position:sticky;top:0;z-index:2;
+  background:var(--panel);
+  padding:8px 10px 7px;
+  border-bottom:1px solid var(--border);
+}
+.btn{
+  height:26px;padding:0 10px;border-radius:var(--r-sm);
+  border:1px solid var(--border);color:var(--fg-2);background:transparent;
+  display:inline-flex;align-items:center;gap:6px;font-size:12px;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease),border-color var(--dur) var(--ease);
+}
+.btn .icon{width:13px;height:13px}
+.btn:hover{background:var(--panel-3);color:var(--fg);border-color:var(--border-strong)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:600}
+.btn.primary:hover{background:var(--accent-hov);border-color:var(--accent-hov);color:var(--accent-fg)}
+.btn.sm{height:24px;font-size:11.5px;padding:0 8px}
+.btn[aria-disabled="true"]{opacity:.45;cursor:default}
+.refresh-report{
+  margin-top:6px;font-size:11px;color:var(--fg-dim);
+  display:flex;gap:4px;align-items:center;
+  animation:fade-in 140ms var(--ease);
+}
+.refresh-report .warn{color:var(--yellow)}
+.prov{padding:5px 8px 2px}
+.prov + .prov{border-top:1px solid var(--border)}
+.prov-head{display:flex;align-items:center;gap:6px;height:28px;padding:0 4px}
+.dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--fg-faint)}
+.dot.ok{background:var(--green)}
+.dot.warn{background:var(--yellow)}
+.prov-name{font-size:12.5px;font-weight:600;color:var(--fg-2)}
+.tag{font:10px/1 var(--font-mono);color:var(--fg-dim);border:1px solid var(--border);padding:2px 4px;border-radius:3px}
+.prov .icon-btn{width:20px;height:20px}
+.prov .icon-btn .icon{width:14px;height:14px}
+
+.model{border-radius:var(--r-sm);padding:1px 3px 3px;margin-top:1px}
+.model:hover{background:var(--panel-2)}
+.model-main{
+  display:flex;align-items:center;gap:6px;width:100%;height:23px;
+  padding:0 4px;border-radius:3px;text-align:left;
+}
+.mchev{width:12px;height:12px;color:var(--fg-faint);flex:none;transition:transform 120ms var(--ease)}
+.model.open .mchev{transform:rotate(90deg)}
+.mname{font-size:12.5px;color:var(--fg-2)}
+.model.is-current .mname{color:var(--fg)}
+.mtag{
+  display:none;font-size:9.5px;letter-spacing:.04em;color:var(--accent);
+  border:1px solid var(--accent-line);border-radius:3px;padding:1px 4px;
+}
+.model.is-current .mtag{display:inline-block}
+.model-sub{
+  display:flex;align-items:center;gap:4px;flex-wrap:wrap;
+  padding:0 4px 2px 21px;font-size:10.5px;color:var(--fg-dim);
+}
+.model-sub .sep{color:var(--fg-faint)}
+.src{font-size:9.5px;color:var(--fg-faint)}
+.src.est{border-bottom:1px dashed var(--fg-faint)}
+.model-detail{
+  padding:5px 4px 4px 21px;
+  display:flex;flex-direction:column;gap:4px;
+  animation:fade-in 120ms var(--ease);
+}
+.kv{display:flex;gap:8px;font-size:11px;line-height:1.5;min-width:0}
+.kv .k{color:var(--fg-faint);flex:none;width:50px}
+.kv .v{color:var(--fg-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kv .note{color:var(--fg-faint);font-size:10.5px;margin-left:auto;flex:none}
+.model-actions{display:flex;align-items:center;gap:6px;padding-top:2px}
+.switch{position:relative;display:inline-block;width:26px;height:15px;flex:none}
+.switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.switch span{position:absolute;inset:0;border-radius:8px;background:var(--border-strong);transition:background var(--dur) var(--ease)}
+.switch span::after{
+  content:"";position:absolute;left:2px;top:2px;width:11px;height:11px;border-radius:50%;
+  background:var(--fg-dim);transition:transform var(--dur) var(--ease),background var(--dur) var(--ease);
+}
+.switch input:checked + span{background:var(--accent)}
+.switch input:checked + span::after{transform:translateX(11px);background:var(--accent-fg)}
+.switch input:focus-visible + span{outline:1px solid var(--accent);outline-offset:2px}
+.switch-label{font-size:10.5px;color:var(--fg-faint)}
+.link{font-size:11px;color:var(--fg-dim);padding:2px 4px;border-radius:3px}
+.link:hover{color:var(--fg);background:var(--panel-3)}
+.link.danger:hover{color:var(--red)}
+.link[aria-disabled="true"]{opacity:.4;cursor:default;background:none;color:var(--fg-dim)}
+.section-label{
+  padding:10px 12px 4px;font-size:10.5px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--fg-faint);font-weight:600;
+}
+.subagent{padding:1px 3px 3px;border-radius:var(--r-sm);margin:0 4px}
+.subagent:hover{background:var(--panel-2)}
+.subagent .model-main{padding-left:4px}
+.subagent .model-sub{padding-left:21px}
+.add-btn{
+  display:flex;align-items:center;gap:6px;
+  margin:6px 10px 2px;height:26px;padding:0 8px;width:calc(100% - 20px);
+  border-radius:var(--r-sm);border:1px dashed var(--border-strong);
+  color:var(--fg-dim);font-size:11.5px;
+  transition:color var(--dur) var(--ease),border-color var(--dur) var(--ease),background var(--dur) var(--ease);
+}
+.add-btn .icon{width:13px;height:13px}
+.add-btn:hover{color:var(--fg-2);border-color:var(--fg-faint);background:var(--panel-2)}
+.prov-foot{border-top:1px solid var(--border);margin-top:8px;padding:8px 10px 2px}
+.default-model{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg-dim);padding:0 2px}
+.default-model .icon{width:13px;height:13px;color:var(--fg-faint)}
+.default-model .v{color:var(--fg-2);font-family:var(--font-mono);font-size:11px}
+.default-model .hint{margin-left:auto;color:var(--fg-faint);font-size:10px}
+
+/* ============================================================
+   settings view
+   ============================================================ */
+.set-group{padding:10px 12px 6px}
+.set-group + .set-group{border-top:1px solid var(--border);margin-top:4px}
+.set-label{
+  font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--fg-faint);font-weight:600;margin-bottom:8px;
+}
+.set-row{display:flex;align-items:center;gap:8px;min-height:30px;font-size:12px;color:var(--fg-2)}
+.set-row > span:first-child{flex:1;min-width:0}
+.set-row .set-val{color:var(--fg-dim);font-size:11.5px}
+.set-note{font-size:11px;color:var(--fg-faint);line-height:1.5;margin:4px 0 6px}
+.seg{display:flex;gap:2px;padding:2px;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r-sm)}
+.seg button{height:20px;padding:0 9px;border-radius:3px;font-size:11.5px;color:var(--fg-dim);transition:background var(--dur) var(--ease),color var(--dur) var(--ease)}
+.seg button:hover{color:var(--fg-2)}
+.seg button.is-on{background:var(--panel-3);color:var(--fg)}
+.sel{
+  height:24px;border-radius:var(--r-sm);border:1px solid var(--border);
+  background:var(--panel-2);color:var(--fg-2);font-size:11.5px;padding:0 6px;max-width:150px;
+}
+.sel:hover{border-color:var(--border-strong)}
+
+/* ============================================================
+   workbench
+   ============================================================ */
+.workbench{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
+.tabs{
+  flex:none;height:36px;display:flex;align-items:stretch;
+  background:var(--panel);border-bottom:1px solid var(--border);
+  overflow-x:auto;overflow-y:hidden;
+}
+.tabs::-webkit-scrollbar{height:0}
+.tab{
+  position:relative;display:flex;align-items:center;gap:7px;
+  padding:0 8px 0 12px;border-right:1px solid var(--border);
+  color:var(--fg-dim);font-size:12.5px;white-space:nowrap;cursor:pointer;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+}
+.tab:hover{color:var(--fg-2);background:var(--panel-2)}
+.tab.is-active{background:var(--bg);color:var(--fg)}
+.tab.is-active::after{content:"";position:absolute;left:0;right:0;top:0;height:1px;background:var(--accent)}
+.tab-name{max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.tab-dirty{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+.tab-x{
+  width:18px;height:18px;border-radius:3px;display:grid;place-items:center;
+  color:var(--fg-faint);opacity:0;transition:opacity var(--dur) var(--ease),background var(--dur) var(--ease);
+}
+.tab:hover .tab-x,.tab.is-active .tab-x{opacity:1}
+.tab-x:hover{background:var(--panel-3);color:var(--fg-2)}
+.tab-x .icon{width:11px;height:11px}
+
+.editor{flex:1;min-height:0;overflow:auto;background:var(--bg);overscroll-behavior:contain}
+.code{display:block;min-width:max-content;padding:8px 0 28px;margin:0}
+.cl{display:flex;min-height:calc(12.5px * 1.6);line-height:1.6}
+.ln{
+  flex:none;width:48px;padding-right:16px;text-align:right;
+  font:11.5px/1.6 var(--font-mono);color:var(--fg-faint);
+  user-select:none;position:sticky;left:0;background:var(--bg);
+}
+.cl:hover .ln{color:var(--fg-dim)}
+.lc{display:block;font:12.5px/1.6 var(--font-mono);white-space:pre;padding-right:32px}
+.c-kw{color:var(--syn-kw)}
+.c-str{color:var(--syn-str)}
+.c-num{color:var(--syn-num)}
+.c-com{color:var(--syn-com)}
+.md-h{color:var(--accent);font-weight:600}
+.md-li{color:var(--fg-2)}
+.md-t{color:var(--fg-dim)}
+
+/* bottom panel */
+.bpanel{
+  flex:none;height:var(--panel-h);min-height:0;
+  display:flex;flex-direction:column;
+  background:var(--panel);border-top:1px solid var(--border);
+}
+.workbench.bottom-closed .bpanel,
+.workbench.bottom-closed .hsplitter{display:none}
+.bpanel-head{
+  flex:none;height:31px;display:flex;align-items:center;gap:2px;
+  padding:0 6px 0 8px;border-bottom:1px solid var(--border);
+}
+.ptab{
+  height:21px;padding:0 8px;border-radius:3px;
+  font-size:11.5px;color:var(--fg-dim);
+  display:flex;align-items:center;gap:5px;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+}
+.ptab:hover{color:var(--fg-2)}
+.ptab.is-active{background:var(--panel-3);color:var(--fg)}
+.pcount{font:10px var(--font-mono);color:var(--fg-faint);background:var(--panel-2);border-radius:3px;padding:1px 4px}
+.bpanel-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.term{padding:8px 12px;font:12px/1.7 var(--font-mono);color:var(--fg-2)}
+.tline{white-space:pre-wrap;word-break:break-word}
+.tp{color:var(--fg-faint)}
+.tpath{color:var(--accent)}
+.tcmd{color:var(--fg)}
+.tdim{color:var(--fg-dim)}
+.tok{color:var(--green)}
+.tbad{color:var(--red)}
+.cursor{display:inline-block;width:7px;height:14px;background:var(--fg-dim);vertical-align:-2px;opacity:.7}
+.outline{font:11.5px/1.7 var(--font-mono);color:var(--fg-dim);padding:8px 12px}
+.outline .t{color:var(--fg-faint)}
+.empty-state{
+  height:100%;display:flex;align-items:center;justify-content:center;gap:8px;
+  color:var(--fg-faint);font-size:12px;
+}
+.empty-state .icon{width:15px;height:15px;color:var(--green)}
+
+/* ============================================================
+   agent panel
+   ============================================================ */
+.agent{
+  background:var(--panel);min-width:0;min-height:0;
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.agent-full{display:flex;flex-direction:column;min-height:0;height:100%}
+.agent-head{
+  flex:none;height:36px;display:flex;align-items:center;gap:8px;
+  padding:0 8px 0 12px;border-bottom:1px solid var(--border);
+}
+.agent-title{font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-dim)}
+.sess-name{
+  font-size:12px;color:var(--fg-2);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.sess-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+
+.stream{
+  flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  padding:12px;display:flex;flex-direction:column;gap:12px;
+}
+.msg{min-width:0}
+.msg-user{
+  align-self:flex-end;max-width:86%;
+  background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r);
+  padding:8px 10px;font-size:12.5px;line-height:1.55;color:var(--fg);
+}
+.msg-user p{margin:0}
+.msg-ai{font-size:13px;line-height:1.65;color:var(--fg)}
+.msg-ai p{margin:0 0 8px}
+.msg-ai p:last-child{margin-bottom:0}
+.msg-ai ul{margin:0 0 8px;padding-left:17px}
+.msg-ai li{margin:2px 0}
+.msg-ai code{
+  font:11.5px var(--font-mono);color:var(--fg-2);
+  background:var(--panel-2);border:1px solid var(--border);
+  border-radius:3px;padding:0 4px;
+}
+.msg-note{color:var(--fg-dim);font-size:12px}
+
+/* tool card */
+.tool{
+  border:1px solid var(--border);border-radius:var(--r);
+  background:var(--panel-2);overflow:hidden;
+  transition:border-color var(--dur) var(--ease);
+}
+.tool:hover{border-color:var(--border-strong)}
+.tool-head{
+  display:flex;align-items:center;gap:7px;height:31px;padding:0 9px;
+  color:var(--fg-2);text-align:left;width:100%;
+}
+.tool-head:hover{background:var(--panel-3)}
+.tool-ico{width:13px;height:13px;color:var(--fg-faint)}
+.tool-name{font:11.5px var(--font-mono);color:var(--accent)}
+.tool-arg{
+  font:11.5px var(--font-mono);color:var(--fg-dim);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.tool-dur{font:10.5px var(--font-mono);color:var(--fg-faint);flex:none}
+.tool .chev{width:12px;height:12px;color:var(--fg-faint);flex:none;transition:transform 120ms var(--ease)}
+.tool.open .chev{transform:rotate(180deg)}
+.tool-body{
+  margin:0;padding:0 10px 8px 10px;
+  font:11.5px/1.6 var(--font-mono);color:var(--fg-dim);
+  white-space:pre;overflow:auto;
+  max-height:calc(5 * 1.6em + 4px);
+  mask-image:linear-gradient(#000 72%,transparent);
+}
+.tool.open .tool-body{max-height:none;mask-image:none}
+
+/* subagent block */
+.sub-block{border:1px solid var(--border);border-radius:var(--r);background:var(--panel-2);overflow:hidden}
+.sub-head{
+  display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 9px;
+  color:var(--fg-2);text-align:left;
+}
+.sub-head:hover{background:var(--panel-3)}
+.sub-head .icon.bot{width:14px;height:14px;color:var(--fg-dim)}
+.sub-name{font-size:12.5px;color:var(--fg-2)}
+.sub-meta{font:10.5px var(--font-mono);color:var(--fg-faint);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub-head .chev{width:12px;height:12px;color:var(--fg-faint);transition:transform 120ms var(--ease)}
+.sub-block.open .sub-head .chev{transform:rotate(180deg)}
+.sub-body{padding:2px 10px 9px 10px;display:flex;flex-direction:column;gap:5px;animation:fade-in 120ms var(--ease)}
+.sub-line{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--fg-dim);min-width:0}
+.sub-line .t{font-family:var(--font-mono);width:34px;flex:none;color:var(--fg-faint)}
+.sub-line .p{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:11px}
+.sub-line .r{margin-left:auto;flex:none;font-family:var(--font-mono);font-size:10.5px;color:var(--fg-faint)}
+.sub-note{font-size:10.5px;color:var(--fg-faint);padding-top:2px}
+
+/* compaction */
+.compact{border:1px solid var(--border);border-radius:var(--r);background:transparent;overflow:hidden}
+.compact-row{
+  display:flex;align-items:center;gap:8px;width:100%;height:30px;padding:0 9px;
+  color:var(--fg-dim);font-size:11.5px;text-align:left;
+}
+.compact-row:hover{background:var(--panel-2)}
+.compact-row .icon{width:13px;height:13px;color:var(--fg-faint)}
+.compact-row .r{margin-left:auto;font:10.5px var(--font-mono);color:var(--fg-faint)}
+.compact-row .chev{width:12px;height:12px;color:var(--fg-faint);transition:transform 120ms var(--ease)}
+.compact.open .compact-row .chev{transform:rotate(180deg)}
+.compact-body{padding:0 10px 8px 30px;font-size:11px;line-height:1.6;color:var(--fg-faint);animation:fade-in 120ms var(--ease)}
+
+/* permission card */
+.perm{
+  border:1px solid var(--accent-line);background:var(--accent-soft);
+  border-radius:var(--r);padding:10px;
+  animation:fade-in 140ms var(--ease);
+}
+.perm-title{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--accent);margin-bottom:8px}
+.perm-title .icon{width:14px;height:14px}
+.perm-kind{margin-left:auto;font:10px var(--font-mono);color:var(--fg-dim);font-weight:400;letter-spacing:.04em}
+.perm-cmd{
+  margin:0;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);
+  padding:7px 9px;font:11.5px/1.6 var(--font-mono);color:var(--fg);
+  white-space:pre-wrap;word-break:break-word;
+}
+.perm-meta{font-size:10.5px;color:var(--fg-dim);margin:7px 0 9px;line-height:1.5}
+.perm-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.perm-done{
+  display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--green);
+  animation:fade-in 140ms var(--ease);
+}
+.perm-done .icon{width:13px;height:13px}
+.perm.resolved{background:var(--panel-2);border-color:var(--border)}
+.perm.resolved .perm-title{color:var(--fg-dim)}
+.perm.resolved .perm-title .icon{color:var(--fg-faint)}
+.perm.resolved .perm-actions{display:none}
+
+/* composer */
+.composer{flex:none;border-top:1px solid var(--border);padding:9px 10px 8px;background:var(--panel)}
+.comp-box{
+  border:1px solid var(--border);border-radius:var(--r);
+  background:var(--panel-2);
+  transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease);
+}
+.comp-box:focus-within{border-color:var(--border-strong)}
+.composer.full-auto .comp-box{border-color:var(--accent-line)}
+#composer-input{
+  display:block;width:100%;resize:none;border:0;background:transparent;
+  padding:9px 10px 3px;font:12.5px/1.6 var(--font-ui);color:var(--fg);
+  min-height:38px;max-height:132px;overflow-y:auto;outline:none;
+}
+#composer-input::placeholder{color:var(--fg-faint)}
+.comp-ctrl{display:flex;align-items:center;gap:4px;padding:3px 6px 6px;flex-wrap:wrap}
+.pill{
+  display:inline-flex;align-items:center;gap:5px;
+  height:23px;padding:0 7px;border-radius:var(--r-sm);
+  border:1px solid transparent;color:var(--fg-dim);
+  font-size:11.5px;white-space:nowrap;max-width:150px;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease),border-color var(--dur) var(--ease);
+}
+.pill:hover{background:var(--panel-3);color:var(--fg-2)}
+.pill.open{background:var(--panel-3);color:var(--fg);border-color:var(--border-strong)}
+.pill .icon{width:13px;height:13px}
+.pill .chev{width:11px;height:11px;color:var(--fg-faint);transition:transform 120ms var(--ease)}
+.pill.open .chev{transform:rotate(180deg)}
+.pill .pill-label{overflow:hidden;text-overflow:ellipsis}
+.pill.mode-plan{border-style:dashed;border-color:var(--border-strong);color:var(--fg-2)}
+.pill.mode-chat{color:var(--fg-dim)}
+.pill.mode-full{border-color:var(--accent);color:var(--accent)}
+.pill.mode-full .icon{color:var(--accent)}
+.send-btn{
+  width:24px;height:24px;border-radius:var(--r-sm);
+  display:grid;place-items:center;
+  background:var(--accent);color:var(--accent-fg);
+  transition:background var(--dur) var(--ease),opacity var(--dur) var(--ease);
+}
+.send-btn .icon{width:14px;height:14px;stroke-width:2}
+.send-btn:hover{background:var(--accent-hov)}
+.send-btn:disabled{background:var(--border-strong);color:var(--fg-faint);cursor:default}
+.ctx{margin-top:8px;padding:0 1px}
+.ctx-top{display:flex;align-items:center;gap:8px}
+.ctx-label{font-size:10.5px;color:var(--fg-faint);flex:none;letter-spacing:.02em}
+.ctx-bar{position:relative;flex:1;height:3px;border-radius:2px;background:var(--border)}
+.ctx-fill{
+  position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--accent);
+  transition:width 160ms var(--ease),background 160ms var(--ease);
+}
+.ctx-tick{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--fg-faint);left:75%}
+.ctx-fill.is-warn{background:var(--yellow)}
+.ctx-fill.is-flash{animation:ctx-flash 700ms var(--ease)}
+@keyframes ctx-flash{0%{opacity:.25}55%{opacity:.55}100%{opacity:1}}
+.ctx-meta{display:flex;align-items:center;justify-content:space-between;margin-top:4px;font:10.5px var(--font-mono);color:var(--fg-faint)}
+.ctx-meta .ctx-val{color:var(--fg-dim)}
+
+/* collapsed agent */
+.agent-mini{display:none;flex-direction:column;align-items:center;padding:8px 0;gap:10px;height:100%}
+.shell.agent-collapsed .agent-full{display:none}
+.shell.agent-collapsed .agent-mini{display:flex}
+.mini-expand{width:24px;height:24px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--fg-dim)}
+.mini-expand:hover{background:var(--panel-3);color:var(--fg)}
+.mini-expand .icon{width:14px;height:14px}
+.mini-label{
+  writing-mode:vertical-rl;font-size:10.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--fg-dim);
+}
+.mini-count{margin-top:auto;font:10.5px var(--font-mono);color:var(--accent)}
+
+/* ============================================================
+   status bar
+   ============================================================ */
+.statusbar{
+  flex:none;height:26px;display:flex;align-items:center;gap:1px;
+  padding:0 6px;background:var(--panel);border-top:1px solid var(--border);
+  font-size:11.5px;color:var(--fg-dim);overflow:hidden;
+}
+.st{
+  display:flex;align-items:center;gap:5px;height:20px;padding:0 7px;
+  border-radius:3px;white-space:nowrap;color:var(--fg-dim);
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+}
+button.st:hover{background:var(--panel-2);color:var(--fg-2)}
+.st .icon{width:12px;height:12px}
+.st .dot{width:6px;height:6px}
+.st .st-dim{color:var(--fg-faint);font-family:var(--font-mono);font-size:10.5px}
+.st:focus-visible{outline-offset:-1px}
+
+/* ============================================================
+   menu / popover (portaled to body)
+   ============================================================ */
+.menu{
+  position:fixed;top:0;left:0;z-index:var(--z-pop);
+  min-width:172px;max-width:min(320px,calc(100vw - 16px));
+  max-height:calc(100vh - 16px);overflow-y:auto;
+  background:var(--panel-2);
+  border:1px solid var(--border-strong);border-radius:var(--r);
+  box-shadow:var(--shadow);
+  padding:4px;
+  visibility:hidden;
+}
+@keyframes pop-in{from{opacity:0;transform:translateY(var(--ty,-2px))}to{opacity:1;transform:none}}
+.menu.visible{visibility:visible;animation:pop-in 120ms var(--ease) both}
+.menu.wide{width:264px;max-width:calc(100vw - 16px)}
+.menu-label{
+  font-size:10px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--fg-faint);padding:6px 8px 4px;font-weight:600;
+}
+.menu-item{
+  display:flex;align-items:center;gap:8px;width:100%;
+  min-height:28px;padding:4px 8px;border-radius:var(--r-sm);
+  font-size:12.5px;line-height:1.4;color:var(--fg-2);text-align:left;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
+}
+.menu-item:hover,.menu-item:focus-visible{background:var(--panel-3);color:var(--fg);outline:none}
+.menu-item[aria-disabled="true"]{opacity:.42;cursor:default}
+.menu-item[aria-disabled="true"]:hover{background:transparent;color:var(--fg-2)}
+.menu-item .icon{width:14px;height:14px;color:var(--fg-dim)}
+.mi-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mi-hint{margin-left:auto;font:10.5px var(--font-mono);color:var(--fg-faint);flex:none}
+.mi-two{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.mi-title{font-size:12.5px;color:var(--fg)}
+.mi-desc{font-size:11px;color:var(--fg-dim)}
+.mi-check{margin-left:auto;color:var(--accent);display:grid;place-items:center;flex:none}
+.mi-check .icon{width:13px;height:13px;color:var(--accent)}
+.mi-ico{width:16px;display:grid;place-items:center;flex:none}
+.mode-item{align-items:flex-start;padding-top:6px;padding-bottom:6px}
+.mode-item .mi-ico{margin-top:1px}
+.mode-item .mi-desc{line-height:1.4}
+.menu-sep{height:1px;background:var(--border);margin:4px 2px}
+.menu-foot{padding:5px 8px 3px;font-size:10.5px;color:var(--fg-faint);border-top:1px solid var(--border);margin-top:4px}
+.confirm{position:fixed;z-index:var(--z-pop);width:286px;max-width:calc(100vw - 16px);
+  background:var(--panel-2);border:1px solid var(--border-strong);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:12px;visibility:hidden;
+}
+.confirm.visible{visibility:visible;animation:pop-in 140ms var(--ease) both}
+.confirm-t{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--fg);margin-bottom:6px}
+.confirm-t .icon{width:15px;height:15px;color:var(--accent)}
+.confirm-d{font-size:11.5px;line-height:1.6;color:var(--fg-dim)}
+.confirm-a{display:flex;justify-content:flex-end;gap:6px;margin-top:12px}
+
+/* ============================================================
+   command palette
+   ============================================================ */
+.palette-wrap{
+  position:fixed;inset:0;z-index:var(--z-palette);
+  display:flex;justify-content:center;align-items:flex-start;
+  padding:12vh 16px 16px;
+}
+.palette-backdrop{position:absolute;inset:0;background:rgba(10,11,14,.42)}
+html[data-theme="light"] .palette-backdrop{background:rgba(50,44,32,.18)}
+.palette{
+  position:relative;width:580px;max-width:100%;
+  background:var(--panel-2);border:1px solid var(--border-strong);
+  border-radius:8px;box-shadow:var(--shadow);overflow:hidden;
+  animation:pop-in 140ms var(--ease);
+}
+.palette-input{
+  display:flex;align-items:center;gap:8px;
+  padding:10px 12px;border-bottom:1px solid var(--border);
+}
+.palette-input .icon{width:15px;height:15px;color:var(--fg-faint)}
+.palette-input input{flex:1;min-width:0;background:transparent;border:0;outline:none;font-size:13px;color:var(--fg)}
+.palette-input input::placeholder{color:var(--fg-faint)}
+kbd{
+  font:10px var(--font-mono);color:var(--fg-faint);
+  border:1px solid var(--border);border-radius:3px;
+  padding:1px 4px;background:var(--panel-3);
+}
+.palette-list{max-height:336px;overflow-y:auto;padding:4px;overscroll-behavior:contain}
+.p-item{
+  display:flex;align-items:center;gap:9px;width:100%;
+  padding:6px 9px;border-radius:var(--r-sm);text-align:left;
+  color:var(--fg-2);font-size:12.5px;min-height:32px;
+}
+.p-item .icon{width:14px;height:14px;color:var(--fg-faint)}
+.p-item .p-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.p-item .p-sub{font-size:10.5px;color:var(--fg-faint);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.p-item .p-key{font:10px var(--font-mono);color:var(--fg-faint);flex:none}
+.p-item.is-active{background:var(--panel-3);color:var(--fg)}
+.p-item.is-active .icon{color:var(--accent)}
+.p-empty{padding:22px 10px;text-align:center;font-size:12px;color:var(--fg-faint)}
+.palette-foot{
+  display:flex;align-items:center;gap:12px;
+  padding:7px 12px;border-top:1px solid var(--border);
+  font-size:10.5px;color:var(--fg-faint);
+}
+.palette-foot span{display:flex;align-items:center;gap:4px}
+.palette-foot .scope{margin-left:auto;color:var(--fg-dim);font-family:var(--font-mono)}
+
+/* toast */
+.toast{
+  position:fixed;left:50%;bottom:40px;transform:translate(-50%,4px);
+  z-index:var(--z-toast);pointer-events:none;
+  background:var(--panel-2);border:1px solid var(--border-strong);
+  border-radius:var(--r);padding:7px 11px;font-size:12px;color:var(--fg-2);
+  box-shadow:var(--shadow);
+  opacity:0;transition:opacity var(--dur) var(--ease),transform var(--dur) var(--ease);
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+  }
+}
+</style>
+</head>
+<body>
+
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-files" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5l3 2.5-3 2.5M13 15h4"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M13 3v6h6"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></symbol>
+  <symbol id="i-warning" viewBox="0 0 24 24"><path d="M12 4.5l8.5 15h-17z"/><path d="M12 10v4.5M12 17.2v.01"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 0 1 14.3-6.2L20.5 8"/><path d="M20.5 3.5V8h-4.5"/><path d="M20.5 12a8.5 8.5 0 0 1-14.3 6.2L3.5 16"/><path d="M3.5 20.5V16h4.5"/></symbol>
+  <symbol id="i-message" viewBox="0 0 24 24"><path d="M20 15.5a2 2 0 0 1-2 2H8l-4 3V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/></symbol>
+  <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M11 3.5l1.7 4.8 4.8 1.7-4.8 1.7L11 16.5l-1.7-4.8L4.5 10l4.8-1.7z"/><path d="M18.5 16l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M2.5 11.5v3M21.5 11.5v3"/><path d="M9 13h.01M15 13h.01"/></symbol>
+  <symbol id="i-panel-right" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
+  <symbol id="i-panel-bottom" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14h18"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></symbol>
+  <symbol id="i-git" viewBox="0 0 24 24"><circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="9" r="2"/><path d="M7 7v10M17 11c0 3-2.5 4-6 4.4-2.3.3-4 1.6-4 3.6"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z"/><path d="M3.5 12l8.5 4.5 8.5-4.5M3.5 16l8.5 4.5 8.5-4.5"/></symbol>
+  <symbol id="i-command" viewBox="0 0 24 24"><path d="M9 6.5A2.5 2.5 0 1 0 6.5 9H9zM15 6.5A2.5 2.5 0 1 1 17.5 9H15zM9 17.5A2.5 2.5 0 1 1 6.5 15H9zM15 17.5a2.5 2.5 0 1 0 2.5-2.5H15z"/><rect x="9" y="9" width="6" height="6"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6.5 7l1 13h9l1-13"/></symbol>
+  <symbol id="i-external-link" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/><path d="M15 3h6v6M21 3l-9 9"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 3l3 6 6 1-4.5 4.5L18 21l-6-3-6 3 1.5-6.5L3 10l6-1z"/></symbol>
+</svg>
+
+<div class="app">
+  <div class="shell" id="shell">
+
+    <!-- activity bar -->
+    <nav class="rail" aria-label="活动栏">
+      <button class="rail-btn is-active" data-view="explorer" title="资源管理器" aria-label="资源管理器">
+        <svg class="icon"><use href="#i-files"/></svg>
+      </button>
+      <button class="rail-btn" data-view="providers" title="供应商" aria-label="供应商">
+        <svg class="icon"><use href="#i-server"/></svg>
+      </button>
+      <button class="rail-btn" data-action="palette" title="命令面板 (Ctrl+K)" aria-label="命令面板">
+        <svg class="icon"><use href="#i-search"/></svg>
+      </button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" data-action="theme" id="theme-btn" title="切换主题" aria-label="切换主题">
+        <svg class="icon"><use href="#i-sun"/></svg>
+      </button>
+      <button class="rail-btn" data-view="settings" title="设置" aria-label="设置">
+        <svg class="icon"><use href="#i-sliders"/></svg>
+      </button>
+    </nav>
+
+    <!-- side panel -->
+    <aside class="side">
+      <div class="side-head">
+        <span class="side-title" id="view-title">资源管理器</span>
+        <button class="icon-btn" id="side-action" title="更多" aria-label="更多">
+          <svg class="icon"><use href="#i-plus"/></svg>
+        </button>
+      </div>
+      <div class="side-body">
+        <div class="view" id="tree" role="tree" aria-label="文件树"></div>
+
+        <div class="view" id="providers-view" hidden>
+          <div class="prov-bar">
+            <button class="btn sm" id="refresh-btn">
+              <svg class="icon"><use href="#i-refresh"/></svg>刷新全部
+            </button>
+            <div class="refresh-report" id="refresh-report" hidden></div>
+          </div>
+
+          <div class="prov" data-prov="openai">
+            <div class="prov-head">
+              <span class="dot ok"></span>
+              <span class="prov-name">OpenAI</span>
+              <span class="tag">responses</span>
+              <span class="flex-1"></span>
+              <button class="icon-btn" data-prov-menu="openai" title="供应商操作" aria-label="供应商操作">
+                <svg class="icon"><use href="#i-more"/></svg>
+              </button>
+            </div>
+
+            <div class="model is-current" data-model="gpt-5">
+              <button class="model-main" aria-expanded="false">
+                <svg class="icon mchev"><use href="#i-chev-r"/></svg>
+                <span class="mname">gpt-5</span>
+                <span class="mtag">当前</span>
+              </button>
+              <div class="model-sub">
+                <span>上下文 400k</span><span class="src probe" data-src="gpt-5:ctx">探测</span>
+                <span class="sep">·</span>
+                <span>压缩 300k</span><span class="src est" data-src="gpt-5:comp">推测</span>
+              </div>
+              <div class="model-detail" hidden>
+                <div class="kv"><span class="k">实际 id</span><span class="v mono">gpt-5-2025-08-07</span></div>
+                <div class="kv"><span class="k">思考挡位</span><span class="v">低 · 中 · 高</span></div>
+                <div class="kv"><span class="k">端点</span><span class="v mono" title="https://api.openai.com/v1">api.openai.com/v1</span></div>
+                <div class="model-actions">
+                  <label class="switch"><input type="checkbox" checked aria-label="启用 gpt-5"><span></span></label>
+                  <span class="switch-label">启用</span>
+                  <span class="flex-1"></span>
+                  <button class="link danger" aria-disabled="true" title="被当前会话引用，无法删除">删除</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="model" data-model="gpt-5-mini">
+              <button class="model-main" aria-expanded="false">
+                <svg class="icon mchev"><use href="#i-chev-r"/></svg>
+                <span class="mname">gpt-5-mini</span>
+                <span class="mtag">当前</span>
+              </button>
+              <div class="model-sub">
+                <span>上下文 128k</span><span class="src probe" data-src="mini:ctx">探测</span>
+                <span class="sep">·</span>
+                <span>压缩 96k</span>
+              </div>
+              <div class="model-detail" hidden>
+                <div class="kv"><span class="k">实际 id</span><span class="v mono">gpt-5-mini-2025-08-07</span></div>
+                <div class="kv"><span class="k">思考挡位</span><span class="v">低 · 中</span></div>
+                <div class="kv"><span class="k">端点</span><span class="v mono" title="https://api.openai.com/v1">api.openai.com/v1</span></div>
+                <div class="model-actions">
+                  <label class="switch"><input type="checkbox" checked aria-label="启用 gpt-5-mini"><span></span></label>
+                  <span class="switch-label">启用</span>
+                  <span class="flex-1"></span>
+                  <button class="link danger" title="删除模型">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="prov" data-prov="relay">
+            <div class="prov-head">
+              <span class="dot ok"></span>
+              <span class="prov-name">本地中转</span>
+              <span class="tag">responses</span>
+              <span class="flex-1"></span>
+              <button class="icon-btn" data-prov-menu="relay" title="供应商操作" aria-label="供应商操作">
+                <svg class="icon"><use href="#i-more"/></svg>
+              </button>
+            </div>
+
+            <div class="model" data-model="llama-70b">
+              <button class="model-main" aria-expanded="false">
+                <svg class="icon mchev"><use href="#i-chev-r"/></svg>
+                <span class="mname">llama-70b</span>
+                <span class="mtag">当前</span>
+              </button>
+              <div class="model-sub">
+                <span>上下文 128k</span><span class="src est" data-src="llama:ctx">推测</span>
+                <span class="sep">·</span>
+                <span>压缩 96k</span><span class="src est" data-src="llama:comp">推测</span>
+              </div>
+              <div class="model-detail" hidden>
+                <div class="kv"><span class="k">实际 id</span><span class="v mono">meta/llama-3.3-70b</span></div>
+                <div class="kv"><span class="k">思考挡位</span><span class="v">低 · 中</span></div>
+                <div class="kv"><span class="k">端点</span><span class="v mono" title="http://127.0.0.1:8787/v1">127.0.0.1:8787/v1</span></div>
+                <div class="model-actions">
+                  <label class="switch"><input type="checkbox" checked aria-label="启用 llama-70b"><span></span></label>
+                  <span class="switch-label">启用</span>
+                  <span class="flex-1"></span>
+                  <button class="link danger" title="删除模型">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="prov" data-prov="gateway">
+            <div class="prov-head">
+              <span class="dot ok"></span>
+              <span class="prov-name">自建网关</span>
+              <span class="tag">responses</span>
+              <span class="flex-1"></span>
+              <button class="icon-btn" data-prov-menu="gateway" title="供应商操作" aria-label="供应商操作">
+                <svg class="icon"><use href="#i-more"/></svg>
+              </button>
+            </div>
+            <div class="model" data-model="qwen3-coder">
+              <button class="model-main" aria-expanded="false">
+                <svg class="icon mchev"><use href="#i-chev-r"/></svg>
+                <span class="mname">qwen3-coder</span>
+                <span class="mtag">当前</span>
+              </button>
+              <div class="model-sub">
+                <span>上下文 256k</span><span class="src probe" data-src="qwen:ctx">探测</span>
+                <span class="sep">·</span>
+                <span>压缩 192k</span><span class="src est" data-src="qwen:comp">推测</span>
+              </div>
+              <div class="model-detail" hidden>
+                <div class="kv"><span class="k">实际 id</span><span class="v mono">qwen3-coder-480b</span></div>
+                <div class="kv"><span class="k">思考挡位</span><span class="v">低 · 中 · 高</span></div>
+                <div class="kv"><span class="k">端点</span><span class="v mono" title="https://llm.internal/v1">llm.internal/v1</span></div>
+                <div class="model-actions">
+                  <label class="switch"><input type="checkbox" checked aria-label="启用 qwen3-coder"><span></span></label>
+                  <span class="switch-label">启用</span>
+                  <span class="flex-1"></span>
+                  <button class="link danger" title="删除模型">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-label">子代理</div>
+
+          <div class="subagent" data-sub="explore">
+            <button class="model-main" aria-expanded="false">
+              <svg class="icon mchev"><use href="#i-chev-r"/></svg>
+              <span class="mname">代码探查</span>
+            </button>
+            <div class="model-sub">gpt-5-mini · 思考低 · 只读</div>
+            <div class="model-detail" hidden>
+              <div class="kv"><span class="k">模型</span><span class="v">gpt-5-mini</span></div>
+              <div class="kv"><span class="k">思考</span><span class="v">低</span></div>
+              <div class="kv"><span class="k">模式</span><span class="v">只读</span><span class="note">黑名单始终生效</span></div>
+              <div class="kv"><span class="k">最大轮次</span><span class="v">12</span></div>
+            </div>
+          </div>
+
+          <div class="subagent" data-sub="batch">
+            <button class="model-main" aria-expanded="false">
+              <svg class="icon mchev"><use href="#i-chev-r"/></svg>
+              <span class="mname">批量修改</span>
+            </button>
+            <div class="model-sub">gpt-5 · 思考高 · 自主</div>
+            <div class="model-detail" hidden>
+              <div class="kv"><span class="k">模型</span><span class="v">gpt-5</span></div>
+              <div class="kv"><span class="k">思考</span><span class="v">高</span></div>
+              <div class="kv"><span class="k">模式</span><span class="v">自主</span><span class="note">黑名单始终生效</span></div>
+              <div class="kv"><span class="k">最大轮次</span><span class="v">12</span></div>
+            </div>
+          </div>
+
+          <button class="add-btn" data-action="add-subagent">
+            <svg class="icon"><use href="#i-plus"/></svg>添加子代理
+          </button>
+
+          <div class="prov-foot">
+            <div class="default-model">
+              <svg class="icon"><use href="#i-sparkle"/></svg>
+              <span class="k">默认模型</span>
+              <span class="v">gpt-5-mini</span>
+              <span class="hint">压缩 / 判定</span>
+            </div>
+            <button class="add-btn" data-action="add-provider">
+              <svg class="icon"><use href="#i-plus"/></svg>添加供应商
+            </button>
+          </div>
+        </div>
+
+        <div class="view" id="settings-view" hidden>
+          <div class="set-group">
+            <div class="set-label">外观</div>
+            <div class="set-row">
+              <span>主题</span>
+              <div class="seg" id="theme-seg">
+                <button data-theme="dark" class="is-on">深色</button>
+                <button data-theme="light">浅色</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <span>语言</span>
+              <span class="set-val">简体中文</span>
+            </div>
+          </div>
+          <div class="set-group">
+            <div class="set-label">会话</div>
+            <div class="set-row">
+              <span>新会话默认模式</span>
+              <select class="sel" id="default-mode">
+                <option>计划模式</option>
+                <option>仅对话</option>
+                <option selected>自主行动</option>
+                <option>完全自主</option>
+              </select>
+            </div>
+            <div class="set-note">会话内的选择会覆盖此项，并随会话持久化。</div>
+          </div>
+          <div class="set-group">
+            <div class="set-label">模型</div>
+            <div class="set-row">
+              <span>默认模型</span>
+              <span class="set-val mono">gpt-5-mini</span>
+            </div>
+            <div class="set-note">用于上下文压缩与风险判定，不作为会话的回退模型。</div>
+          </div>
+          <div class="set-group">
+            <div class="set-label">开发</div>
+            <div class="set-row">
+              <span>显示内存占用</span>
+              <label class="switch"><input type="checkbox" checked aria-label="显示内存占用"><span></span></label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="splitter" data-split="side" role="separator" aria-orientation="vertical" tabindex="0" aria-label="调整侧栏宽度"></div>
+
+    <!-- workbench -->
+    <main class="workbench" id="workbench">
+      <div class="tabs" id="tabs" role="tablist" aria-label="打开的编辑器"></div>
+      <div class="editor" id="editor" tabindex="0"></div>
+      <div class="hsplitter" data-split="bottom" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="调整底部面板高度"></div>
+
+      <section class="bpanel" id="bpanel" aria-label="面板">
+        <div class="bpanel-head">
+          <button class="ptab is-active" data-panel="terminal">终端</button>
+          <button class="ptab" data-panel="output">输出</button>
+          <button class="ptab" data-panel="problems">问题<span class="pcount">0</span></button>
+          <span class="flex-1"></span>
+          <button class="icon-btn" id="close-bottom" title="关闭面板 (Ctrl+J)" aria-label="关闭面板">
+            <svg class="icon"><use href="#i-chev-d"/></svg>
+          </button>
+        </div>
+        <div class="bpanel-body" id="bpanel-body">
+          <div class="term" data-panel-body="terminal">
+            <div class="tline tp">lite-code on <span class="tcmd">main</span></div>
+            <div class="tline"><span class="tpath">~/lite-code</span> <span class="tcmd">pnpm test --filter lc-agent -- --run</span></div>
+            <div class="tline tdim">running 14 tests across 3 files ...</div>
+            <div class="tline"><span class="tok">✓</span> compress_under_threshold <span class="tdim">(2ms)</span></div>
+            <div class="tline"><span class="tok">✓</span> compress_keeps_tail_messages <span class="tdim">(1ms)</span></div>
+            <div class="tline"><span class="tok">✓</span> emits_compacted_event <span class="tdim">(3ms)</span></div>
+            <div class="tline"><span class="tok">✓</span> threshold_is_inclusive <span class="tdim">(1ms)</span></div>
+            <div class="tline tdim">test result: ok. 14 passed; 0 failed; finished in 1.24s</div>
+            <div class="tline"><span class="tpath">~/lite-code</span> <span class="cursor"></span></div>
+          </div>
+          <div class="outline" data-panel-body="output" hidden>
+            <div><span class="t">[14:02:11]</span> watcher: 已监听 3 个根目录</div>
+            <div><span class="t">[14:02:12]</span> mcp: filesystem connected (12 tools)</div>
+            <div><span class="t">[14:02:12]</span> mcp: git connected (9 tools)</div>
+            <div><span class="t">[14:02:19]</span> agent: 子代理 代码探查 启动 · max 12 turns</div>
+            <div><span class="t">[14:02:26]</span> agent: 会话压缩 78.4k → 12.1k（保留 6 条）</div>
+            <div><span class="t">[14:02:31]</span> process: 等待权限确认 pnpm test</div>
+          </div>
+          <div class="empty-state" data-panel-body="problems" hidden>
+            <svg class="icon"><use href="#i-check"/></svg>没有问题
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="splitter" data-split="agent" role="separator" aria-orientation="vertical" tabindex="0" aria-label="调整 Agent 面板宽度"></div>
+
+    <!-- agent panel -->
+    <aside class="agent" aria-label="Agent 面板">
+      <div class="agent-full">
+        <header class="agent-head">
+          <span class="agent-title">Agent</span>
+          <span class="sess-dot" title="会话运行中"></span>
+          <span class="sess-name">拆分会话压缩</span>
+          <span class="flex-1"></span>
+          <button class="icon-btn" title="新建会话" aria-label="新建会话" data-act="new-session">
+            <svg class="icon"><use href="#i-plus"/></svg>
+          </button>
+          <button class="icon-btn" title="收起面板 (Ctrl+Shift+A)" aria-label="收起面板" data-act="collapse-agent">
+            <svg class="icon"><use href="#i-panel-right"/></svg>
+          </button>
+        </header>
+
+        <div class="stream" id="stream">
+          <div class="msg msg-user"><p>把会话压缩从 session.ts 里拆出去，补一个单测。</p></div>
+
+          <div class="msg msg-ai"><p>我先确认现有实现与调用点。</p></div>
+
+          <div class="tool" data-open="false">
+            <button class="tool-head" aria-expanded="false">
+              <svg class="icon tool-ico"><use href="#i-file"/></svg>
+              <span class="tool-name">Read</span>
+              <span class="tool-arg">apps/web/src/agent/session.ts</span>
+              <span class="tool-dur">42ms</span>
+              <svg class="icon chev"><use href="#i-chev-d"/></svg>
+            </button>
+            <pre class="tool-body"> 1  import { hook } from "../runtime/hook";
+ 2  import type { SessionState } from "./types";
+ 3
+ 4  const HYSTERESIS = 0.9;
+ 5
+ 6  export async function maybeCompress(state: SessionState) {
+ 7    const used = state.tokens.used;
+ 8    const budget = state.model.contextK * 1024;
+ 9    const threshold = state.model.compressAtK * 1024;
+10
+11    if (used &lt; threshold &amp;&amp; used &lt; budget * HYSTERESIS) {
+12      return null;
+13    }</pre>
+          </div>
+
+          <div class="tool" data-open="false">
+            <button class="tool-head" aria-expanded="false">
+              <svg class="icon tool-ico"><use href="#i-search"/></svg>
+              <span class="tool-name">Grep</span>
+              <span class="tool-arg">"compressAtK" · 5 处</span>
+              <span class="tool-dur">31ms</span>
+              <svg class="icon chev"><use href="#i-chev-d"/></svg>
+            </button>
+            <pre class="tool-body">apps/web/src/agent/session.ts:9   const threshold = state.model.compressAtK * 1024;
+apps/web/src/agent/session.ts:11  if (used &lt; threshold &amp;&amp; used &lt; budget * HYSTERESIS) {
+crates/lc-core/src/agent/compress.rs:8   let threshold = session.model.compress_at_k * 1024;
+apps/web/src/agent/types.ts:22    compressAtK: number;
+apps/web/src/settings/ModelList.vue:41  {{ m.contextK }}k / 压缩 {{ m.compressAtK }}k</pre>
+          </div>
+
+          <div class="sub-block">
+            <button class="sub-head" aria-expanded="false">
+              <svg class="icon bot"><use href="#i-bot"/></svg>
+              <span class="sub-name">代码探查</span>
+              <span class="sub-meta">gpt-5-mini · 低 · 3/12 轮</span>
+              <svg class="icon chev"><use href="#i-chev-d"/></svg>
+            </button>
+            <div class="sub-body" hidden>
+              <div class="sub-line"><span class="t">Read</span><span class="p">crates/lc-core/src/agent/mod.rs</span><span class="r">18ms</span></div>
+              <div class="sub-line"><span class="t">Grep</span><span class="p">"compress_at_k"</span><span class="r">4 处</span></div>
+              <div class="sub-line"><span class="t">Read</span><span class="p">crates/lc-core/src/agent/compress.rs</span><span class="r">12ms</span></div>
+              <div class="sub-note">子代理只读，不修改任何文件。黑名单始终生效。</div>
+            </div>
+          </div>
+
+          <div class="compact">
+            <button class="compact-row" aria-expanded="false">
+              <svg class="icon"><use href="#i-layers"/></svg>
+              <span>已压缩 18 条消息</span>
+              <span class="r">78.4k → 12.1k</span>
+              <svg class="icon chev"><use href="#i-chev-d"/></svg>
+            </button>
+            <div class="compact-body" hidden>保留最近 6 条消息与一份摘要；摘要由默认模型 gpt-5-mini 生成。原始消息仍可从会话日志恢复。</div>
+          </div>
+
+          <div class="msg msg-ai">
+            <p>压缩逻辑目前和会话生命周期耦合在 <code>session.ts</code> 里。计划：</p>
+            <ul>
+              <li>把 <code>maybeCompress</code> 移到 <code>agent/compress.ts</code>，只依赖 <code>ModelConfig</code></li>
+              <li>保留 <code>session:compacted</code> 事件，UI 不需要改动</li>
+              <li>补一个边界测试：恰好等于 <code>compressAtK</code> 时不触发</li>
+            </ul>
+            <p>先跑一次测试确认基线。</p>
+          </div>
+
+          <div class="perm" id="perm">
+            <div class="perm-title">
+              <svg class="icon"><use href="#i-shield"/></svg>
+              <span>需要确认</span>
+              <span class="perm-kind">命令执行</span>
+            </div>
+            <pre class="perm-cmd">pnpm test --filter lc-agent -- --run</pre>
+            <div class="perm-meta">工作目录 D:\code\lite-code · 预计 12s · 自主行动模式</div>
+            <div class="perm-actions">
+              <button class="btn" data-perm="deny">拒绝</button>
+              <button class="btn" data-perm="session">本次会话允许同类</button>
+              <button class="btn primary" data-perm="allow">允许</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer" id="composer">
+          <div class="comp-box">
+            <textarea id="composer-input" rows="1" placeholder="描述你要做的事…" aria-label="消息输入"></textarea>
+            <div class="comp-ctrl">
+              <button class="pill mode-pill" id="mode-pill" aria-haspopup="menu" aria-expanded="false" title="模式">
+                <svg class="icon pill-ico"><use href="#i-sparkle"/></svg>
+                <span class="pill-label" id="mode-label">自主行动</span>
+                <svg class="icon chev"><use href="#i-chev-d"/></svg>
+              </button>
+              <button class="pill" id="model-pill" aria-haspopup="menu" aria-expanded="false" title="会话模型">
+                <span class="pill-label" id="model-label">gpt-5</span>
+                <svg class="icon chev"><use href="#i-chev-d"/></svg>
+              </button>
+              <button class="pill" id="thinking-pill" aria-haspopup="menu" aria-expanded="false" title="思考强度">
+                <span class="pill-label" id="thinking-label">思考 中</span>
+                <svg class="icon chev"><use href="#i-chev-d"/></svg>
+              </button>
+              <span class="flex-1"></span>
+              <button class="send-btn" id="send-btn" title="发送 (Enter)" aria-label="发送" disabled>
+                <svg class="icon"><use href="#i-arrow-up"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="ctx">
+            <div class="ctx-top">
+              <span class="ctx-label">上下文</span>
+              <div class="ctx-bar" role="progressbar" aria-label="上下文用量" aria-valuemin="0" aria-valuemax="400" aria-valuenow="78">
+                <div class="ctx-fill" id="ctx-fill" style="width:19.6%"></div>
+                <div class="ctx-tick" id="ctx-tick" style="left:75%" title="压缩阈值 300k"></div>
+              </div>
+            </div>
+            <div class="ctx-meta">
+              <span class="ctx-val" id="ctx-val">78.4k / 400k</span>
+              <span id="ctx-th">压缩阈值 300k</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="agent-mini">
+        <button class="mini-expand" title="展开 Agent 面板 (Ctrl+Shift+A)" aria-label="展开 Agent 面板" data-act="expand-agent">
+          <svg class="icon"><use href="#i-panel-right"/></svg>
+        </button>
+        <span class="mini-label">Agent</span>
+        <span class="mini-count">3</span>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="statusbar" aria-label="状态栏">
+    <button class="st" id="st-branch" title="当前分支">
+      <svg class="icon"><use href="#i-git"/></svg>main
+      <span class="st-dim">↑2 ↓0</span>
+    </button>
+    <button class="st" id="st-node" title="Node 运行时">
+      <span class="dot ok"></span>Node 22.4
+    </button>
+    <button class="st" id="st-mcp" title="MCP 连接">
+      <span class="dot ok"></span>MCP 2
+    </button>
+    <span class="st"><svg class="icon"><use href="#i-message"/></svg>会话 1</span>
+    <span class="flex-1"></span>
+    <span class="st" id="st-mem" title="仅开发构建显示">内存 184 MB</span>
+  </footer>
+</div>
+
+<div class="palette-wrap" id="palette" hidden>
+  <div class="palette-backdrop" data-close="palette"></div>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="命令面板">
+    <div class="palette-input">
+      <svg class="icon"><use href="#i-search"/></svg>
+      <input id="palette-input" type="text" autocomplete="off" spellcheck="false" placeholder="输入命令，或用  &gt; 命令   @ 文件   # 符号">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="palette-list" id="palette-list" role="listbox" aria-label="结果"></div>
+    <div class="palette-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+      <span><kbd>↵</kbd> 执行</span>
+      <span class="scope" id="palette-scope">命令</span>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+(function () {
+
+  /* ==========================================================
+     utils
+     ========================================================== */
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const mk = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+  const svg = (name, cls = 'icon') => '<svg class="' + cls + '"><use href="#' + name + '"/></svg>';
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmt = (n) => {
+    const v = Math.round(n * 10) / 10;
+    return Number.isInteger(v) ? String(v) : v.toFixed(1);
+  };
+  const store = {
+    get(k, d) {
+      try { const v = localStorage.getItem('lc.' + k); return v == null ? d : JSON.parse(v); }
+      catch (e) { return d; }
+    },
+    set(k, v) {
+      try { localStorage.setItem('lc.' + k, JSON.stringify(v)); } catch (e) { /* file:// 下可能不可用 */ }
+    }
+  };
+
+  /* ==========================================================
+     data
+     ========================================================== */
+  const MODELS = {
+    'gpt-5':       { ctx: 400, comp: 300, tiers: { '关闭': false, '低': true, '中': true, '高': true } },
+    'gpt-5-mini':  { ctx: 128, comp: 96,  tiers: { '关闭': false, '低': true, '中': true, '高': false } },
+    'llama-70b':   { ctx: 128, comp: 96,  tiers: { '关闭': false, '低': true, '中': true, '高': false } },
+    'qwen3-coder': { ctx: 256, comp: 192, tiers: { '关闭': false, '低': true, '中': true, '高': true } }
+  };
+  const TIERS = ['关闭', '低', '中', '高'];
+
+  const MODES = [
+    { name: '计划模式', icon: 'i-list',    desc: '只读探查，产出计划，不改文件', cls: 'mode-plan' },
+    { name: '仅对话',   icon: 'i-message', desc: '不调用任何工具',               cls: 'mode-chat' },
+    { name: '自主行动', icon: 'i-sparkle', desc: '高风险操作会先询问你',         cls: '' },
+    { name: '完全自主', icon: 'i-warning', desc: '除黑名单外自动执行',           cls: 'mode-full' }
+  ];
+
+  const FILES = {
+    'apps/web/src/agent/session.ts': { lang: 'ts', content: [
+      'import { hook } from "../runtime/hook";',
+      'import type { SessionState } from "./types";',
+      '',
+      '// 压缩阈值来自模型能力声明；contextK 为空的模型不允许启用。',
+      'const HYSTERESIS = 0.9;',
+      '',
+      'export async function maybeCompress(state: SessionState) {',
+      '  const used = state.tokens.used;',
+      '  const budget = state.model.contextK * 1024;',
+      '  const threshold = state.model.compressAtK * 1024;',
+      '',
+      '  if (used < threshold && used < budget * HYSTERESIS) {',
+      '    return null;',
+      '  }',
+      '',
+      '  const kept = selectTail(state.messages, 6);',
+      '  const summary = await summarize(state.messages.slice(0, -kept.length));',
+      '',
+      '  state.messages = [summary, ...kept];',
+      '  state.tokens.used = estimateTokens(state.messages);',
+      '  hook.emit("session:compacted", { from: used, to: state.tokens.used });',
+      '',
+      '  return state;',
+      '}'
+    ].join('\n') },
+
+    'crates/lc-core/src/agent/compress.rs': { lang: 'rs', dirty: true, content: [
+      'use crate::agent::{AgentError, Session};',
+      'use crate::llm::ModelConfig;',
+      '',
+      '/// 与会话生命周期解耦的压缩入口。',
+      'pub fn should_compress(session: &Session, model: &ModelConfig) -> bool {',
+      '    let used = session.tokens.used;',
+      '    let budget = model.context_k * 1024;',
+      '    let threshold = model.compress_at_k * 1024;',
+      '',
+      '    used >= threshold || used >= (budget as f64 * 0.9) as u64',
+      '}',
+      '',
+      'pub fn compress(session: &mut Session, model: &ModelConfig) -> Result<u64, AgentError> {',
+      '    if !should_compress(session, model) {',
+      '        return Ok(session.tokens.used);',
+      '    }',
+      '',
+      '    let from = session.tokens.used;',
+      '    let kept = session.tail(6);',
+      '    session.messages = kept;',
+      '    session.tokens.used = estimate(&session.messages);',
+      '',
+      '    Ok(from)',
+      '}'
+    ].join('\n') },
+
+    'docs/UI.md': { lang: 'md', content: [
+      '# UI 设计与风格',
+      '',
+      '## 视觉基调',
+      '',
+      '高密度、低装饰、工具感。参考 Zed 与 Linear 的克制。',
+      '',
+      '- 色彩：深色默认，背景 `#17181c`，面板 `#1d1f24`',
+      '- 强调色：单一色相，暖橙 `#e8875a`',
+      '- 明度层级最多四级，靠背景明度而非阴影区分',
+      '- 不用玻璃拟态、不用 backdrop-filter',
+      '',
+      '## 关键约束',
+      '',
+      '- 审批以卡片出现在会话流中，不用模态框打断',
+      '- 上下文用量是一条带阈值刻度的条',
+      '- 跨过压缩阈值时变黄，压缩后变回橙色并闪烁一次',
+      '- 动效仅 120–160ms 的透明度与位移',
+      '',
+      '## 要避免的',
+      '',
+      '- 不做“又一个 VS Code 皮肤”',
+      '- 不做过场动画、不做骨架屏闪烁'
+    ].join('\n') },
+
+    'crates/lc-core/src/agent/session.rs': { lang: 'rs', content: [
+      'use crate::llm::ModelConfig;',
+      '',
+      'pub struct Session {',
+      '    pub messages: Vec<Message>,',
+      '    pub tokens: TokenUsage,',
+      '    pub model: ModelConfig,',
+      '}',
+      '',
+      'impl Session {',
+      '    pub fn tail(&self, n: usize) -> Vec<Message> {',
+      '        let len = self.messages.len();',
+      '        self.messages[len.saturating_sub(n)..].to_vec()',
+      '    }',
+      '}'
+    ].join('\n') }
+  };
+
+  const TREE = [
+    { name: 'crates', kind: 'dir', children: [
+      { name: 'lc-core', kind: 'dir', children: [
+        { name: 'src', kind: 'dir', children: [
+          { name: 'agent', kind: 'dir', children: [
+            { name: 'compress.rs', path: 'crates/lc-core/src/agent/compress.rs', gs: 'A' },
+            { name: 'mod.rs', path: 'crates/lc-core/src/agent/mod.rs' },
+            { name: 'session.rs', path: 'crates/lc-core/src/agent/session.rs', gs: 'M' }
+          ] },
+          { name: 'llm', kind: 'dir', children: [
+            { name: 'client.rs', path: 'crates/lc-core/src/llm/client.rs', gs: 'M' }
+          ] },
+          { name: 'lib.rs', path: 'crates/lc-core/src/lib.rs' }
+        ] },
+        { name: 'Cargo.toml', path: 'crates/lc-core/Cargo.toml' }
+      ] },
+      { name: 'lc-proto', kind: 'dir', children: [
+        { name: 'src', kind: 'dir', children: [
+          { name: 'lib.rs', path: 'crates/lc-proto/src/lib.rs' }
+        ] }
+      ] }
+    ] },
+    { name: 'apps', kind: 'dir', children: [
+      { name: 'web', kind: 'dir', children: [
+        { name: 'src', kind: 'dir', children: [
+          { name: 'agent', kind: 'dir', children: [
+            { name: 'session.ts', path: 'apps/web/src/agent/session.ts', gs: 'M' }
+          ] },
+          { name: 'settings', kind: 'dir', children: [
+            { name: 'ModelList.vue', path: 'apps/web/src/settings/ModelList.vue', gs: 'U' }
+          ] }
+        ] }
+      ] },
+      { name: 'desktop', kind: 'dir', children: [
+        { name: 'tauri.conf.json', path: 'apps/desktop/src-tauri/tauri.conf.json', gs: 'M' }
+      ] }
+    ] },
+    { name: 'docs', kind: 'dir', children: [
+      { name: 'UI.md', path: 'docs/UI.md', gs: 'M' },
+      { name: 'AGENT.md', path: 'docs/AGENT.md' }
+    ] },
+    { name: 'Cargo.toml', path: 'Cargo.toml' },
+    { name: 'README.md', path: 'README.md' },
+    { name: 'package.json', path: 'package.json', gs: 'D' }
+  ];
+
+  /* ==========================================================
+     state
+     ========================================================== */
+  const state = {
+    theme: store.get('theme', 'dark'),
+    view: 'explorer',
+    sideOpen: store.get('sideOpen', true),
+    sideW: store.get('sideW', 300),
+    agentW: store.get('agentW', 400),
+    panelH: store.get('panelH', 240),
+    bottomOpen: store.get('bottomOpen', true),
+    agentCollapsed: store.get('agentCollapsed', false),
+    model: store.get('model', 'gpt-5'),
+    thinking: store.get('thinking', '中'),
+    mode: store.get('mode', '自主行动'),
+    defaultMode: store.get('defaultMode', '自主行动'),
+    fullAutoConfirmed: false,
+    ctxUsed: 296.4,
+    compressing: false,
+    tabs: [
+      'apps/web/src/agent/session.ts',
+      'docs/UI.md',
+      'crates/lc-core/src/agent/compress.rs'
+    ],
+    activeTab: 'apps/web/src/agent/session.ts',
+    expanded: new Set(['crates', 'apps', 'docs', 'apps/web', 'apps/web/src', 'apps/web/src/agent', 'crates/lc-core'])
+  };
+  if (!MODELS[state.model]) state.model = 'gpt-5';
+  if (!state.tabs.includes(state.activeTab)) state.activeTab = state.tabs[0];
+
+  const shell = $('#shell');
+  const stream = $('#stream');
+  const workbench = $('#workbench');
+  const treeEl = $('#tree');
+  const tabsEl = $('#tabs');
+  const editorEl = $('#editor');
+
+  function fileFor(path) {
+    if (FILES[path]) return FILES[path];
+    const base = path.split('/').pop();
+    const lang = /\.(md)$/.test(path) ? 'md' : /\.(rs)$/.test(path) ? 'rs' : /\.(ts|tsx|js|vue)$/.test(path) ? 'ts' : 'txt';
+    return {
+      lang,
+      content: ['// ' + base, '', '// 演示占位内容：该文件未在此 demo 中内联。'].join('\n')
+    };
+  }
+
+  /* ==========================================================
+     layout
+     ========================================================== */
+  function layout() {
+    const sideCol = state.sideOpen ? state.sideW + 'px' : '0px';
+    const sideSep = state.sideOpen ? '1px' : '0px';
+    const agentW = state.agentCollapsed ? '40px' : state.agentW + 'px';
+    shell.style.gridTemplateColumns = '48px ' + sideCol + ' ' + sideSep + ' minmax(0,1fr) 1px ' + agentW;
+    shell.classList.toggle('agent-collapsed', state.agentCollapsed);
+    shell.classList.toggle('side-closed', !state.sideOpen);
+    const maxH = Math.max(120, window.innerHeight - 200);
+    document.documentElement.style.setProperty('--panel-h', Math.min(state.panelH, maxH) + 'px');
+    workbench.classList.toggle('bottom-closed', !state.bottomOpen);
+  }
+
+  function setSideOpen(v) {
+    state.sideOpen = v;
+    store.set('sideOpen', v);
+    layout();
+  }
+  function setAgentCollapsed(v) {
+    state.agentCollapsed = v;
+    store.set('agentCollapsed', v);
+    layout();
+  }
+  function setBottomOpen(v) {
+    state.bottomOpen = v;
+    store.set('bottomOpen', v);
+    layout();
+  }
+
+  /* ==========================================================
+     theme
+     ========================================================== */
+  function applyTheme(t) {
+    state.theme = t;
+    document.documentElement.dataset.theme = t;
+    store.set('theme', t);
+    const sun = $('#theme-btn use');
+    if (sun) sun.setAttribute('href', t === 'dark' ? '#i-sun' : '#i-moon');
+    $('#theme-btn').title = t === 'dark' ? '切换到浅色' : '切换到深色';
+    $$('#theme-seg button').forEach(b => b.classList.toggle('is-on', b.dataset.theme === t));
+  }
+  function toggleTheme() { applyTheme(state.theme === 'dark' ? 'light' : 'dark'); }
+
+  /* ==========================================================
+     views
+     ========================================================== */
+  const VIEWS = {
+    explorer: { title: '资源管理器', icon: 'i-plus', action: '新建文件' },
+    providers: { title: '供应商', icon: 'i-refresh', action: '刷新全部' },
+    settings: { title: '设置', icon: 'i-sliders', action: '设置' }
+  };
+  function setView(v) {
+    state.view = v;
+    $$('.rail-btn[data-view]').forEach(b => b.classList.toggle('is-active', b.dataset.view === v));
+    const cfg = VIEWS[v];
+    $('#view-title').textContent = cfg.title;
+    $('#side-action').innerHTML = svg(cfg.icon);
+    $('#side-action').title = cfg.action;
+    $('#side-action').setAttribute('aria-label', cfg.action);
+    [['tree', 'explorer'], ['providers-view', 'providers'], ['settings-view', 'settings']].forEach(([id, name]) => {
+      const node = document.getElementById(id);
+      node.hidden = name !== v;
+      if (name === v) {
+        node.classList.remove('enter');
+        void node.offsetWidth;
+        node.classList.add('enter');
+      }
+    });
+    if (!state.sideOpen) setSideOpen(true);
+  }
+
+  /* ==========================================================
+     file tree
+     ========================================================== */
+  function renderTree() {
+    const prevScroll = treeEl.scrollTop;
+    treeEl.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    const walk = (nodes, depth, prefix) => {
+      nodes.forEach(node => {
+        const id = prefix ? prefix + '/' + node.name : node.name;
+        const isDir = node.kind === 'dir';
+        const open = state.expanded.has(id);
+        const row = mk('div', 'row');
+        row.setAttribute('role', 'treeitem');
+        row.tabIndex = 0;
+        row.style.setProperty('--d', depth);
+        row.dataset.kind = isDir ? 'dir' : 'file';
+
+        if (isDir) {
+          row.classList.toggle('is-open', open);
+          row.innerHTML = svg('i-chev-r', 'icon chev') + svg('i-folder', 'icon ficon') +
+            '<span class="row-name"></span>';
+          row.setAttribute('aria-expanded', String(open));
+        } else {
+          row.innerHTML = '<span class="spacer"></span>' + svg('i-file', 'icon ficon') +
+            '<span class="row-name"></span>';
+          row.dataset.path = node.path;
+          if (node.gs) {
+            row.dataset.s = node.gs;
+            row.insertAdjacentHTML('beforeend', '<span class="gstatus">' + node.gs + '</span><span class="gbar"></span>');
+          }
+          if (!FILES[node.path]) row.querySelector('.ficon').style.opacity = '.7';
+          if (state.activeTab === node.path) row.classList.add('is-active');
+        }
+        row.querySelector('.row-name').textContent = node.name;
+        row.title = isDir ? id : node.path;
+
+        row.addEventListener('click', () => {
+          if (isDir) {
+            if (open) state.expanded.delete(id); else state.expanded.add(id);
+            renderTree();
+          } else {
+            openFile(node.path);
+          }
+        });
+        row.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          if (isDir) return;
+          openFile(node.path);
+          openFileMenu(node.path, e.clientX, e.clientY);
+        });
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            row.click();
+          }
+        });
+        frag.append(row);
+
+        if (isDir && open) walk(node.children || [], depth + 1, id);
+      });
+    };
+    walk(TREE, 0, '');
+    treeEl.append(frag);
+    treeEl.scrollTop = prevScroll;
+  }
+
+  function openFileMenu(path, x, y) {
+    const menu = mk('div');
+    menu.setAttribute('role', 'menu');
+    menu.append(
+      menuItem('在终端打开', { icon: 'i-terminal', run: () => {
+        setBottomOpen(true);
+        switchPanel('terminal');
+        toast('已在终端切换目录：' + path);
+      } }),
+      menuItem('复制路径', { icon: 'i-copy', run: () => copyText(path) }),
+      menuItem('在资源管理器中显示', { icon: 'i-external-link', run: () => toast('Demo：原生接口不可用，仅示意') })
+    );
+    openPop(menu, { rect: { left: x, top: y, right: x, bottom: y, width: 0, height: 0 } });
+  }
+
+  function copyText(text) {
+    const done = () => toast('已复制：' + text);
+    const fail = () => toast('复制失败：剪贴板不可用');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fail);
+      return;
+    }
+    const ta = mk('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    ok ? done() : fail();
+  }
+
+  /* ==========================================================
+     editor tabs
+     ========================================================== */
+  function fileBase(path) { return path.split('/').pop(); }
+
+  function renderTabs() {
+    tabsEl.innerHTML = '';
+    state.tabs.forEach(path => {
+      const active = path === state.activeTab;
+      const tab = mk('div', 'tab' + (active ? ' is-active' : ''));
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+      tab.dataset.path = path;
+      tab.title = path;
+      tab.innerHTML = '<span class="tab-name"></span>' +
+        (fileFor(path).dirty ? '<span class="tab-dirty" title="未保存"></span>' : '') +
+        '<span class="tab-x" role="button" aria-label="关闭">' + svg('i-close') + '</span>';
+      tab.querySelector('.tab-name').textContent = fileBase(path);
+
+      tab.addEventListener('click', () => activateTab(path));
+      tab.addEventListener('contextmenu', (e) => { e.preventDefault(); activateTab(path); openTabMenu(path, e.clientX, e.clientY); });
+      tab.addEventListener('auxclick', (e) => { if (e.button === 1) closeTab(path); });
+      const closeBtn = tab.querySelector('.tab-x');
+      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeTab(path); });
+      tabsEl.append(tab);
+    });
+    const activeTab = tabsEl.querySelector('.tab.is-active');
+    if (activeTab) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  function openTabMenu(path, x, y) {
+    const menu = mk('div');
+    menu.setAttribute('role', 'menu');
+    menu.append(
+      menuItem('关闭', { icon: 'i-close', run: () => closeTab(path) }),
+      menuItem('关闭其他', { icon: 'i-close', run: () => {
+        state.tabs = [path];
+        state.activeTab = path;
+        renderTabs(); renderEditor(); renderTree();
+      } }),
+      menuItem('复制路径', { icon: 'i-copy', run: () => copyText(path) })
+    );
+    openPop(menu, { rect: { left: x, top: y, right: x, bottom: y, width: 0, height: 0 } });
+  }
+
+  function activateTab(path) {
+    state.activeTab = path;
+    renderTabs();
+    renderEditor();
+    renderTree();
+  }
+
+  function openFile(path) {
+    if (!state.tabs.includes(path)) state.tabs.push(path);
+    activateTab(path);
+  }
+
+  function closeTab(path) {
+    const i = state.tabs.indexOf(path);
+    if (i === -1) return;
+    state.tabs.splice(i, 1);
+    if (state.activeTab === path) {
+      state.activeTab = state.tabs[Math.max(0, i - 1)] || null;
+    }
+    renderTabs();
+    renderEditor();
+    renderTree();
+  }
+
+  /* ---------- syntax highlight ---------- */
+  const TOKEN_RE = /(\/\/[^\n]*)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(import|from|export|const|let|var|function|async|await|return|if|else|new|class|extends|type|interface|public|private|readonly|this|typeof|of|in|for|while|switch|case|break|default|true|false|null|undefined|void|pub|fn|use|mut|impl|struct|enum|match|mod|crate|self|where|trait|as|u64|f64)\b|\b(\d+(?:\.\d+)?)\b/g;
+
+  function highlight(line, lang) {
+    const safe = esc(line);
+    if (lang === 'md') {
+      if (/^#{1,6}\s/.test(line)) return '<span class="c-kw">' + safe + '</span>';
+      if (/^\s*[-*]\s/.test(line)) {
+        const idx = line.search(/\S/);
+        return '<span class="c-com">' + esc(line.slice(idx, idx + 1)) + '</span>' + esc(line.slice(idx + 1));
+      }
+      if (/^```/.test(line)) return '<span class="c-com">' + safe + '</span>';
+      return safe.replace(/`([^`]+)`/g, '<span class="c-str">`$1`</span>');
+    }
+    if (lang === 'txt') return safe;
+    return safe.replace(TOKEN_RE, (m, com, str, kw) => {
+      if (com) return '<span class="c-com">' + m + '</span>';
+      if (str) return '<span class="c-str">' + m + '</span>';
+      if (kw) return '<span class="c-kw">' + m + '</span>';
+      return '<span class="c-num">' + m + '</span>';
+    });
+  }
+
+  function renderEditor() {
+    editorEl.innerHTML = '';
+    if (!state.activeTab) {
+      const empty = mk('div', 'empty-state', '没有打开的编辑器 · Ctrl+K 打开文件');
+      editorEl.append(empty);
+      return;
+    }
+    const file = fileFor(state.activeTab);
+    const lines = file.content.split('\n');
+    const code = mk('div', 'code');
+    lines.forEach((line, i) => {
+      const row = mk('div', 'cl');
+      const num = mk('span', 'ln', String(i + 1));
+      const body = mk('span', 'lc');
+      body.innerHTML = highlight(line, file.lang) || '&nbsp;';
+      row.append(num, body);
+      code.append(row);
+    });
+    editorEl.append(code);
+    editorEl.scrollTop = 0;
+  }
+
+  /* ==========================================================
+     bottom panel
+     ========================================================== */
+  function switchPanel(name) {
+    $$('.ptab').forEach(b => b.classList.toggle('is-active', b.dataset.panel === name));
+    $$('[data-panel-body]').forEach(b => { b.hidden = b.dataset.panelBody !== name; });
+    $('#close-bottom').innerHTML = svg('i-chev-d');
+  }
+
+  $$('.ptab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!state.bottomOpen) setBottomOpen(true);
+      switchPanel(btn.dataset.panel);
+    });
+  });
+  $('#close-bottom').addEventListener('click', () => setBottomOpen(false));
+
+  /* ==========================================================
+     splitters
+     ========================================================== */
+  function initSplitter(handle, axis, getStart, apply, opts) {
+    const dir = (opts && opts.dir) || 1;
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      const start = axis === 'x' ? e.clientX : e.clientY;
+      const base = getStart();
+      document.body.classList.add('dragging', axis === 'x' ? 'col' : 'row');
+      const move = (ev) => {
+        const d = (axis === 'x' ? ev.clientX : ev.clientY) - start;
+        apply(base + d * dir);
+      };
+      const up = () => {
+        handle.removeEventListener('pointermove', move);
+        document.body.classList.remove('dragging', 'col', 'row');
+        persistSizes();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up, { once: true });
+      handle.addEventListener('lostpointercapture', up, { once: true });
+    });
+    handle.addEventListener('keydown', (e) => {
+      const map = axis === 'x'
+        ? { ArrowLeft: -1, ArrowRight: 1 }
+        : { ArrowUp: 1, ArrowDown: -1 };
+      if (map[e.key] == null) return;
+      e.preventDefault();
+      apply(getStart() + map[e.key] * 16 * dir);
+      persistSizes();
+    });
+  }
+
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  function persistSizes() {
+    store.set('sideW', state.sideW);
+    store.set('agentW', state.agentW);
+    store.set('panelH', state.panelH);
+    layout();
+  }
+
+  initSplitter($('[data-split="side"]'), 'x', () => state.sideW, (v) => {
+    state.sideW = clamp(Math.round(v), 220, 460);
+    layout();
+  }, { dir: 1 });
+
+  // Agent 面板在右侧：向左拖动变宽
+  initSplitter($('[data-split="agent"]'), 'x', () => state.agentW, (v) => {
+    state.agentW = clamp(Math.round(v), 320, 640);
+    if (state.agentCollapsed) setAgentCollapsed(false);
+    layout();
+  }, { dir: -1 });
+
+  initSplitter($('[data-split="bottom"]'), 'y', () => state.panelH, (v) => {
+    state.panelH = clamp(Math.round(v), 100, Math.max(140, workbench.clientHeight - 160));
+    layout();
+  }, { dir: 1 });
+
+  /* ==========================================================
+     popovers / menus  (fixed, portaled, flip-aware)
+     ========================================================== */
+  let pop = null;
+
+  function placePop(el, rect, opts) {
+    const pad = 8;
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    el.style.maxHeight = (vh - pad * 2) + 'px';
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const gap = 6;
+
+    const spaceBelow = vh - rect.bottom - gap - pad;
+    const spaceAbove = rect.top - gap - pad;
+    let top;
+    if (h <= spaceBelow) {
+      top = rect.bottom + gap;
+      el.style.setProperty('--ty', '-2px');
+    } else if (h <= spaceAbove) {
+      top = rect.top - gap - h;
+      el.style.setProperty('--ty', '2px');
+    } else {
+      top = spaceBelow >= spaceAbove ? rect.bottom + gap : rect.top - gap - h;
+      el.style.setProperty('--ty', spaceBelow >= spaceAbove ? '-2px' : '2px');
+      top = clamp(top, pad, vh - pad - h);
+    }
+
+    let left = rect.left;
+    if (opts && opts.align === 'end') left = rect.right - w;
+    if (opts && opts.align === 'center') left = rect.left + rect.width / 2 - w / 2;
+    if (left + w > vw - pad) left = rect.right - w;
+    left = clamp(left, pad, Math.max(pad, vw - pad - w));
+
+    el.style.left = Math.round(left) + 'px';
+    el.style.top = Math.round(top) + 'px';
+  }
+
+  function openPop(el, anchor, opts = {}) {
+    closePop();
+    const isMenu = !el.classList.contains('confirm');
+    if (isMenu) el.classList.add('menu');
+    el.setAttribute('role', el.getAttribute('role') || (isMenu ? 'menu' : 'dialog'));
+    el.style.visibility = 'hidden';
+    document.body.append(el);
+
+    const rect = anchor.rect || anchor.getBoundingClientRect();
+    placePop(el, rect, opts);
+
+    el.classList.add('visible');
+    el.style.visibility = '';
+
+    if (isMenu) {
+      const first = el.querySelector('.menu-item:not([aria-disabled="true"])');
+      if (first) first.focus({ preventScroll: true });
+      el.addEventListener('keydown', (e) => {
+        const items = $$('.menu-item:not([aria-disabled="true"])', el);
+        if (!items.length) return;
+        const i = items.indexOf(document.activeElement);
+        if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+        else if (e.key === 'Tab') { closePop(); }
+      });
+    }
+
+    if (anchor instanceof HTMLElement && anchor.classList.contains('pill')) {
+      anchor.classList.add('open');
+      anchor.setAttribute('aria-expanded', 'true');
+    }
+    pop = { el, anchor };
+  }
+
+  function closePop() {
+    if (!pop) return;
+    const { el, anchor } = pop;
+    pop = null;
+    if (el.__onClose) { try { el.__onClose(); } catch (e) { /* ignore */ } }
+    el.remove();
+    if (anchor instanceof HTMLElement) {
+      if (anchor.classList.contains('pill')) {
+        anchor.classList.remove('open');
+        anchor.setAttribute('aria-expanded', 'false');
+      }
+      if (document.body.contains(anchor)) anchor.focus({ preventScroll: true });
+    }
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (!pop) return;
+    if (pop.el.contains(e.target)) return;
+    if (pop.anchor instanceof HTMLElement && pop.anchor.contains(e.target)) return;
+    closePop();
+  }, true);
+
+  document.addEventListener('scroll', (e) => {
+    if (!pop) return;
+    if (pop.el.contains(e.target)) return;
+    closePop();
+  }, true);
+
+  window.addEventListener('resize', () => {
+    closePop();
+    autoCollapse();
+  });
+
+  function menuItem(label, opts = {}) {
+    const b = mk('button', 'menu-item');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    if (opts.desc) b.classList.add('mode-item');
+    if (opts.icon) {
+      const wrap = mk('span', 'mi-ico');
+      wrap.innerHTML = svg(opts.icon);
+      b.append(wrap);
+    }
+    if (opts.desc) {
+      const box = mk('span', 'mi-two');
+      box.append(mk('span', 'mi-title', label), mk('span', 'mi-desc', opts.desc));
+      b.append(box);
+    } else {
+      b.append(mk('span', 'mi-label', label));
+    }
+    if (opts.hint) b.append(mk('span', 'mi-hint', opts.hint));
+    if (opts.check) {
+      const c = mk('span', 'mi-check');
+      c.innerHTML = svg('i-check');
+      b.append(c);
+    }
+    if (opts.disabled) {
+      b.setAttribute('aria-disabled', 'true');
+      if (opts.hint) b.title = opts.hint;
+      return b;
+    }
+    b.addEventListener('click', () => {
+      closePop();
+      opts.run && opts.run();
+    });
+    return b;
+  }
+
+  function menuLabel(text) {
+    return mk('div', 'menu-label', text);
+  }
+  function menuSep() {
+    return mk('div', 'menu-sep');
+  }
+  function menuFoot(text) {
+    return mk('div', 'menu-foot', text);
+  }
+
+  function confirmPop(anchor, { title, body, okLabel, onOk }) {
+    const el = mk('div', 'confirm');
+    el.innerHTML =
+      '<div class="confirm-t">' + svg('i-warning') + '<span></span></div>' +
+      '<div class="confirm-d"></div>' +
+      '<div class="confirm-a">' +
+      '<button class="btn sm" data-c="cancel">取消</button>' +
+      '<button class="btn sm primary" data-c="ok"></button>' +
+      '</div>';
+    el.querySelector('.confirm-t span').textContent = title;
+    el.querySelector('.confirm-d').textContent = body;
+    el.querySelector('[data-c="ok"]').textContent = okLabel;
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-c]');
+      if (!b) return;
+      if (b.dataset.c === 'ok') { closePop(); onOk(); }
+      else closePop();
+    });
+    openPop(el, anchor, { align: 'start' });
+  }
+
+  /* ==========================================================
+     composer
+     ========================================================== */
+  const compInput = $('#composer-input');
+  const sendBtn = $('#send-btn');
+
+  function autosize() {
+    compInput.style.height = 'auto';
+    compInput.style.height = Math.min(132, Math.max(38, compInput.scrollHeight)) + 'px';
+  }
+  function syncSend() {
+    sendBtn.disabled = compInput.value.trim().length === 0;
+  }
+
+  compInput.addEventListener('input', () => { autosize(); syncSend(); });
+  compInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      send();
+    }
+  });
+  sendBtn.addEventListener('click', send);
+
+  function applyMode(name) {
+    state.mode = name;
+    store.set('mode', name);
+    const mode = MODES.find(m => m.name === name);
+    const pill = $('#mode-pill');
+    pill.classList.remove('mode-plan', 'mode-chat', 'mode-full');
+    if (mode.cls) pill.classList.add(mode.cls);
+    pill.querySelector('.pill-ico use').setAttribute('href', '#' + mode.icon);
+    $('#mode-label').textContent = name;
+    $('#composer').classList.toggle('full-auto', name === '完全自主');
+  }
+
+  function setMode(name) {
+    if (name === '完全自主' && !state.fullAutoConfirmed) {
+      confirmPop($('#mode-pill'), {
+        title: '开启完全自主？',
+        body: '除黑名单外，命令与文件写入将自动执行，不再逐条询问。子代理仍继承黑名单，审批卡仍会冒泡到主会话。',
+        okLabel: '我已了解，开启',
+        onOk: () => { state.fullAutoConfirmed = true; applyMode('完全自主'); }
+      });
+      return;
+    }
+    applyMode(name);
+  }
+
+  function setThinking(t) {
+    const support = MODELS[state.model].tiers;
+    if (!support[t]) return;
+    state.thinking = t;
+    store.set('thinking', t);
+    $('#thinking-label').textContent = '思考 ' + t;
+  }
+
+  function setModel(name) {
+    if (!MODELS[name]) return;
+    state.model = name;
+    store.set('model', name);
+    $('#model-label').textContent = name;
+    if (!MODELS[name].tiers[state.thinking]) {
+      setThinking(MODELS[name].tiers['中'] ? '中' : '低');
+    }
+    $$('.model').forEach(n => n.classList.toggle('is-current', n.dataset.model === name));
+    renderCtx();
+  }
+
+  function renderCtx() {
+    const m = MODELS[state.model];
+    const pct = clamp(state.ctxUsed / m.ctx * 100, 0, 100);
+    const fill = $('#ctx-fill');
+    fill.style.width = pct + '%';
+    fill.classList.toggle('is-warn', state.ctxUsed >= m.comp);
+    $('#ctx-tick').style.left = (m.comp / m.ctx * 100) + '%';
+    $('#ctx-tick').title = '压缩阈值 ' + m.comp + 'k';
+    $('#ctx-val').textContent = fmt(state.ctxUsed) + 'k / ' + m.ctx + 'k';
+    $('#ctx-th').textContent = '压缩阈值 ' + m.comp + 'k';
+    const bar = $('.ctx-bar');
+    bar.setAttribute('aria-valuemax', String(m.ctx));
+    bar.setAttribute('aria-valuenow', String(Math.round(state.ctxUsed)));
+  }
+
+  function bumpContext(k) {
+    state.ctxUsed = Math.round((state.ctxUsed + k) * 10) / 10;
+    renderCtx();
+    maybeCompress();
+  }
+
+  function maybeCompress() {
+    const m = MODELS[state.model];
+    if (state.compressing || state.ctxUsed < m.comp) return;
+    state.compressing = true;
+    const from = fmt(state.ctxUsed);
+    setTimeout(() => {
+      state.compressing = false;
+      state.ctxUsed = Math.round((12 + Math.random() * 4) * 10) / 10;
+      renderCtx();
+      const fill = $('#ctx-fill');
+      fill.classList.add('is-flash');
+      setTimeout(() => fill.classList.remove('is-flash'), 700);
+      addCompaction(from, fmt(state.ctxUsed));
+    }, 1300);
+  }
+
+  /* ==========================================================
+     agent stream
+     ========================================================== */
+  function scrollBottom() {
+    stream.scrollTop = stream.scrollHeight;
+  }
+
+  function addUser(text) {
+    const w = mk('div', 'msg msg-user');
+    w.append(mk('p', null, text));
+    stream.append(w);
+    scrollBottom();
+  }
+
+  function addAI(html) {
+    const w = mk('div', 'msg msg-ai');
+    w.innerHTML = html;
+    stream.append(w);
+    scrollBottom();
+    return w;
+  }
+
+  function addTool({ icon, name, arg, dur, body }) {
+    const wrap = mk('div', 'tool');
+    const head = mk('button', 'tool-head');
+    head.type = 'button';
+    head.setAttribute('aria-expanded', 'false');
+    head.innerHTML = svg(icon, 'icon tool-ico') +
+      '<span class="tool-name"></span>' +
+      '<span class="tool-arg"></span>' +
+      '<span class="tool-dur"></span>' +
+      svg('i-chev-d', 'icon chev');
+    head.querySelector('.tool-name').textContent = name;
+    head.querySelector('.tool-arg').textContent = arg;
+    head.querySelector('.tool-arg').title = arg;
+    head.querySelector('.tool-dur').textContent = dur;
+    const pre = mk('pre', 'tool-body', body);
+    head.addEventListener('click', () => {
+      const open = wrap.classList.toggle('open');
+      head.setAttribute('aria-expanded', String(open));
+    });
+    wrap.append(head, pre);
+    stream.append(wrap);
+    scrollBottom();
+    return wrap;
+  }
+
+  function addCompaction(from, to) {
+    const wrap = mk('div', 'compact');
+    const row = mk('button', 'compact-row');
+    row.type = 'button';
+    row.setAttribute('aria-expanded', 'false');
+    row.innerHTML = svg('i-layers') +
+      '<span>已压缩 18 条消息</span>' +
+      '<span class="r">' + from + 'k → ' + to + 'k</span>' +
+      svg('i-chev-d', 'icon chev');
+    const body = mk('div', 'compact-body', '保留最近 6 条消息与一份摘要；摘要由默认模型 gpt-5-mini 生成。原始消息仍可从会话日志恢复。');
+    body.hidden = true;
+    row.addEventListener('click', () => {
+      const open = !body.hidden;
+      body.hidden = open;
+      wrap.classList.toggle('open', !open);
+      row.setAttribute('aria-expanded', String(!open));
+    });
+    wrap.append(row, body);
+    stream.append(wrap);
+    scrollBottom();
+  }
+
+  /* stream toggles */
+  stream.addEventListener('click', (e) => {
+    const th = e.target.closest('.tool-head');
+    if (th) {
+      const w = th.closest('.tool');
+      const open = w.classList.toggle('open');
+      th.setAttribute('aria-expanded', String(open));
+      return;
+    }
+    const sh = e.target.closest('.sub-head');
+    if (sh) {
+      const w = sh.closest('.sub-block');
+      const body = w.querySelector('.sub-body');
+      const open = body.hidden;
+      body.hidden = !open;
+      w.classList.toggle('open', open);
+      sh.setAttribute('aria-expanded', String(open));
+      return;
+    }
+    const cr = e.target.closest('.compact-row');
+    if (cr) {
+      const w = cr.closest('.compact');
+      const body = w.querySelector('.compact-body');
+      const open = body.hidden;
+      body.hidden = !open;
+      w.classList.toggle('open', open);
+      cr.setAttribute('aria-expanded', String(open));
+      return;
+    }
+    const pb = e.target.closest('[data-perm]');
+    if (pb) resolvePerm(pb.dataset.perm);
+  });
+
+  function resolvePerm(kind) {
+    const card = $('#perm');
+    if (!card || card.classList.contains('resolved')) return;
+    card.classList.add('resolved');
+    const done = mk('div', 'perm-done');
+    done.innerHTML = svg(kind === 'deny' ? 'i-close' : 'i-check');
+    done.append(document.createTextNode(
+      kind === 'deny' ? '已拒绝，该命令未执行' :
+      kind === 'session' ? '已允许，本会话内同类命令不再询问' : '已允许，仅此一次'
+    ));
+    card.append(done);
+    if (kind === 'deny') {
+      addAI('<p class="msg-note">已跳过该命令。需要时换一种方式告诉我。</p>');
+      return;
+    }
+    setTimeout(() => {
+      addTool({
+        icon: 'i-terminal',
+        name: 'Bash',
+        arg: 'pnpm test --filter lc-agent -- --run',
+        dur: '1.24s',
+        body: 'running 14 tests across 3 files ...\n✓ compress_under_threshold (2ms)\n✓ compress_keeps_tail_messages (1ms)\n✓ emits_compacted_event (3ms)\n✓ threshold_is_inclusive (1ms)\n\ntest result: ok. 14 passed; 0 failed'
+      });
+      setTimeout(() => {
+        addAI('<p>基线通过，14 个测试全绿。现在把 <code>maybeCompress</code> 抽到 <code>agent/compress.ts</code>，只依赖 <code>ModelConfig</code>，事件名保持不变。</p>');
+      }, 320);
+    }, 260);
+  }
+
+  /* ==========================================================
+     send
+     ========================================================== */
+  let sending = false;
+
+  function replyFor() {
+    if (state.mode === '计划模式') {
+      return '<p>计划模式：只读探查，产出计划，不改文件。把范围再收窄一点，我先列出要改的文件与顺序。</p>';
+    }
+    const m = state.model;
+    const t = state.thinking;
+    return '<p>收到。按 <code>' + m + '</code> · 思考 <code>' + t + '</code> · <code>' + state.mode +
+      '</code> 处理。写入与命令执行会在会话流里内联确认，不打断你。</p>';
+  }
+
+  function send() {
+    const text = compInput.value.trim();
+    if (!text || sending) return;
+    addUser(text);
+    compInput.value = '';
+    autosize();
+    syncSend();
+    bumpContext(2.4);
+
+    if (state.mode === '仅对话') {
+      setTimeout(() => addAI('<p>仅对话模式：不调用任何工具。已记录你的问题。</p>'), 220);
+      return;
+    }
+
+    sending = true;
+    const prog = addAI('<p class="msg-note">正在读取 apps/web/src/agent/session.ts</p>');
+    setTimeout(() => {
+      prog.remove();
+      addTool({
+        icon: 'i-file',
+        name: 'Read',
+        arg: 'apps/web/src/agent/session.ts',
+        dur: '26ms',
+        body: ' 1  import { hook } from "../runtime/hook";\n 2  import type { SessionState } from "./types";\n 3\n 4  const HYSTERESIS = 0.9;\n 5\n 6  export async function maybeCompress(state: SessionState) {\n 7    const used = state.tokens.used;'
+      });
+      addAI(replyFor());
+      bumpContext(3.8);
+      sending = false;
+    }, 700);
+  }
+
+  /* ==========================================================
+     pills
+     ========================================================== */
+  function togglePill(btn, build) {
+    if (pop && pop.anchor === btn) { closePop(); return; }
+    openPop(build(), btn);
+  }
+
+  $('#mode-pill').addEventListener('click', (e) => {
+    e.stopPropagation();
+    togglePill($('#mode-pill'), () => {
+      const menu = mk('div');
+      menu.append(menuLabel('模式'));
+      MODES.forEach(m => {
+        menu.append(menuItem(m.name, {
+          icon: m.icon,
+          desc: m.desc,
+          check: state.mode === m.name,
+          run: () => setMode(m.name)
+        }));
+      });
+      menu.append(menuFoot('完全自主会降低安全等级，每会话首次开启需确认'));
+      return menu;
+    });
+  });
+
+  $('#model-pill').addEventListener('click', (e) => {
+    e.stopPropagation();
+    togglePill($('#model-pill'), () => {
+      const menu = mk('div');
+      menu.append(menuLabel('会话模型'));
+      Object.keys(MODELS).forEach(name => {
+        const m = MODELS[name];
+        menu.append(menuItem(name, {
+          desc: '上下文 ' + m.ctx + 'k · 压缩 ' + m.comp + 'k',
+          check: state.model === name,
+          run: () => setModel(name)
+        }));
+      });
+      menu.append(menuFoot('切换后上下文预算按新模型重算'));
+      return menu;
+    });
+  });
+
+  $('#thinking-pill').addEventListener('click', (e) => {
+    e.stopPropagation();
+    togglePill($('#thinking-pill'), () => {
+      const support = MODELS[state.model].tiers;
+      const menu = mk('div');
+      menu.append(menuLabel('思考强度 · ' + state.model));
+      TIERS.forEach(t => {
+        menu.append(menuItem(t, {
+          check: state.thinking === t,
+          disabled: !support[t],
+          hint: support[t] ? '' : '该模型不支持',
+          run: () => setThinking(t)
+        }));
+      });
+      menu.append(menuFoot('挡位来自模型能力声明，不支持时置灰'));
+      return menu;
+    });
+  });
+
+  /* ==========================================================
+     providers view
+     ========================================================== */
+  $$('.model-main').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wrap = btn.closest('.model, .subagent');
+      const detail = wrap.querySelector('.model-detail');
+      const open = detail.hidden;
+      detail.hidden = !open;
+      wrap.classList.toggle('open', open);
+      btn.setAttribute('aria-expanded', String(open));
+    });
+  });
+
+  // 参数来源标记：点击编辑后立即变「手动」
+  $$('.src').forEach(tag => {
+    tag.title = '点击可编辑；编辑后标记为「手动」，刷新不会覆盖';
+    tag.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (tag.dataset.editing) return;
+      const span = tag.previousElementSibling;
+      if (!span) return;
+      const prefixMatch = /^(上下文|压缩)\s*/.exec(span.textContent);
+      const prefix = prefixMatch ? prefixMatch[1] + ' ' : '';
+      const match = /(\d+(?:\.\d+)?)k/.exec(span.textContent);
+      tag.dataset.editing = '1';
+
+      const input = mk('input');
+      input.type = 'text';
+      input.inputMode = 'decimal';
+      input.value = match ? match[1] : '';
+      input.style.width = '42px';
+      input.style.height = '18px';
+      input.style.font = '11px var(--font-mono)';
+      input.style.background = 'var(--panel-3)';
+      input.style.color = 'var(--fg)';
+      input.style.border = '1px solid var(--accent-line)';
+      input.style.borderRadius = '3px';
+      input.style.padding = '0 4px';
+      input.setAttribute('aria-label', prefix + '窗口 (k)');
+      span.replaceWith(input);
+      input.focus();
+      input.select();
+
+      const commit = () => {
+        if (!tag.dataset.editing) return;
+        delete tag.dataset.editing;
+        const v = parseFloat(input.value);
+        const finalK = isFinite(v) && v > 0 ? Math.round(v * 10) / 10 : (match ? Number(match[1]) : null);
+        const next = mk('span', null, prefix + (finalK == null ? '?' : fmt(finalK)) + 'k');
+        input.replaceWith(next);
+        if (finalK != null) {
+          tag.className = 'src';
+          tag.textContent = '';
+          tag.title = '手动设置，刷新不会覆盖';
+          const key = (tag.dataset.src || '').split(':')[0];
+          const modelName = { 'gpt-5': 'gpt-5', mini: 'gpt-5-mini', llama: 'llama-70b', qwen: 'qwen3-coder' }[key];
+          const field = (tag.dataset.src || '').indexOf(':ctx') > -1 ? 'ctx' : 'comp';
+          if (modelName && MODELS[modelName]) {
+            MODELS[modelName][field] = finalK;
+            renderCtx();
+          }
+        }
+      };
+      input.addEventListener('blur', commit, { once: true });
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          input.value = match ? match[1] : '';
+          input.blur();
+        }
+      });
+    });
+  });
+
+  $('#refresh-btn').addEventListener('click', () => {
+    const btn = $('#refresh-btn');
+    const report = $('#refresh-report');
+    btn.setAttribute('aria-disabled', 'true');
+    btn.disabled = true;
+    btn.innerHTML = svg('i-refresh') + '探测中…';
+    report.hidden = true;
+    setTimeout(() => {
+      btn.removeAttribute('aria-disabled');
+      btn.disabled = false;
+      btn.innerHTML = svg('i-refresh') + '刷新全部';
+      report.hidden = false;
+      report.innerHTML = '<span>3 个供应商已更新</span><span>·</span><span class="warn">1 个未响应</span><span class="dim">仅补全未手动覆盖的字段</span>';
+      report.style.display = 'flex';
+      toast('刷新完成：3 个供应商已更新，1 个未响应');
+    }, 900);
+  });
+
+  $$('[data-prov-menu]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = mk('div');
+      menu.append(
+        menuItem('重新探测 /models', { icon: 'i-refresh', run: () => toast('已请求重新探测') }),
+        menuItem('复制端点', { icon: 'i-copy', run: () => copyText('https://api.openai.com/v1') }),
+        menuSep(),
+        menuItem('移除供应商', { icon: 'i-trash', run: () => toast('Demo：供应商移除未实现') })
+      );
+      openPop(menu, btn, { align: 'end' });
+    });
+  });
+
+  $$('[data-action="add-subagent"]').forEach(b => b.addEventListener('click', () => toast('Demo：添加子代理未实现')));
+  $$('[data-action="add-provider"]').forEach(b => b.addEventListener('click', () => toast('Demo：添加供应商未实现')));
+  $$('.model .link.danger').forEach(link => {
+    link.addEventListener('click', () => {
+      if (link.getAttribute('aria-disabled') === 'true') {
+        toast(link.title || '该模型被当前会话引用，无法删除');
+      } else {
+        toast('Demo：删除模型未实现');
+      }
+    });
+  });
+
+  /* ==========================================================
+     settings
+     ========================================================== */
+  $$('#theme-seg button').forEach(b => {
+    b.addEventListener('click', () => applyTheme(b.dataset.theme));
+  });
+  $('#default-mode').addEventListener('change', (e) => {
+    state.defaultMode = e.target.value;
+    store.set('defaultMode', e.target.value);
+    toast('新会话默认模式：' + e.target.value);
+  });
+  $$('#settings-view .switch input').forEach(inp => {
+    inp.addEventListener('change', () => {
+      state.showMem = inp.checked;
+      $('#st-mem').hidden = !inp.checked;
+      toast('设置已保存');
+    });
+  });
+
+  /* ==========================================================
+     status bar
+     ========================================================== */
+  $('#st-branch').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = mk('div');
+    menu.append(menuLabel('分支'));
+    ['main', 'feat/agent-panel', 'fix/compress-threshold'].forEach((b, i) => {
+      menu.append(menuItem(b, { icon: 'i-git', check: i === 0, run: () => toast('已切换到 ' + b) }));
+    });
+    openPop(menu, $('#st-branch'), { align: 'start' });
+  });
+
+  $('#st-node').addEventListener('click', () => setView('settings'));
+
+  $('#st-mcp').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = mk('div');
+    menu.append(menuLabel('MCP 服务器'));
+    menu.append(
+      menuItem('filesystem · 12 tools', { icon: 'i-check' }),
+      menuItem('git · 9 tools', { icon: 'i-check' }),
+      menuSep(),
+      menuItem('查看详情', { icon: 'i-external-link', run: () => toast('Demo：MCP 详情未实现') })
+    );
+    openPop(menu, $('#st-mcp'), { align: 'start' });
+  });
+
+  /* ==========================================================
+     command palette
+     ========================================================== */
+  const palette = $('#palette');
+  const paletteInput = $('#palette-input');
+  const paletteList = $('#palette-list');
+  const paletteScope = $('#palette-scope');
+  let pItems = [];
+  let pIdx = 0;
+  let lastFocus = null;
+
+  function flattenFiles(nodes, out, prefix) {
+    nodes.forEach(n => {
+      if (n.kind === 'dir') flattenFiles(n.children || [], out, prefix);
+      else out.push({ path: n.path, name: n.name });
+    });
+    return out;
+  }
+  function symbolsFor(path) {
+    if (!path) return [];
+    const file = fileFor(path);
+    const out = [];
+    file.content.split('\n').forEach((line, i) => {
+      const m = /^\s*(?:export\s+)?(?:async\s+)?(?:pub\s+)?(?:fn|function|const|struct|impl)\s+([A-Za-z_]\w*)/.exec(line);
+      if (m) out.push({ name: m[1], path, line: i + 1 });
+    });
+    return out;
+  }
+
+  const COMMANDS = [
+    { label: '切换主题', key: '', icon: 'i-sun', run: toggleTheme },
+    { label: '视图：资源管理器', key: 'Ctrl+B', icon: 'i-files', run: () => setView('explorer') },
+    { label: '视图：供应商', key: '', icon: 'i-server', run: () => setView('providers') },
+    { label: '视图：设置', key: '', icon: 'i-sliders', run: () => setView('settings') },
+    { label: '刷新全部供应商', key: '', icon: 'i-refresh', run: () => { setView('providers'); $('#refresh-btn').click(); } },
+    { label: '收起 / 展开 Agent 面板', key: 'Ctrl+Shift+A', icon: 'i-panel-right', run: () => setAgentCollapsed(!state.agentCollapsed) },
+    { label: '收起 / 展开 侧栏', key: 'Ctrl+B', icon: 'i-files', run: () => setSideOpen(!state.sideOpen) },
+    { label: '显示 / 隐藏 底部面板', key: 'Ctrl+J', icon: 'i-panel-bottom', run: () => setBottomOpen(!state.bottomOpen) },
+    { label: '新建会话', key: '', icon: 'i-plus', run: newSession },
+    { label: '复制当前文件路径', key: '', icon: 'i-copy', run: () => state.activeTab && copyText(state.activeTab) }
+  ];
+
+  function computePalette() {
+    const raw = paletteInput.value;
+    let scope = 'command';
+    let q = raw;
+    if (raw.startsWith('@')) { scope = 'file'; q = raw.slice(1); }
+    else if (raw.startsWith('#')) { scope = 'symbol'; q = raw.slice(1); }
+    else if (raw.startsWith('>')) { scope = 'command'; q = raw.slice(1); }
+    q = q.trim().toLowerCase();
+
+    paletteScope.textContent = scope === 'file' ? '文件' : scope === 'symbol' ? '符号' : '命令';
+
+    const out = [];
+    if (scope === 'command') {
+      COMMANDS.forEach(c => {
+        if (!q || c.label.toLowerCase().includes(q)) {
+          out.push({ icon: c.icon, label: c.label, key: c.key, run: c.run });
+        }
+      });
+    } else if (scope === 'file') {
+      flattenFiles(TREE, []).forEach(f => {
+        if (!q || f.path.toLowerCase().includes(q)) {
+          out.push({ icon: 'i-file', label: f.name, sub: f.path, run: () => openFile(f.path) });
+        }
+      });
+    } else {
+      symbolsFor(state.activeTab).forEach(s => {
+        if (!q || s.name.toLowerCase().includes(q)) {
+          out.push({ icon: 'i-command', label: s.name, sub: fileBase(s.path) + ':' + s.line, run: () => {
+            openFile(s.path);
+            toast('跳转到 ' + s.name + ' · 第 ' + s.line + ' 行');
+          } });
+        }
+      });
+    }
+    return out;
+  }
+
+  function renderPalette() {
+    pItems = computePalette();
+    if (pIdx >= pItems.length) pIdx = 0;
+    paletteList.innerHTML = '';
+    if (!pItems.length) {
+      paletteList.append(mk('div', 'p-empty', '没有匹配的结果'));
+      return;
+    }
+    pItems.forEach((it, i) => {
+      const b = mk('button', 'p-item' + (i === pIdx ? ' is-active' : ''));
+      b.type = 'button';
+      b.innerHTML = svg(it.icon) + '<span class="p-main"><span class="p-label"></span>' +
+        (it.sub ? '<span class="p-sub"></span>' : '') + '</span>' +
+        (it.key ? '<span class="p-key">' + it.key + '</span>' : '');
+      b.querySelector('.p-label').textContent = it.label;
+      if (it.sub) b.querySelector('.p-sub').textContent = it.sub;
+      b.addEventListener('mousemove', () => {
+        if (pIdx === i) return;
+        pIdx = i;
+        $$('.p-item', paletteList).forEach((n, j) => n.classList.toggle('is-active', j === i));
+      });
+      b.addEventListener('click', () => runPalette(i));
+      paletteList.append(b);
+    });
+    const active = paletteList.querySelector('.p-item.is-active');
+    if (active) active.scrollIntoView({ block: 'nearest' });
+  }
+
+  function runPalette(i) {
+    const it = pItems[i];
+    closePalette();
+    if (it) it.run();
+  }
+
+  function openPalette(initial) {
+    closePop();
+    lastFocus = document.activeElement;
+    palette.hidden = false;
+    paletteInput.value = initial || '';
+    pIdx = 0;
+    renderPalette();
+    paletteInput.focus();
+  }
+  function closePalette() {
+    if (palette.hidden) return;
+    palette.hidden = true;
+    paletteInput.value = '';
+    if (lastFocus && document.body.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
+    lastFocus = null;
+  }
+
+  paletteInput.addEventListener('input', () => { pIdx = 0; renderPalette(); });
+  paletteInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const focusables = $$('.p-item', paletteList);
+      if (focusables.length) {
+        focusables[pIdx % focusables.length].focus({ preventScroll: true });
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!pItems.length) return;
+      pIdx = (pIdx + 1) % pItems.length;
+      $$('.p-item', paletteList).forEach((n, j) => n.classList.toggle('is-active', j === pIdx));
+      const act = paletteList.querySelector('.p-item.is-active');
+      if (act) act.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!pItems.length) return;
+      pIdx = (pIdx - 1 + pItems.length) % pItems.length;
+      $$('.p-item', paletteList).forEach((n, j) => n.classList.toggle('is-active', j === pIdx));
+      const act = paletteList.querySelector('.p-item.is-active');
+      if (act) act.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      runPalette(pIdx);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closePalette();
+    }
+  });
+  $('.palette-backdrop').addEventListener('click', closePalette);
+
+  /* ==========================================================
+     toast
+     ========================================================== */
+  let toastTimer = null;
+  function toast(text) {
+    let t = $('#toast');
+    if (!t) {
+      t = mk('div', 'toast');
+      t.id = 'toast';
+      t.setAttribute('role', 'status');
+      t.setAttribute('aria-live', 'polite');
+      document.body.append(t);
+    }
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  /* ==========================================================
+     actions
+     ========================================================== */
+  function newSession() {
+    state.fullAutoConfirmed = false;
+    state.ctxUsed = 8.2;
+    renderCtx();
+    stream.innerHTML = '';
+    addAI('<p class="msg-note">新会话已就绪。模式：' + state.mode + ' · 模型：' + state.model + '</p>');
+    toast('已新建会话');
+  }
+
+  $$('[data-act]').forEach(b => {
+    b.addEventListener('click', () => {
+      const act = b.dataset.act;
+      if (act === 'collapse-agent') setAgentCollapsed(true);
+      if (act === 'expand-agent') setAgentCollapsed(false);
+      if (act === 'new-session') newSession();
+    });
+  });
+
+  $$('.rail-btn[data-view]').forEach(b => {
+    b.addEventListener('click', () => setView(b.dataset.view));
+  });
+  $('.rail-btn[data-action="palette"]').addEventListener('click', () => openPalette(''));
+  $('#theme-btn').addEventListener('click', toggleTheme);
+
+  $('#side-action').addEventListener('click', () => {
+    if (state.view === 'providers') $('#refresh-btn').click();
+    else if (state.view === 'explorer') toast('Demo：新建文件未实现');
+  });
+
+  /* ==========================================================
+     keyboard
+     ========================================================== */
+  document.addEventListener('keydown', (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      palette.hidden ? openPalette('') : closePalette();
+      return;
+    }
+    if (mod && !e.shiftKey && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      setSideOpen(!state.sideOpen);
+      return;
+    }
+    if (mod && !e.shiftKey && e.key.toLowerCase() === 'j') {
+      e.preventDefault();
+      setBottomOpen(!state.bottomOpen);
+      return;
+    }
+    if (mod && e.shiftKey && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      setAgentCollapsed(!state.agentCollapsed);
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (!palette.hidden) closePalette();
+      if (pop) closePop();
+      return;
+    }
+  });
+
+  /* ==========================================================
+     responsive: narrow window collapses the agent panel
+     ========================================================== */
+  let wasNarrow = null;
+  let autoCollapsed = false;
+  function autoCollapse() {
+    const narrow = window.innerWidth < 1040;
+    if (wasNarrow === null) wasNarrow = narrow;
+    if (narrow === wasNarrow) return;
+    wasNarrow = narrow;
+    if (narrow) {
+      if (!state.agentCollapsed) { setAgentCollapsed(true); autoCollapsed = true; }
+    } else if (autoCollapsed) {
+      setAgentCollapsed(false);
+      autoCollapsed = false;
+    }
+  }
+
+  /* ==========================================================
+     boot
+     ========================================================== */
+  applyTheme(state.theme);
+  setView('explorer');
+  layout();
+  renderTree();
+  renderTabs();
+  renderEditor();
+  renderCtx();
+  setModel(state.model);
+  setThinking(state.thinking);
+  applyMode(state.mode);
+  syncSend();
+  autosize();
+  switchPanel('terminal');
+  setBottomOpen(state.bottomOpen);
+  $('#st-mem').hidden = false;
+  if (window.innerWidth < 1040) setAgentCollapsed(true);
+  wasNarrow = window.innerWidth < 1040;
+  scrollBottom();
+
+})();
+</script>
+</body>
+</html>

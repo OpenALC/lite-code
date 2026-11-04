@@ -1,0 +1,252 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  prep:
+    name: prep
+    runs-on: ubuntu-22.04
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      web: ${{ steps.detect.outputs.web }}
+      signing: ${{ steps.detect.outputs.signing }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "rust=$([ -f Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "web=$([ -f package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # 仓库变量控制签名开关：secrets 上下文在 job 级 if 中不可用，必须在这里转成 output。
+          echo "signing=${{ vars.SIGNPATH_ENABLED == 'true' && 'true' || 'false' }}" >> "$GITHUB_OUTPUT"
+      # 版本规则见 docs/VERSIONING.md §6：
+      #   0.x 必须带 -preview.N；正式版必须是非零主版本；其余一律拒绝。
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          if [[ "$v" =~ ^0\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$v" =~ ^[1-9][0-9]*\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::tag '$v' 不符合版本规则（见 docs/VERSIONING.md）：0.x 必须形如 0.3.1-preview.1，正式版必须为非零主版本"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ -f Cargo.toml ]; then
+            cv=$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' Cargo.toml | head -n1)
+            if [ -n "$cv" ] && [ "$cv" != "$v" ]; then
+              echo "::error::tag ($v) 与 Cargo.toml workspace version ($cv) 不一致"
+              exit 1
+            fi
+          fi
+          if [ -f package.json ]; then
+            pv=$(node -p "require('./package.json').version")
+            if [ "$pv" != "$v" ]; then
+              echo "::error::tag ($v) 与 package.json version ($pv) 不一致"
+              exit 1
+            fi
+          fi
+          if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
+            tv=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+            if [ "$tv" != "$v" ]; then
+              echo "::error::tag ($v) 与 tauri.conf.json version ($tv) 不一致"
+              exit 1
+            fi
+          fi
+
+  verify:
+    name: verify
+    needs: prep
+    if: needs.prep.outputs.rust == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  build-windows:
+    name: build (windows x64)
+    needs: [prep, verify]
+    if: needs.prep.outputs.rust == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        if: needs.prep.outputs.web == 'true'
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        if: needs.prep.outputs.web == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: install frontend deps
+        if: needs.prep.outputs.web == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: build bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
+            pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
+          else
+            cargo build --release --locked
+            echo "::notice::Tauri 壳未就绪，仅产出二进制"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-x64
+          path: |
+            target/release/bundle/**
+            target/release/lc-cli.exe
+          if-no-files-found: warn
+          retention-days: 7
+
+  build-linux:
+    name: build (linux x64)
+    needs: [prep, verify]
+    if: needs.prep.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        if: needs.prep.outputs.web == 'true'
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        if: needs.prep.outputs.web == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: system deps (webkit2gtk-4.1)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: install frontend deps
+        if: needs.prep.outputs.web == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: build bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
+            pnpm tauri build --bundles appimage,deb
+          else
+            cargo build --release --locked
+            echo "::notice::Tauri 壳未就绪，仅产出二进制"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            target/release/bundle/**
+            target/release/lc-cli
+          if-no-files-found: warn
+          retention-days: 7
+
+  sign:
+    name: sign (windows)
+    needs: [prep, build-windows]
+    runs-on: windows-latest
+    # 签名凭据只在 tag 构建可见；fork 的 PR 拿不到发布凭据。
+    if: needs.prep.outputs.rust == 'true' && needs.prep.outputs.signing == 'true'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: win-x64
+          path: unsigned
+      - name: signpath submit (placeholder)
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          Write-Host "SignPath 流程接入点：提交 unsigned/ 下 exe 与 msi，等待签名回传"
+          Write-Host "未实现前此 job 只记录凭据存在，不阻断发布（见 docs/CI.md §4）"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-x64-signed
+          path: unsigned
+          retention-days: 7
+
+  sbom:
+    name: sbom
+    needs: [prep]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: generate sbom
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ -f Cargo.toml ]; then
+            cargo install cargo-cyclonedx --locked --version "^0.5" || true
+            cargo cyclonedx --format json --output-pattern package --output-filename sbom 2>/dev/null || true
+            find . -name "*.cdx.json" -exec cp {} out/ \; 2>/dev/null || true
+          fi
+          ls -la out || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: out/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    name: publish draft
+    needs: [prep, build-windows, build-linux, sbom]
+    if: always() && needs.build-windows.result == 'success' && needs.build-linux.result == 'success'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          find . -type f ! -name "SHA256SUMS" -exec sha256sum {} \; | sed 's#  \./#  #' > SHA256SUMS
+          cat SHA256SUMS
+      # 只发 draft：签名失败时发布页不出现，而不是发未签名包再撤回。
+      # --prerelease 由版本后缀自动决定（0.x 必带 -preview.N），不靠人勾选。
+      - name: create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.prep.outputs.prerelease }}
+          VERSION: ${{ needs.prep.outputs.version }}
+        run: |
+          set -euo pipefail
+          args=(--draft --title "$GITHUB_REF_NAME" --notes-file "docs/releases/$VERSION.md")
+          if [ ! -f "docs/releases/$VERSION.md" ]; then
+            echo "::warning::缺少 docs/releases/$VERSION.md，回退到模板"
+            args=(--draft --title "$GITHUB_REF_NAME" --notes-file docs/release-notes-template.md)
+          fi
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" \
+            artifacts/win-x64 artifacts/linux-x64 artifacts/SHA256SUMS artifacts/sbom
