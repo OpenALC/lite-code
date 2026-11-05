@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`55b80a4`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`9ef9fda`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` 构建成功，publish 因 AppDir 重名失败；draft 已按正确资产清单手动重建。
 > P2 发布线：`v0.2.1-preview.1` 已打 tag，release workflow（已修复 publish）构建中。
@@ -29,6 +29,7 @@
 | P1 发布 | ✅ `v0.1.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 个资产） |
 | P2 发布 | ⏳ `v0.2.1-preview.1` tag 已推送；publish 已改为只上传安装包，构建中 |
 | 发布流程 | ✅ 修复 AppDir 递归上传与重名；checksums/资产名统一 |
+| P3 Tools+Policy | ✅ 工具注册表（≤12）+ 四模式策略 + 三层判定的纯函数骨架与单测 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
 
@@ -72,6 +73,10 @@
 14. **P1 性能收尾**（`7ce641d` / `1d68600`）
    - 生产构建（custom-protocol）实测：托盘 29.5MB、冷启动 48ms、热启动 47ms、20 次开关残留 0。
    - `scripts/perf/RESULTS.md` 记录口径与构建证据；baseline 已收录四项非 null 指标。
+15. **P3 Tools+Policy 骨架**（`9ef9fda`）
+   - `ToolRegistry`：≤12、静态风险、MCP 动态工具占位。
+   - `Policy`：plan/chat/auto/yolo；静态+用户黑名单；写内/写外；模型风险 fail-closed。
+   - 纯函数与 10 个单测；Rust 侧闸门先于 LLM loop。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -85,7 +90,8 @@
 
 1. 确认 `v0.2.1-preview.1` release draft（发布流程修复后首个自动 draft）。
 2. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-3. 下一个里程碑 P3：Agent Loop / Tools+Policy / Integrations / Agent UI。
+3. P3 下一块：会话状态机 + 工具执行（read/write/shell）与审批队列；再接 LLM 网关。
+4. P3 后续：Agent UI（会话流/工具卡片/内联审批/composer）。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -112,5 +118,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 70 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **207**。
+lc-core 80 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **217**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
