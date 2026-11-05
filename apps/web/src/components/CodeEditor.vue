@@ -64,11 +64,19 @@ async function saveActive(): Promise<void> {
     return
   }
   // 保存期间可能继续输入：只有内容仍是落盘快照时才清 dirty。
+  // 浏览器 fallback 的 ack 不是真实落盘，不能清 dirty。
   const latest = tabsStore.get().tabs.find(t => t.id === tab.id)
-  if (latest?.content === snapshot) markSaved(tab.id)
+  if (!res.fallback && latest?.content === snapshot) markSaved(tab.id)
   saveState.value = res.fallback
     ? { kind: 'demo', text: t('editor.savedDemo') }
     : { kind: 'saved', text: t('editor.saved') }
+}
+
+function onSaveKeydown(e: KeyboardEvent): void {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    void saveActive()
+  }
 }
 
 // worker 用 new URL 模式（Vite 原生支持，不走 ?worker 查询——
@@ -117,14 +125,14 @@ onMounted(async () => {
     if (applying || !currentTabId) return
     updateContent(currentTabId, editor!.getValue())
   })
-  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-    void saveActive()
-  })
+  // 窗口级监听：焦点在文件树/标签栏时 Ctrl+S 也生效。
+  window.addEventListener('keydown', onSaveKeydown)
   unsubTabs = tabsStore.subscribe(syncFromStore)
   syncFromStore(tabsStore.get())
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onSaveKeydown)
   unsubTabs?.()
   editor?.dispose()
   editor = null

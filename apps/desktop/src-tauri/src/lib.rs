@@ -18,7 +18,6 @@ use lc_core::runtime::manual::{self, ManualError};
 use lc_core::runtime::portable::{self, VersionSpec};
 use lc_proto::{
     CommandResult, ContractMeta, ErrorBody, ErrorCode, NodeHealth, NodeRuntimeInfo, NodeStatus,
-    ShellInfo,
 };
 
 // get_webview_window 来自 Manager trait（仅桌面侧的托盘/单实例路径用到）
@@ -28,9 +27,10 @@ use tauri::Manager;
 /// workspace 根由传输层注入（docs/PLAN.md R3）：`LC_WORKSPACE_ROOT` 供
 /// dev/测试显式覆盖，否则用进程当前目录。fs 命令不接受前端传入的 root。
 fn current_workspace_root() -> Option<PathBuf> {
-    std::env::var_os("LC_WORKSPACE_ROOT")
+    let root = std::env::var_os("LC_WORKSPACE_ROOT")
         .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
+        .or_else(|| std::env::current_dir().ok())?;
+    root.is_dir().then_some(root)
 }
 
 fn workspace_unavailable() -> ErrorBody {
@@ -48,8 +48,10 @@ fn workspace_root() -> CommandResult {
 
 /// 转发 lc-core 的 Node 探测。惰性触发由前端控制，这里不做缓存。
 #[tauri::command]
-fn node_detect() -> NodeStatus {
-    lc_core::runtime::probe_real()
+fn node_detect() -> CommandResult {
+    CommandResult::NodeStatus {
+        status: lc_core::runtime::probe_real(),
+    }
 }
 
 /// 版本标签只影响 UI（docs/RUNTIME.md §2），与 runtime lane 的规则一致。
@@ -126,14 +128,18 @@ async fn node_download_portable(version: Option<String>) -> Result<CommandResult
 
 /// 转发 shell 探测（终端与 Agent 执行依赖，docs/RUNTIME.md §8）。
 #[tauri::command]
-fn shell_detect() -> Option<ShellInfo> {
-    lc_core::runtime::detect_shell_real()
+fn shell_detect() -> CommandResult {
+    CommandResult::Shell {
+        shell: lc_core::runtime::detect_shell_real(),
+    }
 }
 
 /// 契约元信息（"关于"页与 lc-cli 共用同一来源）。
 #[tauri::command]
-fn contract_info() -> ContractMeta {
-    lc_proto::ContractMeta::current()
+fn contract_info() -> CommandResult {
+    CommandResult::Contract {
+        meta: ContractMeta::current(),
+    }
 }
 
 /// 目录按层返回（docs/ARCHITECTURE.md §5.2：不整树序列化）。

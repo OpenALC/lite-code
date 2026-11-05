@@ -382,6 +382,43 @@ fn write_file_rejects_symlink_escape() {
     let _ = fs::remove_dir_all(&outside_root);
 }
 
+#[cfg(unix)]
+#[test]
+fn write_file_rejects_dangling_symlink_escape() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_root("write-dangling");
+    let outside_root = temp_root("write-dangling-outside");
+    let outside_file = outside_root.join("created.txt");
+    let link = root.join("link.txt");
+    symlink(&outside_file, &link).unwrap();
+
+    let err = super::write_file_text(&root, &link, "new", &RealPathResolver)
+        .expect_err("dangling symlink escape must be rejected");
+    assert_eq!(err.code(), ErrorCode::PathOutsideRoot);
+    assert!(!outside_file.exists(), "根外文件不得被创建");
+
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&outside_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn write_file_preserves_existing_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_root("write-mode");
+    let target = root.join("run.sh");
+    fs::write(&target, "old").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+
+    super::write_file_text(&root, &target, "new", &RealPathResolver).expect("write");
+    let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o640);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ==== FileWatcher：真实目录 + notify ====
 
 /// 监听超时上限：去抖 200ms + Windows/Linux CI 波动余量。

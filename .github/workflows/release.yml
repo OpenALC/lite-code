@@ -252,5 +252,12 @@ jobs:
             args=(--draft --title "$GITHUB_REF_NAME" --notes-file docs/release-notes-template.md)
           fi
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" "${args[@]}" \
-            artifacts/win-x64 artifacts/linux-x64 artifacts/SHA256SUMS artifacts/sbom
+          # 逐文件上传：gh release create 不接受目录；sbom 允许缺失（P0 可选）。
+          mapfile -t assets < <(find artifacts/win-x64 artifacts/linux-x64 -type f | sort)
+          assets+=("artifacts/SHA256SUMS")
+          if [ -d artifacts/sbom ]; then
+            while IFS= read -r f; do assets+=("$f"); done < <(find artifacts/sbom -type f | sort)
+          else
+            echo "::warning::无 sbom 产物，跳过"
+          fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" "${assets[@]}"
