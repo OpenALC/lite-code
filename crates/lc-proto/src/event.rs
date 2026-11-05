@@ -2,6 +2,7 @@
 //! task:* 事件名与 docs/TASKS.md §7 保持一致。
 
 use crate::agent::{ApprovalPrompt, SessionInfo};
+use crate::db::DbConnectionInfo;
 use crate::error::ErrorBody;
 use crate::runtime::{NodeStatus, ShellInfo};
 use crate::task::{FileChangeDto, TaskCheck, TaskInfo, TaskStepState};
@@ -61,6 +62,9 @@ pub enum CoreEvent {
 
     #[serde(rename = "task:discarded")]
     TaskDiscarded { task_id: String },
+
+    #[serde(rename = "db:status")]
+    DbStatus { connection: DbConnectionInfo },
 
     /// 触发状态栏“待确认”计数
     #[serde(rename = "task:needs_input")]

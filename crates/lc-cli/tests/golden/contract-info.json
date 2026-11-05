@@ -1,6 +1,6 @@
 {
   "name": "lc-proto",
-  "contract_version": "0.5.0",
+  "contract_version": "0.6.0",
   "commands": [
     "node_detect",
     "node_set_manual",
@@ -23,6 +23,15 @@
     "task_discard",
     "task_diff",
     "task_bind_session",
+    "db_list",
+    "db_connect",
+    "db_disconnect",
+    "db_schema",
+    "db_query",
+    "db_execute",
+    "db_explain",
+    "db_save_connection",
+    "db_delete_connection",
     "contract_info"
   ],
   "events": [
@@ -39,6 +48,7 @@
     "task:needs_input",
     "task:merged",
     "task:discarded",
+    "db:status",
     "agent:text_delta",
     "agent:thinking_delta",
     "agent:tool_start",
@@ -63,6 +73,9 @@
     "node_broken",
     "shell_unavailable",
     "contract_mismatch",
-    "permission_denied"
+    "permission_denied",
+    "db_unavailable",
+    "db_rejected",
+    "db_read_only"
   ]
 }

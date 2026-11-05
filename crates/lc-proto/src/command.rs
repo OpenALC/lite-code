@@ -2,11 +2,15 @@
 //! （docs/README.md：lc-core 不依赖 Tauri）。
 
 use crate::agent::{ApprovalDecision, SessionInfo, SessionMode};
+use crate::db::{
+    DbConnectionConfig, DbConnectionInfo, DbExecResult, DbExplainResult, DbQueryResult,
+    DbSchemaNode,
+};
 use crate::runtime::{NodeStatus, ShellInfo};
 use crate::task::{FileChangeDto, TaskInfo};
 
 /// 当前契约版本。规则见 docs/VERSIONING.md §8。
-pub const CONTRACT_VERSION: &str = "0.5.0";
+pub const CONTRACT_VERSION: &str = "0.6.0";
 
 /// 全部命令名，与 [`CoreCommand`] 的 serde tag 一一对应。
 /// 单元测试保证与枚举同步（数量 + 命名）。
@@ -32,6 +36,15 @@ pub const CONTRACT_COMMANDS: &[&str] = &[
     "task_discard",
     "task_diff",
     "task_bind_session",
+    "db_list",
+    "db_connect",
+    "db_disconnect",
+    "db_schema",
+    "db_query",
+    "db_execute",
+    "db_explain",
+    "db_save_connection",
+    "db_delete_connection",
     "contract_info",
 ];
 
@@ -50,6 +63,7 @@ pub const CONTRACT_EVENTS: &[&str] = &[
     "task:needs_input",
     "task:merged",
     "task:discarded",
+    "db:status",
     "agent:text_delta",
     "agent:thinking_delta",
     "agent:tool_start",
@@ -77,6 +91,9 @@ pub const CONTRACT_ERROR_CODES: &[&str] = &[
     "shell_unavailable",
     "contract_mismatch",
     "permission_denied",
+    "db_unavailable",
+    "db_rejected",
+    "db_read_only",
 ];
 
 /// 请求信封。`id` 用于关联响应（会话内单调递增）。
@@ -149,6 +166,28 @@ pub enum CoreCommand {
         task_id: String,
         session_id: Option<String>,
     },
+    /// 数据库连接列表（不含密钥）
+    DbList,
+    /// 建立连接；密码由 SecretStore / 环境变量解析
+    DbConnect { connection_id: String },
+    /// 断开连接
+    DbDisconnect { connection_id: String },
+    /// 读取 schema 树
+    DbSchema { connection_id: String },
+    /// 执行读查询；结果只回样本 + 句柄
+    DbQuery {
+        connection_id: String,
+        sql: String,
+        limit: Option<u32>,
+    },
+    /// 执行写/DDL；必须通过 SQL 闸门
+    DbExecute { connection_id: String, sql: String },
+    /// EXPLAIN，不执行
+    DbExplain { connection_id: String, sql: String },
+    /// 新建/更新连接配置（密钥单独存）
+    DbSaveConnection { connection: DbConnectionConfig },
+    /// 删除连接配置
+    DbDeleteConnection { connection_id: String },
     /// 契约元信息（lc-cli 与 UI 关于页共用）
     ContractInfo,
 }
@@ -177,6 +216,25 @@ pub enum CommandResult {
         task_id: String,
         patch: String,
         files: Vec<FileChangeDto>,
+    },
+    Connections {
+        connections: Vec<DbConnectionInfo>,
+    },
+    Connection {
+        connection: DbConnectionInfo,
+    },
+    DbSchema {
+        connection_id: String,
+        nodes: Vec<DbSchemaNode>,
+    },
+    DbQuery {
+        result: DbQueryResult,
+    },
+    DbExec {
+        result: DbExecResult,
+    },
+    DbExplain {
+        result: DbExplainResult,
     },
     WorkspaceRoot {
         root: Option<String>,

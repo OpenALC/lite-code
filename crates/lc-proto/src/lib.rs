@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod command;
+pub mod db;
 pub mod error;
 pub mod event;
 pub mod runtime;
@@ -15,6 +16,10 @@ pub use agent::{ApprovalDecision, ApprovalPrompt, ApprovalSource, SessionInfo, S
 pub use command::{
     CONTRACT_COMMANDS, CONTRACT_ERROR_CODES, CONTRACT_EVENTS, CONTRACT_VERSION, CommandEnvelope,
     CommandResult, ContractMeta, CoreCommand, DirEntryDto, EntryKind,
+};
+pub use db::{
+    DbColumn, DbConnectionConfig, DbConnectionInfo, DbConnectionState, DbExecResult,
+    DbExplainResult, DbKind, DbQueryResult, DbSchemaNode, DbSchemaNodeKind,
 };
 pub use error::{ErrorBody, ErrorCode};
 pub use event::{CoreEvent, EventEnvelope};

@@ -24,6 +24,12 @@ pub enum ErrorCode {
     ContractMismatch,
     /// 权限策略拒绝（模式/黑名单/工作区边界）；不是传输错误
     PermissionDenied,
+    /// 数据库 sidecar 不可用 / 驱动未安装
+    DbUnavailable,
+    /// SQL 被闸门拒绝（多语句、无 WHERE、黑名单等）
+    DbRejected,
+    /// 只读连接上的写操作
+    DbReadOnly,
 }
 
 /// 事件流 / 命令响应统一使用的错误体。

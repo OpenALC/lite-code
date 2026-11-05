@@ -15,7 +15,7 @@ fn command_tags_match_constant_list() {
     // 数量守卫：新增命令必须同步登记
     assert_eq!(
         CONTRACT_COMMANDS.len(),
-        22,
+        31,
         "命令数量变化时须更新 CONTRACT_COMMANDS 与此测试"
     );
 }
