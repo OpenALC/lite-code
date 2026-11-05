@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`9d23c4a`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`efe8425`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 
 ## 当前位置一览
@@ -22,6 +22,8 @@
 | 窗口生命周期 | ✅ 关闭销毁 WebView、托盘/单实例按配置重建；标签内容在销毁前持久化并在重建后恢复 |
 | 构建正确性 | ✅ `lc-desktop` 启用 `tauri/custom-protocol`；perf.yml 先构建前端 dist，避免空 WebView |
 | 性能 | ⚠️ 旧构建初测：冷启动 48ms / 热启动 55ms / 残留 0 / 托盘 RSS 373MB；R4 后正在用生产构建复测 |
+| 10k 文件展开 | ✅ `lc-cli fs read-dir` 首层 1 万文件 87/96/97ms（目标 <200ms） |
+| headless CLI | ✅ `fs read-dir` 复用 UI 同一实现，输出契约 JSON |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ `ce62f52` 之前的提交全绿；最新提交 CI 进行中 |
 
@@ -59,6 +61,9 @@
 12. **构建正确性**（`9d23c4a`）
    - `lc-desktop` 增加 `custom-protocol` feature，生产包嵌入前端资源。
    - perf.yml 先构建 dist，再用 `-p lc-desktop --features custom-protocol`；裸 `cargo build` 的空 WebView 不再用于测量。
+13. **headless fs / 10k 文件**（`efe8425`）
+   - `lc-cli fs read-dir` 复用 UI 同一 `read_dir_level`，输出契约 JSON。
+   - 本机 1 万文件首层列举 87/96/97ms，低于 200ms 目标。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -71,7 +76,7 @@
 ## 待办（按序）
 
 1. R4 后性能复测（后台 subagent）：托盘 RSS/热启动/冷启动/残留进程。
-2. P1 出口验收：干净 Win11 无 Node、20 次开关窗口、1 万文件目录。
+2. P1 出口验收：干净 Win11 无 Node、20 次开关窗口；1 万文件已测（87–97ms）。
 3. P2：五 lane 合流冒烟，发布 `v0.2.1-preview.1`。
 
 ## 本地验证命令（与 CI 等价）
@@ -99,5 +104,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 70 · lc-cli 15 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **206**。
+lc-core 70 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **207**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
