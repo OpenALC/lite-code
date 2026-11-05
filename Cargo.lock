@@ -2170,6 +2170,7 @@ dependencies = [
  "lc-proto",
  "notify",
  "notify-debouncer-full",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.11.1",

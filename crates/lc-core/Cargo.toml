@@ -18,6 +18,7 @@ thiserror = { workspace = true }
 # fs lane（docs/ARCHITECTURE.md §5.2）：ignore 遍历 + notify 监听
 ignore = "0.4"
 notify = "8"
+regex = "1"
 notify-debouncer-full = "0.5"
 dirs = "7.0.0"
 ureq = "3.5.1"

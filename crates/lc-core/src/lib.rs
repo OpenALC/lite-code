@@ -3,6 +3,7 @@
 //! 分层见 docs/ARCHITECTURE.md：本 crate 是 L1，零 tauri 依赖，
 //! `lc-cli` 与 Tauri 薄壳都是它的前端。
 
+pub mod agent;
 pub mod config;
 pub mod fs;
 pub mod process;
