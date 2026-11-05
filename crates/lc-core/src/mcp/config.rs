@@ -1,8 +1,8 @@
 //! MCP 配置（Claude Code 兼容格式）。
 //!
-//! 读取并合并两个文件，项目级同名 server 覆盖用户级：
-//! - `<root>/.mcp.json`
-//! - `~/.lite-code/mcp.json`
+//! 安全默认下只读取用户级配置：
+//! - `~/.lite-code/mcp.json`（始终读取）
+//! - `<root>/.mcp.json`（默认忽略；仅当 `LC_MCP_ALLOW_PROJECT=1` 时读取）
 //!
 //! ```json
 //! { "mcpServers": { "filesystem": {
@@ -13,10 +13,14 @@
 //! } } }
 //! ```
 //!
+//! 项目级配置是不可信输入：同名 server 不覆盖用户级条目（冲突写入
+//! [`McpConfig::warnings`]），文件超过 [`MAX_PROJECT_FILE_BYTES`] 时整体忽略。
 //! 只支持 `command` 型 stdio server。`type` 为 `http`/`sse` 或只给了 `url`
-//! 的条目会被显式忽略并写入 [`McpConfig::warnings`]——不静默假装支持。
+//! 的条目会被显式忽略并写入 warning——不静默假装支持。
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -29,6 +33,15 @@ use super::McpError;
 pub const PROJECT_FILE_NAME: &str = ".mcp.json";
 /// 用户级配置文件名（放在 `~/.lite-code/`）。
 pub const USER_FILE_NAME: &str = "mcp.json";
+/// 显式启用项目级配置的环境变量；只有值为 `1` 时生效。
+pub const ALLOW_PROJECT_ENV: &str = "LC_MCP_ALLOW_PROJECT";
+/// 默认忽略项目级配置时写入的 warning。
+pub const PROJECT_IGNORED_WARNING: &str =
+    "项目 .mcp.json 已忽略；设置 LC_MCP_ALLOW_PROJECT=1 显式启用";
+/// 项目级配置文件的字节上限（1 MiB）。
+pub const MAX_PROJECT_FILE_BYTES: u64 = 1024 * 1024;
+/// 单次会话最多连接的 MCP server 数量。
+pub const MAX_SERVERS: usize = 8;
 
 /// 单个 stdio MCP server 配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,18 +70,22 @@ impl McpServerConfig {
 /// 合并后的 MCP 配置与加载期 warning。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpConfig {
-    /// 按「用户配置在前、项目配置覆盖同名项」的顺序保存（含 disabled）。
+    /// 用户配置在前；项目配置只追加用户级没有的同名项（含 disabled）。
     pub servers: Vec<McpServerConfig>,
-    /// 被忽略的 HTTP/SSE 条目、无法定位 home 等非致命问题。
+    /// 被忽略的 HTTP/SSE 条目、项目配置冲突、无法定位 home 等非致命问题。
     pub warnings: Vec<String>,
 }
 
 impl McpConfig {
-    /// 读取项目与用户配置并合并。文件不存在视为空配置。
+    /// 读取用户配置；项目配置仅在 `LC_MCP_ALLOW_PROJECT=1` 时读取。
+    /// 文件不存在视为空配置。
     pub fn load(root: &Path) -> Result<Self, McpError> {
         let user_path = dirs::home_dir().map(|home| home.join(APP_DIR_NAME).join(USER_FILE_NAME));
-        let mut config =
-            Self::load_with_user_file(&root.join(PROJECT_FILE_NAME), user_path.as_deref())?;
+        let mut config = Self::load_with_paths(
+            &root.join(PROJECT_FILE_NAME),
+            user_path.as_deref(),
+            project_config_allowed(),
+        )?;
         if user_path.is_none() {
             config
                 .warnings
@@ -77,20 +94,29 @@ impl McpConfig {
         Ok(config)
     }
 
-    /// 显式指定两个配置路径（测试与自定义布局使用）。`user_path` 为 `None`
-    /// 时只读项目文件。项目级同名 server 整体覆盖用户级条目。
-    pub fn load_with_user_file(
+    /// 显式指定两个配置路径与是否允许项目配置（测试与自定义布局使用）。
+    /// `user_path` 为 `None` 时没有用户级配置。项目级同名 server 不覆盖
+    /// 用户级条目，冲突会写入 warning。
+    pub fn load_with_paths(
         project_path: &Path,
         user_path: Option<&Path>,
+        allow_project: bool,
     ) -> Result<Self, McpError> {
         let mut warnings = Vec::new();
         let user = match user_path {
-            Some(path) => parse_file(path, &mut warnings)?,
+            Some(path) => parse_file(path, None, &mut warnings)?,
             None => Vec::new(),
         };
-        let project = parse_file(project_path, &mut warnings)?;
+        let project = if allow_project {
+            parse_file(project_path, Some(MAX_PROJECT_FILE_BYTES), &mut warnings)?
+        } else {
+            if project_path.exists() {
+                warnings.push(PROJECT_IGNORED_WARNING.into());
+            }
+            Vec::new()
+        };
         Ok(Self {
-            servers: merge_servers(user, project),
+            servers: merge_servers(user, project, &mut warnings),
             warnings,
         })
     }
@@ -105,7 +131,7 @@ impl McpConfig {
         self.servers.iter().filter(|server| server.enabled)
     }
 
-    /// 加载期 warning（HTTP/SSE 被忽略、home 不可得等）。
+    /// 加载期 warning（HTTP/SSE 被忽略、项目配置冲突、home 不可得等）。
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
@@ -114,6 +140,15 @@ impl McpConfig {
     pub fn get(&self, name: &str) -> Option<&McpServerConfig> {
         self.servers.iter().find(|server| server.name == name)
     }
+}
+
+/// 项目级配置是否被显式启用。只接受 `LC_MCP_ALLOW_PROJECT=1`（允许首尾空白）。
+pub fn project_config_allowed() -> bool {
+    project_config_allowed_value(std::env::var(ALLOW_PROJECT_ENV).ok().as_deref())
+}
+
+fn project_config_allowed_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim() == "1")
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,18 +177,29 @@ fn enabled_default() -> bool {
     true
 }
 
-fn parse_file(path: &Path, warnings: &mut Vec<String>) -> Result<Vec<McpServerConfig>, McpError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(McpError::Config(format!(
-                "读取 {} 失败：{error}",
+enum ConfigBytes {
+    Missing,
+    TooLarge,
+    Present(Vec<u8>),
+}
+
+fn parse_file(
+    path: &Path,
+    max_bytes: Option<u64>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<McpServerConfig>, McpError> {
+    let bytes = match read_config_bytes(path, max_bytes)? {
+        ConfigBytes::Missing => return Ok(Vec::new()),
+        ConfigBytes::TooLarge => {
+            warnings.push(format!(
+                "项目 MCP 配置 {} 超过 1 MiB 上限，已忽略",
                 path.display()
-            )));
+            ));
+            return Ok(Vec::new());
         }
+        ConfigBytes::Present(bytes) => bytes,
     };
-    let raw: RawFile = serde_json::from_str(&text)
+    let raw: RawFile = serde_json::from_slice(&bytes)
         .map_err(|error| McpError::Config(format!("解析 {} 失败：{error}", path.display())))?;
 
     let mut servers = Vec::new();
@@ -193,19 +239,49 @@ fn parse_file(path: &Path, warnings: &mut Vec<String>) -> Result<Vec<McpServerCo
     Ok(servers)
 }
 
-/// 项目级同名项整体覆盖用户级项；其余保持「用户在前、项目追加」。
+/// 有上限时最多读取 `max + 1` 字节，避免为超大文件分配内存。
+fn read_config_bytes(path: &Path, max_bytes: Option<u64>) -> Result<ConfigBytes, McpError> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConfigBytes::Missing);
+        }
+        Err(error) => {
+            return Err(McpError::Config(format!(
+                "读取 {} 失败：{error}",
+                path.display()
+            )));
+        }
+    };
+
+    let mut bytes = Vec::new();
+    let read = match max_bytes {
+        Some(max) => file.take(max.saturating_add(1)).read_to_end(&mut bytes),
+        None => file.read_to_end(&mut bytes),
+    };
+    read.map_err(|error| McpError::Config(format!("读取 {} 失败：{error}", path.display())))?;
+
+    if max_bytes.is_some_and(|max| bytes.len() as u64 > max) {
+        return Ok(ConfigBytes::TooLarge);
+    }
+    Ok(ConfigBytes::Present(bytes))
+}
+
+/// 用户级条目优先：项目级同名项被拒绝，其余按「用户在前、项目追加」合并。
 fn merge_servers(
     mut user: Vec<McpServerConfig>,
     project: Vec<McpServerConfig>,
+    warnings: &mut Vec<String>,
 ) -> Vec<McpServerConfig> {
     for server in project {
-        match user
-            .iter_mut()
-            .find(|existing| existing.name == server.name)
-        {
-            Some(existing) => *existing = server,
-            None => user.push(server),
+        if user.iter().any(|existing| existing.name == server.name) {
+            warnings.push(format!(
+                "MCP server `{}` 在项目 .mcp.json 中与用户配置重名，保留用户配置（拒绝项目覆盖）",
+                server.name
+            ));
+            continue;
         }
+        user.push(server);
     }
     user
 }
@@ -218,6 +294,7 @@ pub fn user_config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::host::McpHost;
     use serde_json::json;
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -237,6 +314,30 @@ mod tests {
         std::fs::write(path, value.to_string()).expect("write config");
     }
 
+    /// 一个被 spawn 就会留下 marker 的命令；用于证明默认路径没有启动它。
+    #[cfg(windows)]
+    fn marker_command(dir: &Path) -> (String, Vec<String>) {
+        std::fs::write(
+            dir.join("spawn_probe.cmd"),
+            "@echo off\r\necho spawned> project-spawned.marker\r\n",
+        )
+        .expect("write spawn probe");
+        (
+            "cmd".to_string(),
+            vec!["/C".to_string(), "spawn_probe.cmd".to_string()],
+        )
+    }
+
+    #[cfg(unix)]
+    fn marker_command(dir: &Path) -> (String, Vec<String>) {
+        std::fs::write(
+            dir.join("spawn_probe.sh"),
+            "#!/bin/sh\necho spawned > project-spawned.marker\n",
+        )
+        .expect("write spawn probe");
+        ("sh".to_string(), vec!["spawn_probe.sh".to_string()])
+    }
+
     #[test]
     fn parses_stdio_server_with_defaults() {
         let dir = temp_dir("parse");
@@ -250,7 +351,7 @@ mod tests {
             }}}),
         );
 
-        let config = McpConfig::load_with_user_file(&project, None).expect("load");
+        let config = McpConfig::load_with_paths(&project, None, true).expect("load");
         assert!(config.warnings.is_empty(), "{:?}", config.warnings);
         assert_eq!(config.servers.len(), 1);
         let server = &config.servers[0];
@@ -265,8 +366,76 @@ mod tests {
     }
 
     #[test]
-    fn project_overrides_user_server() {
-        let dir = temp_dir("override");
+    fn project_config_is_ignored_by_default_but_user_config_loads() {
+        let dir = temp_dir("default-ignore");
+        let user = dir.join(USER_FILE_NAME);
+        let project = dir.join(PROJECT_FILE_NAME);
+        let marker = dir.join("project-spawned.marker");
+        let (command, args) = marker_command(&dir);
+        write(
+            &user,
+            json!({"mcpServers": {"user-only": {"command": "user-cmd", "enabled": false}}}),
+        );
+        write(
+            &project,
+            json!({"mcpServers": {"probe": {"command": command, "args": args}}}),
+        );
+
+        let config = McpConfig::load_with_paths(&project, Some(&user), false).expect("load");
+        assert_eq!(config.servers.len(), 1);
+        assert!(config.get("probe").is_none());
+        assert_eq!(
+            config
+                .get("user-only")
+                .map(|server| server.command.as_str()),
+            Some("user-cmd")
+        );
+        assert!(
+            config
+                .warnings
+                .iter()
+                .any(|warning| warning == PROJECT_IGNORED_WARNING),
+            "{:?}",
+            config.warnings
+        );
+
+        let host = McpHost::connect(&config, &dir);
+        assert!(host.tool_specs().is_empty());
+        assert!(!marker.exists(), "默认不得 spawn 项目 .mcp.json 中的命令");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicitly_enabled_project_config_is_loaded() {
+        let dir = temp_dir("allow-project");
+        let project = dir.join(PROJECT_FILE_NAME);
+        let marker = dir.join("project-spawned.marker");
+        let (command, args) = marker_command(&dir);
+        write(
+            &project,
+            json!({"mcpServers": {"probe": {"command": command, "args": args}}}),
+        );
+
+        let config = McpConfig::load_with_paths(&project, None, true).expect("load");
+        assert_eq!(config.servers.len(), 1);
+        assert!(config.get("probe").is_some());
+        assert!(
+            !config
+                .warnings
+                .iter()
+                .any(|warning| warning == PROJECT_IGNORED_WARNING),
+            "{:?}",
+            config.warnings
+        );
+        assert!(!marker.exists(), "只加载配置不应立刻 spawn");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_does_not_override_user_server() {
+        let dir = temp_dir("no-override");
         let user = dir.join(USER_FILE_NAME);
         let project = dir.join(PROJECT_FILE_NAME);
         write(
@@ -278,20 +447,66 @@ mod tests {
         );
         write(
             &project,
-            json!({"mcpServers": {"shared": {"command": "project-cmd", "args": ["--x"]}}}),
+            json!({"mcpServers": {
+                "shared": {"command": "project-cmd", "args": ["--x"]},
+                "project-only": {"command": "added"}
+            }}),
         );
 
-        let config = McpConfig::load_with_user_file(&project, Some(&user)).expect("load");
-        assert_eq!(config.servers.len(), 2);
+        let config = McpConfig::load_with_paths(&project, Some(&user), true).expect("load");
+        assert_eq!(config.servers.len(), 3);
         let shared = config.get("shared").expect("shared");
-        assert_eq!(shared.command, "project-cmd");
-        assert_eq!(shared.args, ["--x"]);
+        assert_eq!(shared.command, "user-cmd");
+        assert!(shared.args.is_empty());
         assert_eq!(
             config.get("user-only").map(|s| s.command.as_str()),
             Some("keep")
         );
+        assert_eq!(
+            config.get("project-only").map(|s| s.command.as_str()),
+            Some("added")
+        );
+        assert!(
+            config
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("重名") && warning.contains("保留用户配置")),
+            "{:?}",
+            config.warnings
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_project_config_is_ignored() {
+        let dir = temp_dir("too-large");
+        let project = dir.join(PROJECT_FILE_NAME);
+        let size = usize::try_from(MAX_PROJECT_FILE_BYTES).expect("limit fits usize") + 1;
+        std::fs::write(&project, vec![b'x'; size]).expect("write oversized config");
+
+        let config = McpConfig::load_with_paths(&project, None, true).expect("load");
+        assert!(config.servers.is_empty());
+        assert!(
+            config
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("1 MiB") && warning.contains("已忽略")),
+            "{:?}",
+            config.warnings
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_switch_requires_exactly_one() {
+        assert!(project_config_allowed_value(Some("1")));
+        assert!(project_config_allowed_value(Some(" 1 ")));
+        assert!(!project_config_allowed_value(Some("true")));
+        assert!(!project_config_allowed_value(Some("0")));
+        assert!(!project_config_allowed_value(Some("")));
+        assert!(!project_config_allowed_value(None));
     }
 
     #[test]
@@ -303,7 +518,7 @@ mod tests {
             json!({"mcpServers": {"off": {"command": "x", "enabled": false}}}),
         );
 
-        let config = McpConfig::load_with_user_file(&project, None).expect("load");
+        let config = McpConfig::load_with_paths(&project, None, true).expect("load");
         assert_eq!(config.servers.len(), 1);
         assert!(!config.servers[0].enabled);
         assert_eq!(config.enabled_servers().count(), 0);
@@ -324,7 +539,7 @@ mod tests {
             }}),
         );
 
-        let config = McpConfig::load_with_user_file(&project, None).expect("load");
+        let config = McpConfig::load_with_paths(&project, None, true).expect("load");
         assert_eq!(config.servers.len(), 1);
         assert_eq!(config.servers[0].name, "stdio");
         assert_eq!(config.warnings.len(), 2);
@@ -339,7 +554,7 @@ mod tests {
         let project = dir.join(PROJECT_FILE_NAME);
         write(&project, json!({"mcpServers": {"broken": {}}}));
 
-        let error = McpConfig::load_with_user_file(&project, None).expect_err("must reject");
+        let error = McpConfig::load_with_paths(&project, None, true).expect_err("must reject");
         assert!(matches!(error, McpError::Config(_)));
         assert!(error.to_string().contains("command"), "{error}");
 
@@ -349,9 +564,10 @@ mod tests {
     #[test]
     fn missing_files_yield_empty_config() {
         let dir = temp_dir("missing");
-        let config = McpConfig::load_with_user_file(
+        let config = McpConfig::load_with_paths(
             &dir.join("nope.json"),
             Some(&dir.join("also-nope.json")),
+            true,
         )
         .expect("load");
         assert!(config.servers.is_empty());
@@ -364,7 +580,7 @@ mod tests {
         let dir = temp_dir("invalid");
         let project = dir.join(PROJECT_FILE_NAME);
         std::fs::write(&project, "{ not json").expect("write");
-        let error = McpConfig::load_with_user_file(&project, None).expect_err("must reject");
+        let error = McpConfig::load_with_paths(&project, None, true).expect_err("must reject");
         assert!(matches!(error, McpError::Config(_)));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -5,10 +5,12 @@
 //! 需要用户审批（与内置 `Network` 工具一致）。
 //!
 //! 分层：
-//! - [`config`]：读取/合并 `<root>/.mcp.json` 与 `~/.lite-code/mcp.json`；
+//! - [`config`]：读取 `~/.lite-code/mcp.json`；项目级 `<root>/.mcp.json` 默认
+//!   忽略，仅在 `LC_MCP_ALLOW_PROJECT=1` 时读取且不覆盖用户级同名项；
 //! - [`client`]：JSON-RPC 2.0 客户端，握手、分页拉取工具、`tools/call`；
-//! - [`host`]：多 server 生命周期、工具名清洗/去重、Responses API 定义、
-//!   [`McpExecutor`] 执行路由。
+//!   stdio 子进程只继承平台 allowlist 环境变量，不继承 provider 密钥；
+//! - [`host`]：多 server 生命周期（最多 [`config::MAX_SERVERS`] 个）、工具名
+//!   清洗/去重、Responses API 定义、[`McpExecutor`] 执行路由。
 //!
 //! MCP 不可用不应影响主流程：连接失败只记录 warning，其余 server 继续。
 

@@ -15,7 +15,7 @@ use crate::agent::{Risk, ToolCall, ToolError, ToolExecutor, ToolOutput, ToolSpec
 
 use super::McpError;
 use super::client::{McpClient, StdioTransport};
-use super::config::McpConfig;
+use super::config::{MAX_SERVERS, McpConfig};
 
 /// 工具名最大长度（Responses API 函数名约束）。
 pub const MAX_TOOL_NAME_LEN: usize = 64;
@@ -91,7 +91,8 @@ pub struct McpHost {
 }
 
 impl McpHost {
-    /// 逐个连接启用的 server；单个失败只记录 warning 并继续。
+    /// 逐个连接启用的 server；单个失败只记录 warning 并继续。最多尝试
+    /// [`MAX_SERVERS`] 个，超出的 server 整体忽略并写入 warning。
     /// `config` 可传 `&McpConfig` 或拥有所有权的 `McpConfig`。
     pub fn connect(config: impl Borrow<McpConfig>, root: impl AsRef<Path>) -> Self {
         let config = config.borrow();
@@ -105,8 +106,22 @@ impl McpHost {
             host.warn(warning.clone());
         }
 
+        let enabled: Vec<_> = config.enabled_servers().collect();
+        let (connect, skipped) = enabled.split_at(enabled.len().min(MAX_SERVERS));
+        if !skipped.is_empty() {
+            let names = skipped
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            host.warn(format!(
+                "MCP server 数量超过上限 {MAX_SERVERS}，忽略 {} 个：{names}",
+                skipped.len()
+            ));
+        }
+
         let mut used = HashSet::new();
-        for server in config.enabled_servers() {
+        for server in connect {
             let transport = match StdioTransport::spawn(server, root) {
                 Ok(transport) => transport,
                 Err(error) => {
@@ -486,6 +501,42 @@ mod tests {
         let host = McpHost::connect(&config, &dir);
         assert!(host.tool_specs().is_empty());
         assert!(host.warnings().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn connects_at_most_eight_servers() {
+        let dir = temp_dir("limit");
+        let servers = (1..=9)
+            .map(|index| McpServerConfig {
+                name: format!("server-{index}"),
+                command: format!("lc-mcp-missing-command-{index}"),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                enabled: true,
+            })
+            .collect();
+        let config = McpConfig {
+            servers,
+            warnings: Vec::new(),
+        };
+
+        let host = McpHost::connect(&config, &dir);
+        let warnings = host.warnings();
+        let limit_warning = warnings
+            .iter()
+            .find(|warning| warning.contains("上限"))
+            .expect("缺少数量上限 warning");
+        assert!(limit_warning.contains("8"), "{limit_warning}");
+        assert!(limit_warning.contains("server-9"), "{limit_warning}");
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|warning| warning.contains("连接 MCP server"))
+                .count(),
+            8
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

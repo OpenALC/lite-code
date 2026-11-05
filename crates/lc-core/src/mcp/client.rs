@@ -8,7 +8,7 @@
 //! 工具调用 120s。超时立即终止子进程。transport 抽象成
 //! [`McpTransport`]，测试可注入 fake，无需真实进程。
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
@@ -36,6 +36,24 @@ pub const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 const MAX_STDERR_LINES: usize = 40;
+
+/// 允许传给 MCP 子进程的父环境变量（其余一律丢弃，避免 provider 密钥外泄）。
+#[cfg(windows)]
+const SPAWN_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "COMSPEC",
+    "HOME",
+];
+
+#[cfg(unix)]
+const SPAWN_ENV_ALLOWLIST: &[&str] = &["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM"];
 
 /// `tools/list` 返回的远端工具。
 #[derive(Debug, Clone, PartialEq)]
@@ -227,6 +245,19 @@ fn render_content(result: &Value) -> String {
     parts.join("\n")
 }
 
+/// 清空继承环境，只保留平台 allowlist 与 server 配置显式声明的变量。
+fn apply_sandboxed_env(command: &mut Command, env: &BTreeMap<String, String>) {
+    command.env_clear();
+    for key in SPAWN_ENV_ALLOWLIST {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+}
+
 /// 真实 stdio transport：spawn 子进程，stdin 写 JSON 行，reader 线程收 stdout。
 ///
 /// 回收：`drop` / [`shutdown`](Self::shutdown) / 超时都会终止子进程——
@@ -259,9 +290,7 @@ impl StdioTransport {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (key, value) in &server.env {
-            command.env(key, value);
-        }
+        apply_sandboxed_env(&mut command, &server.env);
 
         #[cfg(windows)]
         {
@@ -734,5 +763,99 @@ mod tests {
         let mut client = McpClient::new("fake", Box::new(transport));
         let error = client.initialize().expect_err("must fail");
         assert!(matches!(error, McpError::Protocol { .. }));
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lc-mcp-client-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    /// 探针在子进程内把环境变量写到 `env-dump.txt` 后退出。
+    #[cfg(windows)]
+    fn env_dump_probe(dir: &Path) -> (String, Vec<String>) {
+        std::fs::write(
+            dir.join("dump_env.cmd"),
+            "@echo off\r\nset > env-dump.txt\r\n",
+        )
+        .expect("write env probe");
+        (
+            "cmd".to_string(),
+            vec!["/C".to_string(), "dump_env.cmd".to_string()],
+        )
+    }
+
+    #[cfg(unix)]
+    fn env_dump_probe(dir: &Path) -> (String, Vec<String>) {
+        std::fs::write(dir.join("dump_env.sh"), "#!/bin/sh\nenv > env-dump.txt\n")
+            .expect("write env probe");
+        ("sh".to_string(), vec!["dump_env.sh".to_string()])
+    }
+
+    #[test]
+    fn spawn_filters_parent_env_but_keeps_allowlist_and_config_env() {
+        let dir = temp_dir("env");
+        let marker = dir.join("env-dump.txt");
+        let (command, args) = env_dump_probe(&dir);
+        let mut server = McpServerConfig::new("env-probe", command);
+        server.args = args;
+        server
+            .env
+            .insert("LC_MCP_TEST_CUSTOM".into(), "from-config".into());
+
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let old_lc = std::env::var_os("LC_API_KEY");
+        let old_openai = std::env::var_os("OPENAI_API_KEY");
+        // SAFETY: 测试进程内临时注入密钥，同一把锁串行化并在 spawn 后立刻恢复。
+        unsafe {
+            std::env::set_var("LC_API_KEY", "lc-secret");
+            std::env::set_var("OPENAI_API_KEY", "openai-secret");
+        }
+        let transport = StdioTransport::spawn(&server, &dir);
+        // SAFETY: 同上，恢复测试前的进程环境。
+        unsafe {
+            match old_lc {
+                Some(value) => std::env::set_var("LC_API_KEY", value),
+                None => std::env::remove_var("LC_API_KEY"),
+            }
+            match old_openai {
+                Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+                None => std::env::remove_var("OPENAI_API_KEY"),
+            }
+        }
+        let mut transport = transport.expect("spawn env probe");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(bytes) = std::fs::read(&marker) {
+                let content = String::from_utf8_lossy(&bytes);
+                if content.contains("LC_MCP_TEST_CUSTOM=from-config") {
+                    std::thread::sleep(Duration::from_millis(100));
+                    let bytes = std::fs::read(&marker).expect("read env dump");
+                    let content = String::from_utf8_lossy(&bytes).to_ascii_uppercase();
+                    assert!(!content.contains("LC_API_KEY="), "{content}");
+                    assert!(!content.contains("OPENAI_API_KEY="), "{content}");
+                    assert!(content.contains("PATH="), "{content}");
+                    assert!(
+                        content.contains("LC_MCP_TEST_CUSTOM=FROM-CONFIG"),
+                        "{content}"
+                    );
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "探针未写出环境变量");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        transport.shutdown();
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
