@@ -1,6 +1,6 @@
 // 由 lc-proto codegen 生成，请勿手改。
 // 重新生成：cargo run --locked -p lc-proto --features codegen --bin codegen
-// 契约版本：0.3.0
+// 契约版本：0.4.0
 
 // ---- lc_proto::ErrorCode ----
 export type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch" | "permission_denied";
@@ -58,7 +58,15 @@ export type ApprovalDecision = "allow_once" | "allow_session" | "deny";
 export type ApprovalSource = "mode" | "static_blacklist" | "user_blacklist" | "model_risk" | "outside_workspace" | "network_tool" | "execute_review";
 
 // ---- lc_proto::SessionInfo ----
-export type SessionInfo = { session_id: string, mode: SessionMode, turn: number, max_turns: number, cancelled: boolean, };
+export type SessionInfo = { session_id: string, mode: SessionMode, turn: number, max_turns: number, 
+/**
+ * 模型上下文窗口（k token），UI 用量条分母。
+ */
+context_k: number, 
+/**
+ * 压缩阈值（k token），UI 刻度线。
+ */
+compress_at_k: number, cancelled: boolean, };
 
 // ---- lc_proto::ApprovalPrompt ----
 export type ApprovalPrompt = { approval_id: number, tool: string, command?: string | null, source: ApprovalSource, reason: string, };
@@ -73,7 +81,7 @@ export type CommandEnvelope = { id: number, command: CoreCommand, };
 export type CommandResult = { "kind": "node_status", status: NodeStatus, } | { "kind": "shell", shell: ShellInfo | null, } | { "kind": "session", session: SessionInfo, } | { "kind": "workspace_root", root: string | null, } | { "kind": "dir_listing", path: string, entries: Array<DirEntryDto>, generation: number, } | { "kind": "file_content", path: string, text: string, } | { "kind": "contract", meta: ContractMeta, } | { "kind": "ack" };
 
 // ---- lc_proto::CoreEvent ----
-export type CoreEvent = { "type": "node:status", status: NodeStatus, } | { "type": "shell:status", shell: ShellInfo | null, } | { "type": "fs:tree", generation: number, } | { "type": "fs:entry", path: string, } | { "type": "task:created", task_id: string, title: string, } | { "type": "task:status", task_id: string, status: string, } | { "type": "task:needs_input", task_id: string, kind: string, } | { "type": "task:merged", task_id: string, commit_sha: string, } | { "type": "agent:text_delta", session_id: string, index: number, text: string, } | { "type": "agent:thinking_delta", session_id: string, text: string, } | { "type": "agent:tool_start", session_id: string, call_id: string, name: string, } | { "type": "agent:tool_result", session_id: string, call_id: string, ok: boolean, text: string, } | { "type": "agent:approval_required", session_id: string, approval: ApprovalPrompt, } | { "type": "agent:session_state", session: SessionInfo, } | { "type": "agent:usage", session_id: string, input: number, output: number, cached: number, } | { "type": "agent:done", session_id: string, stop_reason: string, } | { "type": "error", error: ErrorBody, };
+export type CoreEvent = { "type": "node:status", status: NodeStatus, } | { "type": "shell:status", shell: ShellInfo | null, } | { "type": "fs:tree", generation: number, } | { "type": "fs:entry", path: string, } | { "type": "task:created", task_id: string, title: string, } | { "type": "task:status", task_id: string, status: string, } | { "type": "task:needs_input", task_id: string, kind: string, } | { "type": "task:merged", task_id: string, commit_sha: string, } | { "type": "agent:text_delta", session_id: string, index: number, text: string, } | { "type": "agent:thinking_delta", session_id: string, text: string, } | { "type": "agent:tool_start", session_id: string, call_id: string, name: string, } | { "type": "agent:tool_result", session_id: string, call_id: string, ok: boolean, text: string, } | { "type": "agent:approval_required", session_id: string, approval: ApprovalPrompt, } | { "type": "agent:session_state", session: SessionInfo, } | { "type": "agent:usage", session_id: string, input: number, output: number, cached: number, } | { "type": "agent:compacted", session_id: string, record_id: number, before_tokens: number, after_tokens: number, removed_messages: number, summary: string, } | { "type": "agent:done", session_id: string, stop_reason: string, } | { "type": "error", error: ErrorBody, };
 
 // ---- lc_proto::EventEnvelope ----
 export type EventEnvelope = { seq: number, event: CoreEvent, };

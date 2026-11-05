@@ -87,6 +87,17 @@ pub enum CoreEvent {
         cached: u32,
     },
 
+    /// 上下文压缩记录（docs/AGENT.md §6：不静默截断，每次压缩留可展开记录）
+    #[serde(rename = "agent:compacted")]
+    AgentCompacted {
+        session_id: String,
+        record_id: u64,
+        before_tokens: u32,
+        after_tokens: u32,
+        removed_messages: u32,
+        summary: String,
+    },
+
     #[serde(rename = "agent:done")]
     AgentDone {
         session_id: String,

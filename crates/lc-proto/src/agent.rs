@@ -40,6 +40,10 @@ pub struct SessionInfo {
     pub mode: SessionMode,
     pub turn: u32,
     pub max_turns: u32,
+    /// 模型上下文窗口（k token），UI 用量条分母。
+    pub context_k: u32,
+    /// 压缩阈值（k token），UI 刻度线。
+    pub compress_at_k: u32,
     pub cancelled: bool,
 }
 

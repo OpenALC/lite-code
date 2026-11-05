@@ -11,6 +11,8 @@ use super::policy::{Policy, PolicyDecision, PolicyMode, PolicyRequest, PolicySou
 use super::tools::Risk;
 
 pub const DEFAULT_MAX_TURNS: u32 = 25;
+pub const DEFAULT_CONTEXT_K: u32 = 400;
+pub const DEFAULT_COMPRESS_AT_K: u32 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
@@ -57,6 +59,8 @@ pub struct Session {
     cache: ApprovalCache,
     turn: u32,
     max_turns: u32,
+    context_k: u32,
+    compress_at_k: u32,
     yolo_confirmed: bool,
     cancelled: bool,
 }
@@ -75,6 +79,8 @@ impl Session {
             cache: ApprovalCache::default(),
             turn: 0,
             max_turns: DEFAULT_MAX_TURNS,
+            context_k: DEFAULT_CONTEXT_K,
+            compress_at_k: DEFAULT_COMPRESS_AT_K,
             yolo_confirmed: false,
             cancelled: false,
         }
@@ -83,6 +89,24 @@ impl Session {
     pub fn with_max_turns(mut self, max_turns: u32) -> Self {
         self.max_turns = max_turns.max(1);
         self
+    }
+
+    /// 设置上下文预算（k token）；`compress_at_k` 必须小于 `context_k`，
+    /// 非法值回落到默认预算，避免除法/刻度异常。
+    pub fn with_context(mut self, context_k: u32, compress_at_k: u32) -> Self {
+        if context_k > 0 && compress_at_k > 0 && compress_at_k < context_k {
+            self.context_k = context_k;
+            self.compress_at_k = compress_at_k;
+        }
+        self
+    }
+
+    pub fn context_k(&self) -> u32 {
+        self.context_k
+    }
+
+    pub fn compress_at_k(&self) -> u32 {
+        self.compress_at_k
     }
 
     pub fn mode(&self) -> PolicyMode {

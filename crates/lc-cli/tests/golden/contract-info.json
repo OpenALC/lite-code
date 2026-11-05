@@ -1,6 +1,6 @@
 {
   "name": "lc-proto",
-  "contract_version": "0.3.0",
+  "contract_version": "0.4.0",
   "commands": [
     "node_detect",
     "node_set_manual",
@@ -33,6 +33,7 @@
     "agent:approval_required",
     "agent:session_state",
     "agent:usage",
+    "agent:compacted",
     "agent:done",
     "error"
   ],

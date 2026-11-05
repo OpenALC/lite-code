@@ -47,6 +47,8 @@ pub fn session_info(session: &Session) -> SessionInfo {
         mode: mode_to_contract(session.mode()),
         turn: session.turn(),
         max_turns: session.max_turns(),
+        context_k: session.context_k(),
+        compress_at_k: session.compress_at_k(),
         cancelled: session.is_cancelled(),
     }
 }
