@@ -10,17 +10,24 @@ import type {
   TaskResult,
 } from './bridge'
 import {
+  activePreviewUrl,
+  activeWorkbenchTab,
   applyTaskEvent,
   createTaskController,
   createTaskState,
+  DEFAULT_WORKBENCH_TAB,
   firstNeedsInputTaskId,
   hasNeedsInput,
   MAX_RUNNING_TASKS,
   queuedReason,
   selectTask,
+  setPreviewUrl,
+  setWorkbenchTab,
   statusTone,
   taskStatusLabel,
+  WORKBENCH_TABS,
   type TaskControllerDeps,
+  type TaskState,
 } from './taskStore'
 import type { TaskInfo } from './taskTypes'
 
@@ -345,6 +352,107 @@ describe('applyTaskEvent', () => {
   })
 })
 
+describe('工作台标签与预览 reducer', () => {
+  function twoTasks(): TaskState {
+    let state = applyTaskEvent(createTaskState(), {
+      type: 'task:updated',
+      task: task({ task_id: 't1' }),
+    })
+    state = applyTaskEvent(state, {
+      type: 'task:updated',
+      task: task({ task_id: 't2', title: 'Second' }),
+    })
+    return state
+  }
+
+  it('默认标签为 changes、默认预览为空；没有激活任务同样回落默认', () => {
+    expect(DEFAULT_WORKBENCH_TAB).toBe('changes')
+    expect(WORKBENCH_TABS).toEqual(['changes', 'checks', 'diff', 'preview'])
+
+    const empty = createTaskState()
+    expect(activeWorkbenchTab(empty)).toBe('changes')
+    expect(activePreviewUrl(empty)).toBe('')
+
+    const state = twoTasks()
+    expect(activeWorkbenchTab(state)).toBe('changes')
+    expect(activePreviewUrl(state)).toBe('')
+  })
+
+  it('按任务独立记忆标签，切换激活任务时恢复各自上次的标签', () => {
+    let state = twoTasks()
+    state = setWorkbenchTab(state, 't1', 'checks')
+    state = setWorkbenchTab(state, 't2', 'preview')
+
+    expect(activeWorkbenchTab(state)).toBe('checks')
+    state = selectTask(state, 't2')
+    expect(activeWorkbenchTab(state)).toBe('preview')
+    state = selectTask(state, 't1')
+    expect(activeWorkbenchTab(state)).toBe('checks')
+  })
+
+  it('同值写入返回原状态；未知任务不产生孤儿记录', () => {
+    let state = twoTasks()
+    state = setWorkbenchTab(state, 't1', 'diff')
+    expect(setWorkbenchTab(state, 't1', 'diff')).toBe(state)
+    expect(setWorkbenchTab(state, 'missing', 'preview')).toBe(state)
+    expect(state.workbenchTabByTask).toEqual({ t1: 'diff' })
+  })
+
+  it('预览 URL 按任务保存并 trim；空白清除记录、未知任务忽略', () => {
+    let state = twoTasks()
+    state = setPreviewUrl(state, 't1', '  http://localhost:4300/  ')
+    state = setPreviewUrl(state, 't2', 'http://localhost:4301')
+
+    expect(state.previewUrlByTask).toEqual({
+      t1: 'http://localhost:4300/',
+      t2: 'http://localhost:4301',
+    })
+    expect(setPreviewUrl(state, 't1', 'http://localhost:4300/')).toBe(state)
+    expect(setPreviewUrl(state, 'missing', 'http://example.test')).toBe(state)
+
+    state = selectTask(state, 't1')
+    expect(activePreviewUrl(state)).toBe('http://localhost:4300/')
+    state = setPreviewUrl(state, 't1', '   ')
+    expect(state.previewUrlByTask).toEqual({ t2: 'http://localhost:4301' })
+    expect(activePreviewUrl(state)).toBe('')
+    expect(setPreviewUrl(state, 't1', '')).toBe(state)
+  })
+
+  it('task:discarded 清理该任务的标签与预览，不影响其他任务', () => {
+    let state = twoTasks()
+    state = setWorkbenchTab(state, 't1', 'preview')
+    state = setWorkbenchTab(state, 't2', 'diff')
+    state = setPreviewUrl(state, 't1', 'http://localhost:4300')
+    state = setPreviewUrl(state, 't2', 'http://localhost:4301')
+
+    state = applyTaskEvent(state, { type: 'task:discarded', task_id: 't1' })
+
+    expect(state.workbenchTabByTask).toEqual({ t2: 'diff' })
+    expect(state.previewUrlByTask).toEqual({ t2: 'http://localhost:4301' })
+    expect(activeWorkbenchTab(state)).toBe('changes')
+    expect(activePreviewUrl(state)).toBe('')
+  })
+
+  it('task:merged 清理该任务的标签与预览，不影响其他任务', () => {
+    let state = twoTasks()
+    state = setWorkbenchTab(state, 't1', 'diff')
+    state = setWorkbenchTab(state, 't2', 'checks')
+    state = setPreviewUrl(state, 't1', 'http://localhost:4300')
+    state = setPreviewUrl(state, 't2', 'http://localhost:4301')
+
+    state = applyTaskEvent(state, {
+      type: 'task:merged',
+      task_id: 't1',
+      commit_sha: 'abc123',
+    })
+
+    expect(state.workbenchTabByTask).toEqual({ t2: 'checks' })
+    expect(state.previewUrlByTask).toEqual({ t2: 'http://localhost:4301' })
+    expect(activeWorkbenchTab(state)).toBe('changes')
+    expect(activePreviewUrl(state)).toBe('')
+  })
+})
+
 describe('纯函数', () => {
   it('taskStatusLabel 默认返回 i18n key，可注入翻译函数', () => {
     expect(taskStatusLabel('queued')).toBe('task.statuses.queued')
@@ -591,6 +699,53 @@ describe('TaskController', () => {
     expect(controller.getState().activeTaskId).toBe('t2')
     controller.setActive(null)
     expect(controller.getState().activeTaskId).toBeNull()
+  })
+
+  it('setWorkbenchTab / setPreviewUrl 写入状态且同值不重复通知', async () => {
+    const { controller } = harness({
+      taskList: vi.fn(async () => okList([task({ task_id: 't1' })])),
+    })
+    await controller.refresh()
+    const seen: TaskState[] = []
+    controller.subscribe(state => seen.push(state))
+
+    controller.setWorkbenchTab('t1', 'preview')
+    controller.setPreviewUrl('t1', 'http://localhost:4300')
+    expect(activeWorkbenchTab(controller.getState())).toBe('preview')
+    expect(activePreviewUrl(controller.getState())).toBe('http://localhost:4300')
+    expect(seen).toHaveLength(2)
+
+    controller.setWorkbenchTab('t1', 'preview')
+    controller.setPreviewUrl('t1', 'http://localhost:4300')
+    expect(seen).toHaveLength(2)
+  })
+
+  it('discard 成功后清理该任务的标签与预览', async () => {
+    const { controller } = harness({
+      taskList: vi.fn(async () => okList([task({ task_id: 't1', status: 'review' })])),
+    })
+    await controller.refresh()
+    controller.setWorkbenchTab('t1', 'preview')
+    controller.setPreviewUrl('t1', 'http://localhost:4300')
+
+    expect(await controller.discard('t1')).toBe(true)
+    expect(controller.getState().workbenchTabByTask).toEqual({})
+    expect(controller.getState().previewUrlByTask).toEqual({})
+  })
+
+  it('apply 成功后按合并语义清理该任务的标签与预览', async () => {
+    const done = task({ task_id: 't1', status: 'done' })
+    const { controller } = harness({
+      taskList: vi.fn(async () => okList([done])),
+      taskApply: vi.fn(async () => okTask(done)),
+    })
+    await controller.refresh()
+    controller.setWorkbenchTab('t1', 'diff')
+    controller.setPreviewUrl('t1', 'http://localhost:4300')
+
+    expect(await controller.apply('t1')).toBe(true)
+    expect(controller.getState().workbenchTabByTask).toEqual({})
+    expect(controller.getState().previewUrlByTask).toEqual({})
   })
 
   it('activateFirstNeedsInput 切到第一个 needs_input 任务', async () => {

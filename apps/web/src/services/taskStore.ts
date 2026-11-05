@@ -24,6 +24,13 @@ import {
 /** 同时运行任务数上限（docs/TASKS.md §4；硬上限由 Rust 侧再钳制到 4）。 */
 export const MAX_RUNNING_TASKS = 2
 
+/** 工作台标签；按任务记忆，切换任务时恢复（P4 出口 #4）。 */
+export type WorkbenchTab = 'changes' | 'checks' | 'diff' | 'preview'
+
+export const WORKBENCH_TABS = ['changes', 'checks', 'diff', 'preview'] as const
+
+export const DEFAULT_WORKBENCH_TAB: WorkbenchTab = 'changes'
+
 export interface TaskState {
   tasks: TaskInfo[]
   activeTaskId: string | null
@@ -34,6 +41,10 @@ export interface TaskState {
   lastMerged: { taskId: string; commitSha: string } | null
   lastDiscarded: string | null
   error: { code: ErrorCode; message: string } | null
+  /** 每个任务上次停留的工作台标签；缺省按 DEFAULT_WORKBENCH_TAB 处理。 */
+  workbenchTabByTask: Record<string, WorkbenchTab>
+  /** 每个任务预览的 URL；缺省/空串表示未配置。 */
+  previewUrlByTask: Record<string, string>
 }
 
 export function createTaskState(): TaskState {
@@ -45,6 +56,8 @@ export function createTaskState(): TaskState {
     lastMerged: null,
     lastDiscarded: null,
     error: null,
+    workbenchTabByTask: {},
+    previewUrlByTask: {},
   }
 }
 
@@ -224,7 +237,7 @@ export function applyTaskEvent(state: TaskState, event: CoreEvent): TaskState {
       }))
       const cleared = withNeedsInput(next, event.task_id, false)
       return {
-        ...cleared,
+        ...clearWorkbenchPrefs(cleared, event.task_id),
         lastMerged: { taskId: event.task_id, commitSha: event.commit_sha },
       }
     }
@@ -240,7 +253,10 @@ export function applyTaskEvent(state: TaskState, event: CoreEvent): TaskState {
         changes: [],
       }))
       const cleared = withNeedsInput(next, event.task_id, false)
-      return { ...cleared, lastDiscarded: event.task_id }
+      return {
+        ...clearWorkbenchPrefs(cleared, event.task_id),
+        lastDiscarded: event.task_id,
+      }
     }
 
     default:
@@ -307,6 +323,68 @@ export function selectTask(state: TaskState, taskId: string | null): TaskState {
   return { ...state, activeTaskId: taskId }
 }
 
+// ==== 工作台标签与预览（按任务记忆，P4 出口 #4）====
+
+function hasTask(state: TaskState, taskId: string): boolean {
+  return taskIndex(state.tasks, taskId) >= 0
+}
+
+/** 记住任务的工作台标签；未知任务不落记录，避免产生孤儿条目。 */
+export function setWorkbenchTab(
+  state: TaskState,
+  taskId: string,
+  tab: WorkbenchTab,
+): TaskState {
+  if (!hasTask(state, taskId) || state.workbenchTabByTask[taskId] === tab) {
+    return state
+  }
+  return {
+    ...state,
+    workbenchTabByTask: { ...state.workbenchTabByTask, [taskId]: tab },
+  }
+}
+
+/** 记住任务的预览 URL；空白视为清除，避免 iframe 停留在无效地址。 */
+export function setPreviewUrl(state: TaskState, taskId: string, url: string): TaskState {
+  if (!hasTask(state, taskId)) return state
+  const next = url.trim()
+  if (next.length === 0) {
+    if (!(taskId in state.previewUrlByTask)) return state
+    const previewUrlByTask = { ...state.previewUrlByTask }
+    delete previewUrlByTask[taskId]
+    return { ...state, previewUrlByTask }
+  }
+  if (state.previewUrlByTask[taskId] === next) return state
+  return {
+    ...state,
+    previewUrlByTask: { ...state.previewUrlByTask, [taskId]: next },
+  }
+}
+
+/** 激活任务的标签；没有记录（含未选择任务）时回落到默认标签。 */
+export function activeWorkbenchTab(state: TaskState): WorkbenchTab {
+  if (state.activeTaskId === null) return DEFAULT_WORKBENCH_TAB
+  return state.workbenchTabByTask[state.activeTaskId] ?? DEFAULT_WORKBENCH_TAB
+}
+
+/** 激活任务的预览 URL；没有记录时返回空串，视图层显示占位提示。 */
+export function activePreviewUrl(state: TaskState): string {
+  if (state.activeTaskId === null) return ''
+  return state.previewUrlByTask[state.activeTaskId] ?? ''
+}
+
+/** 任务结束（合并/丢弃）后清除其标签与预览记录，避免长期运行时泄漏。 */
+export function clearWorkbenchPrefs(state: TaskState, taskId: string): TaskState {
+  const hasTab = taskId in state.workbenchTabByTask
+  const hasUrl = taskId in state.previewUrlByTask
+  if (!hasTab && !hasUrl) return state
+  const workbenchTabByTask = { ...state.workbenchTabByTask }
+  const previewUrlByTask = { ...state.previewUrlByTask }
+  delete workbenchTabByTask[taskId]
+  delete previewUrlByTask[taskId]
+  return { ...state, workbenchTabByTask, previewUrlByTask }
+}
+
 // ==== 控制器：命令 + 事件流 → store ====
 
 export interface TaskControllerDeps {
@@ -339,6 +417,10 @@ export interface TaskController {
   diff(taskId: string): Promise<BridgeResult<TaskDiffResult>>
   bindSession(taskId: string, sessionId: string | null): Promise<boolean>
   setActive(taskId: string | null): void
+  /** 记住任务的工作台标签（切换任务时恢复）。 */
+  setWorkbenchTab(taskId: string, tab: WorkbenchTab): void
+  /** 记住任务的预览 URL；空串清除记录。 */
+  setPreviewUrl(taskId: string, url: string): void
   /** 状态栏点击：切到第一个 needs_input 任务并返回其 id。 */
   activateFirstNeedsInput(): string | null
   clearError(): void
@@ -447,6 +529,8 @@ export function createTaskController(deps: TaskControllerDeps): TaskController {
     if (disposed) return false
     const res = await deps.taskApply(taskId)
     if (!acceptTask(res)) return false
+    // 合并即任务结束：清掉该任务的标签/预览记录，避免 iframe 停留在已结束任务。
+    commit(clearWorkbenchPrefs(state, taskId))
     // 合并后主工作区/基线变化，Rust 会重写任务状态与变更 applied 标记。
     // 浏览器 fallback 没有真实列表（返回空），此时保留本地结果用于演示。
     if (!res.fallback) await refresh()
@@ -474,8 +558,12 @@ export function createTaskController(deps: TaskControllerDeps): TaskController {
           }
         : task,
     )
-    const next = withNeedsInput({ ...state, tasks, lastDiscarded: taskId, error: null }, taskId, false)
-    commit(next)
+    const cleared = withNeedsInput(
+      { ...state, tasks, lastDiscarded: taskId, error: null },
+      taskId,
+      false,
+    )
+    commit(clearWorkbenchPrefs(cleared, taskId))
     return true
   }
 
@@ -505,6 +593,18 @@ export function createTaskController(deps: TaskControllerDeps): TaskController {
   function setActive(taskId: string | null): void {
     if (disposed) return
     const next = selectTask(state, taskId)
+    if (next !== state) commit(next)
+  }
+
+  function setWorkbenchTabForTask(taskId: string, tab: WorkbenchTab): void {
+    if (disposed) return
+    const next = setWorkbenchTab(state, taskId, tab)
+    if (next !== state) commit(next)
+  }
+
+  function setPreviewUrlForTask(taskId: string, url: string): void {
+    if (disposed) return
+    const next = setPreviewUrl(state, taskId, url)
     if (next !== state) commit(next)
   }
 
@@ -547,6 +647,8 @@ export function createTaskController(deps: TaskControllerDeps): TaskController {
     diff,
     bindSession,
     setActive,
+    setWorkbenchTab: setWorkbenchTabForTask,
+    setPreviewUrl: setPreviewUrlForTask,
     activateFirstNeedsInput,
     clearError,
     dispose,

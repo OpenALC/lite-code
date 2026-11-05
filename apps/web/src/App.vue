@@ -71,6 +71,10 @@ const taskSession = createTaskController({
   onCoreEvent,
 })
 
+// 工作台挂载点保持稳定：任务切换只更新 controller，组件不随 activeTaskId 重建。
+// 窄窗口浮层重挂载时也从 controller 读回各任务的标签与预览 URL。
+const TASK_WORKBENCH_KEY = 'task-workbench'
+
 const layout = ref<LayoutPrefs>(loadLayoutPrefs())
 const profile = computed(() =>
   resolveProfile(ui.value.mode, ui.value.windowWidth, layout.value),
@@ -378,6 +382,7 @@ onBeforeUnmount(() => {
           class="workbench-slot"
         >
           <TaskWorkbench
+            :key="TASK_WORKBENCH_KEY"
             :controller="taskSession"
             @collapse="workbenchCollapsed = true"
           />
@@ -435,6 +440,7 @@ onBeforeUnmount(() => {
         :style="{ width: `${profile.agentWidth}px` }"
       >
         <TaskWorkbench
+          :key="TASK_WORKBENCH_KEY"
           :controller="taskSession"
           @collapse="workbenchCollapsed = true"
         />

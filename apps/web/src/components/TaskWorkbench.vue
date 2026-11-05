@@ -4,12 +4,16 @@ import { useI18n } from 'vue-i18n'
 
 import type { TaskDiffResult } from '../services/bridge'
 import {
+  activePreviewUrl,
+  activeWorkbenchTab,
   MAX_RUNNING_TASKS,
   queuedReason,
   statusTone,
   taskStatusLabel,
+  WORKBENCH_TABS,
   type TaskController,
   type Translate,
+  type WorkbenchTab,
 } from '../services/taskStore'
 import type { TaskStepState } from '../services/taskTypes'
 
@@ -35,6 +39,10 @@ const statusText = computed(() =>
 const tone = computed(() => (task.value ? statusTone(task.value.status) : 'muted'))
 const queueText = computed(() => queuedReason(translate, MAX_RUNNING_TASKS))
 
+// 标签与预览地址都按任务保存在 controller；组件挂载/切换任务只读取，不持有副本。
+const workbenchTab = computed(() => activeWorkbenchTab(state.value))
+const previewUrl = computed(() => activePreviewUrl(state.value))
+
 const canStart = computed(() => status.value === 'planning' || status.value === 'queued')
 const canCancel = computed(
   () => status.value !== null && status.value !== 'done' && status.value !== 'failed',
@@ -44,22 +52,48 @@ const canDiscard = computed(() => status.value !== null && status.value !== 'don
 
 const pendingAction = ref<'apply' | 'discard' | null>(null)
 const acting = ref(false)
-const showDiff = ref(false)
 const diff = ref<TaskDiffResult | null>(null)
 const diffLoading = ref(false)
 const diffError = ref<string | null>(null)
+const previewDraft = ref('')
+// 只应用最后一次 diff 请求的结果，避免快速切换任务时旧响应覆盖新任务。
+let diffRequest = 0
 
 const isConflict = computed(() => {
   const message = state.value.error?.message.toLowerCase() ?? ''
   return message.includes('conflict') || message.includes('冲突')
 })
 
-watch(taskId, () => {
-  pendingAction.value = null
-  showDiff.value = false
-  diff.value = null
-  diffError.value = null
-})
+watch(
+  previewUrl,
+  url => {
+    previewDraft.value = url
+  },
+  { immediate: true },
+)
+
+// 切换任务（或恢复的标签）时：丢弃旧任务的 diff 缓存；标签为 diff 则立即读取。
+// 预览 iframe 由模板的 v-if 负责销毁/重建，这里不需要命令式操作 DOM。
+watch(
+  [taskId, workbenchTab],
+  ([currentId, tab], previous) => {
+    const previousId = previous?.[0] ?? null
+    if (currentId !== previousId) {
+      pendingAction.value = null
+      diff.value = null
+      diffError.value = null
+      previewDraft.value = previewUrl.value
+    }
+    if (currentId !== null && tab === 'diff') void loadDiff(currentId)
+  },
+  { immediate: true },
+)
+
+function selectTab(tab: WorkbenchTab): void {
+  const current = task.value
+  if (!current) return
+  props.controller.setWorkbenchTab(current.task_id, tab)
+}
 
 function shortSha(sha: string): string {
   return sha.slice(0, 8)
@@ -102,26 +136,38 @@ function requestAction(action: 'apply' | 'discard'): void {
   pendingAction.value = action
 }
 
-async function toggleDiff(): Promise<void> {
-  const current = task.value
-  if (!current) return
-  if (showDiff.value) {
-    showDiff.value = false
-    return
-  }
-  showDiff.value = true
-  if (diff.value?.task_id === current.task_id) return
-
+async function loadDiff(id: string, force = false): Promise<void> {
+  if (!force && diff.value?.task_id === id) return
+  const request = ++diffRequest
   diffLoading.value = true
   diffError.value = null
-  const res = await props.controller.diff(current.task_id)
+  if (force) diff.value = null
+
+  const res = await props.controller.diff(id)
+  if (request !== diffRequest) return
   diffLoading.value = false
-  if (task.value?.task_id !== current.task_id) return
+  if (taskId.value !== id) return
   if (!res.ok) {
     diffError.value = `${res.error.code}: ${res.error.message}`
     return
   }
   diff.value = res.data
+}
+
+function reloadDiff(): void {
+  const current = taskId.value
+  if (current !== null) void loadDiff(current, true)
+}
+
+function commitPreview(): void {
+  const current = task.value
+  if (!current) return
+  props.controller.setPreviewUrl(current.task_id, previewDraft.value)
+}
+
+function clearPreview(): void {
+  previewDraft.value = ''
+  commitPreview()
 }
 </script>
 
@@ -157,6 +203,25 @@ async function toggleDiff(): Promise<void> {
     </div>
 
     <template v-else>
+      <div
+        class="wb-tabs"
+        role="tablist"
+        :aria-label="t('task.workbenchTitle')"
+      >
+        <button
+          v-for="tab in WORKBENCH_TABS"
+          :key="tab"
+          type="button"
+          role="tab"
+          class="wb-tab"
+          :class="{ active: workbenchTab === tab }"
+          :aria-selected="workbenchTab === tab"
+          @click="selectTab(tab)"
+        >
+          {{ t(`task.tabs.${tab}`) }}
+        </button>
+      </div>
+
       <div class="record">
         <div
           class="task-title"
@@ -237,67 +302,75 @@ async function toggleDiff(): Promise<void> {
         </dl>
       </div>
 
-      <div class="wb-body">
+      <div
+        class="wb-body"
+        :class="{ flush: workbenchTab === 'preview' }"
+      >
+        <template v-if="workbenchTab === 'changes'">
+          <section
+            v-if="task.steps.length > 0"
+            class="section"
+          >
+            <div class="section-title">
+              {{ t('task.steps') }}
+            </div>
+            <ol class="steps">
+              <li
+                v-for="step in task.steps"
+                :key="step.index"
+                class="step"
+                :class="`step-${step.state}`"
+                :title="t(`task.stepStates.${step.state}`)"
+              >
+                <span class="step-icon">{{ stepIcon(step.state) }}</span>
+                <span class="step-title">{{ step.title }}</span>
+              </li>
+            </ol>
+          </section>
+
+          <section class="section">
+            <div class="section-title">
+              {{ t('task.changes') }}
+              <span class="count">{{ task.changes.length }}</span>
+            </div>
+            <div
+              v-if="task.changes.length === 0"
+              class="muted"
+            >
+              {{ t('task.noChanges') }}
+            </div>
+            <ul
+              v-else
+              class="changes"
+            >
+              <li
+                v-for="change in task.changes"
+                :key="change.path"
+                class="change"
+              >
+                <span
+                  class="change-status"
+                  :class="`change-${change.status}`"
+                >{{ t(`task.changeStatuses.${change.status}`) }}</span>
+                <span
+                  class="change-path mono"
+                  :title="change.path"
+                >{{ change.path }}</span>
+                <span class="stat add">+{{ change.added }}</span>
+                <span class="stat del">-{{ change.removed }}</span>
+                <span
+                  v-if="change.applied"
+                  class="applied"
+                >{{ t('task.applied') }}</span>
+              </li>
+            </ul>
+          </section>
+        </template>
+
         <section
-          v-if="task.steps.length > 0"
+          v-else-if="workbenchTab === 'checks'"
           class="section"
         >
-          <div class="section-title">
-            {{ t('task.steps') }}
-          </div>
-          <ol class="steps">
-            <li
-              v-for="step in task.steps"
-              :key="step.index"
-              class="step"
-              :class="`step-${step.state}`"
-              :title="t(`task.stepStates.${step.state}`)"
-            >
-              <span class="step-icon">{{ stepIcon(step.state) }}</span>
-              <span class="step-title">{{ step.title }}</span>
-            </li>
-          </ol>
-        </section>
-
-        <section class="section">
-          <div class="section-title">
-            {{ t('task.changes') }}
-            <span class="count">{{ task.changes.length }}</span>
-          </div>
-          <div
-            v-if="task.changes.length === 0"
-            class="muted"
-          >
-            {{ t('task.noChanges') }}
-          </div>
-          <ul
-            v-else
-            class="changes"
-          >
-            <li
-              v-for="change in task.changes"
-              :key="change.path"
-              class="change"
-            >
-              <span
-                class="change-status"
-                :class="`change-${change.status}`"
-              >{{ t(`task.changeStatuses.${change.status}`) }}</span>
-              <span
-                class="change-path mono"
-                :title="change.path"
-              >{{ change.path }}</span>
-              <span class="stat add">+{{ change.added }}</span>
-              <span class="stat del">-{{ change.removed }}</span>
-              <span
-                v-if="change.applied"
-                class="applied"
-              >{{ t('task.applied') }}</span>
-            </li>
-          </ul>
-        </section>
-
-        <section class="section">
           <div class="section-title">
             {{ t('task.checks') }}
             <span class="count">{{ task.checks.length }}</span>
@@ -334,15 +407,18 @@ async function toggleDiff(): Promise<void> {
           </ul>
         </section>
 
-        <section class="section">
+        <section
+          v-else-if="workbenchTab === 'diff'"
+          class="section"
+        >
           <div class="section-head">
             <button
               type="button"
               class="btn"
               :disabled="diffLoading"
-              @click="toggleDiff"
+              @click="reloadDiff"
             >
-              {{ showDiff ? t('task.hideDiff') : t('task.diff') }}
+              {{ t('task.reloadDiff') }}
             </button>
             <span
               v-if="diffLoading"
@@ -355,9 +431,58 @@ async function toggleDiff(): Promise<void> {
             >{{ t('task.diffFailed') }}</span>
           </div>
           <pre
-            v-if="showDiff && diff"
+            v-if="diff"
             class="diff mono"
           >{{ diff.patch || t('task.noChanges') }}</pre>
+        </section>
+
+        <section
+          v-else-if="workbenchTab === 'preview'"
+          class="section preview"
+        >
+          <div class="preview-bar">
+            <input
+              v-model="previewDraft"
+              class="preview-url mono"
+              type="text"
+              spellcheck="false"
+              :placeholder="t('task.previewUrlPlaceholder')"
+              @keydown.enter.prevent="commitPreview"
+              @blur="commitPreview"
+            >
+            <button
+              type="button"
+              class="btn"
+              :disabled="previewDraft.trim().length === 0"
+              @click="commitPreview"
+            >
+              {{ t('task.previewOpen') }}
+            </button>
+            <button
+              v-if="previewUrl"
+              type="button"
+              class="btn"
+              @click="clearPreview"
+            >
+              {{ t('task.previewClear') }}
+            </button>
+          </div>
+
+          <!-- v-if + 任务 key：离开预览标签/切换任务时销毁 iframe，回来按保存的 URL 重建。 -->
+          <iframe
+            v-if="previewUrl"
+            :key="task.task_id"
+            class="preview-frame"
+            :src="previewUrl"
+            :title="task.title"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          />
+          <div
+            v-else
+            class="preview-empty"
+          >
+            {{ t('task.previewEmpty') }}
+          </div>
         </section>
       </div>
 
@@ -467,6 +592,37 @@ async function toggleDiff(): Promise<void> {
 
 .wb-collapse:hover {
   color: var(--fg);
+}
+
+.wb-tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 26px;
+  padding: 0 6px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.wb-tab {
+  flex: none;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--fg-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.wb-tab:hover {
+  color: var(--fg-2);
+}
+
+.wb-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
 .badge {
@@ -616,8 +772,72 @@ async function toggleDiff(): Promise<void> {
   padding: 8px;
 }
 
+/* 预览标签占满工作台剩余高度，iframe 不参与外层滚动。 */
+.wb-body.flush {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wb-body.flush .section.preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+
 .section {
   margin-bottom: 12px;
+}
+
+.preview-bar {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.preview-url {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 11px;
+}
+
+.preview-url:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.preview-frame {
+  flex: 1;
+  min-height: 120px;
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: #fff;
+}
+
+.preview-empty {
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .section-title {
