@@ -83,7 +83,7 @@ foreach ($name in $KnownMetrics.Keys) {
     $missing = @()
     if ($null -eq $b) { $missing += '基线' }
     if ($null -eq $c) { $missing += '本次' }
-    Write-Warning ("指标 {0} 在{1}中为 null/缺失，跳过对比（未接入的指标属预期，见 run.ps1 头注释）" -f $name, ($missing -join '与'))
+    Write-Warning ("指标 {0} 在{1}中为 null/缺失，跳过对比（基线尚未收录该指标属预期，见 run.ps1 头注释）" -f $name, ($missing -join '与'))
     $rows += [pscustomobject]@{
       指标 = $name; 基线 = 'n/a'; 本次 = 'n/a'; 差值 = 'n/a'; 回归 = 'n/a'; 状态 = 'SKIP'
     }

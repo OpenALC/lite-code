@@ -84,8 +84,9 @@ foreach ($name in $Presentation.Keys) {
   $lines.Add(('| {0} | {1} | {2} |' -f $Presentation[$name], (Format-Value $values[$name] $Units[$name]), $Targets[$name]))
 }
 $lines.Add('')
-$lines.Add('> trayRssMb / activeRssMb / warmStartMs 依赖 P1 Lifecycle 的托盘与窗口场景，接入前为 n/a；')
-$lines.Add('> coldStartMs 目前为近似值（主窗口句柄出现，非应用内"可交互"埋点），见 scripts/perf/run.ps1 头注释。')
+$lines.Add('> trayRssMb 为"关闭主窗口后进程树 RSS"；当前 Lifecycle 关闭只隐藏、不销毁 WebView，与 PLAN §4 "< 60 MB（窗口已销毁）"口径不同。')
+$lines.Add('> activeRssMb 依赖"3 文件 + 终端"的 UI 自动化入口，接入前为 n/a；coldStartMs 为"主窗口可见"近似值，非应用内可交互埋点。')
+$lines.Add('> warmStartMs 为隐藏窗口后二次启动唤回主窗口的耗时；residualProcs 为 20 次窗口开关后的进程快照 diff，口径见 scripts/perf/run.ps1 头注释。')
 $lines.Add('> 回归 > 15% 会在 compare 步骤判 FAIL（docs/PLAN.md §4）；基线更新需 `perf-baseline` 标签 + 人工合并。')
 
 $markdown = ($lines -join "`n")
