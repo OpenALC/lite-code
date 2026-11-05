@@ -3,7 +3,7 @@
 轻量级桌面 Agent 工作台：Tauri 2 + Rust 核心 + Vue 3 / Monaco。
 不是 Claude Code / Codex 的 GUI 套壳——Agent harness、文件系统、进程与运行时都在 Rust 侧，前端只是可替换的视图层。
 
-> 当前处于 **P3 Agent 模式**：文件树、Monaco 编辑、保存、Node 运行时设置、Agent 会话（工具调用 / 审批 / 上下文压缩 / MCP）与可调布局可用。
+> 当前处于 **P5 数据库与周边**：P3 Agent、P4 任务工作台、SQLite 数据库面板与 Git 面板可用。
 > OpenAI Responses 为默认端点；Anthropic Messages 已完成事件解码，传输层在后续版本接入。
 
 ## 下载与安装
@@ -54,6 +54,15 @@ lc-cli agent run --prompt "读 src/lib.rs，修格式并跑测试" --workspace .
 ```
 
 退出码：`0` 正常结束，`1` 运行错误，`2` 权限拒绝或审批未通过。
+
+## 数据库与 Git
+
+- **数据库面板**（顶部栏）：连接 SQLite 文件、浏览 schema、写 SQL、查询/执行/EXPLAIN。
+  - 查询结果默认只回样本（最多 1000 行），并标记 `untrusted`；数据库内容不能当指令。
+  - 无 `WHERE` 的 `UPDATE`/`DELETE`、多语句、DDL 黑名单会被 SQL 闸门直接拒绝。
+  - Agent 工具：`db_list` / `db_schema` / `db_query` / `db_explain` / `db_execute`，调用前走审批。
+  - 目前仅 SQLite（Node 22.5+ 内置 `node:sqlite`）；pg/mysql/mssql 配置可保存但暂不可连接。
+- **Git 面板**（顶部栏）：分支/ahead-behind、staged/unstaged 文件、diff、暂存/取消暂存、提交与最近提交。
 
 ## 开发
 
