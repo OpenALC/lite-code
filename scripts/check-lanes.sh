@@ -49,6 +49,7 @@ lane_pub_surface() {
           for (i = 1; i <= NF; i++) {
             seg = $i
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", seg)
+            gsub(/[{}]/, "", seg)
             if (match(seg, /[[:space:]]as[[:space:]]+[A-Za-z_][A-Za-z0-9_]*$/)) {
               alias = substr(seg, RSTART)
               sub(/^[[:space:]]*as[[:space:]]+/, "", alias)

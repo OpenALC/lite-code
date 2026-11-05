@@ -2166,6 +2166,7 @@ name = "lc-core"
 version = "0.2.1-preview.1"
 dependencies = [
  "dirs",
+ "globset",
  "ignore",
  "lc-proto",
  "notify",
