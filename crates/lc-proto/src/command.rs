@@ -61,6 +61,7 @@ pub const CONTRACT_ERROR_CODES: &[&str] = &[
     "node_broken",
     "shell_unavailable",
     "contract_mismatch",
+    "permission_denied",
 ];
 
 /// 请求信封。`id` 用于关联响应（会话内单调递增）。

@@ -3,7 +3,7 @@
 // 契约版本：0.3.0
 
 // ---- lc_proto::ErrorCode ----
-export type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch";
+export type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch" | "permission_denied";
 
 // ---- lc_proto::ErrorBody ----
 export type ErrorBody = { code: ErrorCode, message: string, detail?: string | null, };

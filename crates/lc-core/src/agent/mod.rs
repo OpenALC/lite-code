@@ -3,6 +3,7 @@
 
 pub mod approval;
 pub mod collector;
+pub mod events;
 pub mod exec;
 pub mod r#loop;
 pub mod policy;
@@ -12,6 +13,9 @@ pub mod tools;
 
 pub use approval::{ApprovalCache, ApprovalDecision, ApprovalId, ApprovalQueue, ApprovalRequest};
 pub use collector::{CollectedToolCall, CollectedTurn, CollectorError, TurnCollector};
+pub use events::{
+    approval_prompt, llm_event, loop_outcome, mode_from_contract, mode_to_contract, session_info,
+};
 pub use exec::{LocalToolExecutor, ToolCall, ToolError, ToolExecutor, ToolOutput};
 pub use r#loop::{AgentLoop, LlmStream, LoopError, LoopOutcome};
 pub use policy::{Policy, PolicyDecision, PolicyError, PolicyMode, PolicyRequest, PolicySource};

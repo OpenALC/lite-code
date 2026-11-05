@@ -22,6 +22,8 @@ pub enum ErrorCode {
     /// 终端/命令执行依赖的 shell 不可用（docs/ARCHITECTURE.md §5.4）
     ShellUnavailable,
     ContractMismatch,
+    /// 权限策略拒绝（模式/黑名单/工作区边界）；不是传输错误
+    PermissionDenied,
 }
 
 /// 事件流 / 命令响应统一使用的错误体。
