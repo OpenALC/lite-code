@@ -4,9 +4,11 @@ import type { CommandResult } from '@lc-proto'
 
 import {
   detectNode,
+  downloadNodePortable,
   isTauri,
   readFile,
   readDir,
+  setNodeManual,
   workspaceRoot,
   writeFile,
   type BridgeResult,
@@ -89,6 +91,14 @@ describe('fallback 占位（浏览器 dev）', () => {
     expect(res.ok).toBe(true)
     expect(res.fallback).toBe(true)
     if (res.ok) expect(res.data.kind).toBe('ack')
+  })
+
+  it('setNodeManual / downloadNodePortable 在浏览器 dev 返回 fallback', async () => {
+    for (const res of [await setNodeManual('C:/node.exe'), await downloadNodePortable('22')]) {
+      expect(res.ok).toBe(true)
+      expect(res.fallback).toBe(true)
+      if (res.ok) expect(res.data.status.kind).toBe('need_manual')
+    }
   })
 
   it('detectNode 返回 need_manual 占位（不伪造可用的 Node）', async () => {
@@ -183,6 +193,43 @@ describe('Tauri 路径', () => {
       { cmd: 'fs_write_file', args: { path: 'D:/proj/a.rs', content: 'fn main() {}' } },
     ])
     expect(res).toEqual({ ok: true, data: { kind: 'ack' }, fallback: false })
+  })
+
+  it('setNodeManual 以 { path } 调用并返回 ready', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return {
+          kind: 'node_status',
+          status: {
+            kind: 'ready',
+            runtime: {
+              path: 'D:/node.exe',
+              version: { major: 22, minor: 14, patch: 0 },
+              source: 'manual',
+              health: 'supported',
+            },
+          },
+        }
+      },
+    })
+    const res = await setNodeManual('D:/node.exe')
+    expect(calls).toEqual([{ cmd: 'node_set_manual', args: { path: 'D:/node.exe' } }])
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.data.status.kind).toBe('ready')
+  })
+
+  it('downloadNodePortable 以 { version: null } 调用', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'node_status', status: { kind: 'need_manual', attempts: [] } }
+      },
+    })
+    await downloadNodePortable()
+    expect(calls).toEqual([{ cmd: 'node_download_portable', args: { version: null } }])
   })
 
   it('node_detect 以空参数调用', async () => {

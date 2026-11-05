@@ -10,10 +10,16 @@
 
 use std::path::{Path, PathBuf};
 
+use lc_core::config::NodeRuntime;
 use lc_core::fs::{
     DirLevel, FsError, RealPathResolver, ensure_within_root, read_dir_level, write_file_text,
 };
-use lc_proto::{CommandResult, ContractMeta, ErrorBody, ErrorCode, NodeStatus, ShellInfo};
+use lc_core::runtime::manual::{self, ManualError};
+use lc_core::runtime::portable::{self, VersionSpec};
+use lc_proto::{
+    CommandResult, ContractMeta, ErrorBody, ErrorCode, NodeHealth, NodeRuntimeInfo, NodeStatus,
+    ShellInfo,
+};
 
 // get_webview_window 来自 Manager trait（仅桌面侧的托盘/单实例路径用到）
 #[cfg(desktop)]
@@ -44,6 +50,78 @@ fn workspace_root() -> CommandResult {
 #[tauri::command]
 fn node_detect() -> NodeStatus {
     lc_core::runtime::probe_real()
+}
+
+/// 版本标签只影响 UI（docs/RUNTIME.md §2），与 runtime lane 的规则一致。
+fn node_health(major: u32) -> NodeHealth {
+    if major >= 22 {
+        NodeHealth::Supported
+    } else if major >= 18 {
+        NodeHealth::Unverified
+    } else {
+        NodeHealth::Legacy
+    }
+}
+
+fn runtime_info(rt: &NodeRuntime) -> NodeRuntimeInfo {
+    NodeRuntimeInfo {
+        path: rt.path.clone(),
+        version: rt.version,
+        source: rt.source,
+        health: node_health(rt.version.major),
+    }
+}
+
+fn ready_status(rt: NodeRuntime) -> CommandResult {
+    CommandResult::NodeStatus {
+        status: NodeStatus::Ready {
+            runtime: runtime_info(&rt),
+        },
+    }
+}
+
+fn manual_error_body(e: ManualError) -> ErrorBody {
+    match e {
+        ManualError::Invalid(reason, detail) => {
+            let body = ErrorBody::new(
+                ErrorCode::NodeBroken,
+                format!("node 校验失败（{reason:?}）"),
+            );
+            match detail {
+                Some(d) => body.with_detail(d),
+                None => body,
+            }
+        }
+        ManualError::Persist(e) => ErrorBody::new(ErrorCode::Io, e.to_string()),
+    }
+}
+
+/// 手动指定 node.exe（docs/RUNTIME.md §5：校验通过才写配置）。
+#[tauri::command]
+fn node_set_manual(path: String) -> Result<CommandResult, ErrorBody> {
+    manual::set_manual_real(Path::new(&path))
+        .map(ready_status)
+        .map_err(manual_error_body)
+}
+
+/// 下载便携版 Node 并写入配置；网络/解压在阻塞线程执行，避免卡 UI。
+#[tauri::command]
+async fn node_download_portable(version: Option<String>) -> Result<CommandResult, ErrorBody> {
+    let spec = match version.as_deref() {
+        Some(v) => portable::parse_version_arg(v).ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::InvalidArgument,
+                format!("无法解析版本 {v:?}（用 22.14.0 或 22）"),
+            )
+        })?,
+        None => VersionSpec::Latest(portable::DEFAULT_MAJOR),
+    };
+    let installed =
+        tauri::async_runtime::spawn_blocking(move || portable::install_real(&spec, None))
+            .await
+            .map_err(|e| ErrorBody::new(ErrorCode::Internal, e.to_string()))?
+            .map_err(|e| ErrorBody::new(ErrorCode::NodeUnavailable, e.to_string()))?;
+    Ok(ready_status(installed))
 }
 
 /// 转发 shell 探测（终端与 Agent 执行依赖，docs/RUNTIME.md §8）。
@@ -192,6 +270,8 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             node_detect,
+            node_set_manual,
+            node_download_portable,
             shell_detect,
             contract_info,
             workspace_root,
@@ -224,9 +304,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use lc_proto::{CommandResult, ErrorCode};
+    use lc_core::config::NodeRuntime;
+    use lc_proto::{CommandResult, ErrorCode, NodeHealth, NodeSource, SemVer};
 
-    use super::{list_dir, read_file_text, write_text};
+    use super::{list_dir, node_health, read_file_text, runtime_info, write_text};
 
     /// 进程内唯一临时目录（lc-core 不引 tempfile，薄壳同样不引入新依赖）。
     fn temp_root(tag: &str) -> PathBuf {
@@ -243,6 +324,28 @@ mod tests {
 
     fn code_of(result: &Result<impl Sized, lc_proto::ErrorBody>) -> ErrorCode {
         result.as_ref().err().expect("expected error").code
+    }
+
+    #[test]
+    fn node_health_matches_runtime_policy() {
+        assert_eq!(node_health(22), NodeHealth::Supported);
+        assert_eq!(node_health(21), NodeHealth::Unverified);
+        assert_eq!(node_health(17), NodeHealth::Legacy);
+    }
+
+    #[test]
+    fn runtime_info_carries_health_and_source() {
+        let rt = NodeRuntime {
+            path: r"C:\tools\node.exe".into(),
+            version: SemVer::new(20, 11, 0),
+            source: NodeSource::Manual,
+            resolved_at: "2026-11-05T00:00:00Z".into(),
+        };
+        let info = runtime_info(&rt);
+        assert_eq!(info.path, rt.path);
+        assert_eq!(info.version, rt.version);
+        assert_eq!(info.source, NodeSource::Manual);
+        assert_eq!(info.health, NodeHealth::Unverified);
     }
 
     #[test]

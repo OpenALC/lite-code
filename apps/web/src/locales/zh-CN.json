@@ -19,6 +19,31 @@
     "saveFailed": "保存失败",
     "sampleNotSaveable": "示例缓冲区不可保存"
   },
+  "runtime": {
+    "title": "Node 运行时",
+    "close": "关闭",
+    "status": "状态",
+    "refresh": "重新探测",
+    "detecting": "探测中…",
+    "ready": "可用",
+    "needManual": "未找到可用的 Node.js",
+    "fallback": "浏览器开发模式：无法探测或安装 Node",
+    "manualTitle": "手动指定 node.exe",
+    "manualPlaceholder": "C:\\Program Files\\nodejs\\node.exe",
+    "manualAction": "校验并保存",
+    "portableTitle": "便携版",
+    "portableDesc": "下载官方 Node 22，校验 SHA256 后安装到应用数据目录。",
+    "portableAction": "下载便携版 Node 22",
+    "downloading": "下载中…",
+    "saved": "已保存运行时配置",
+    "installed": "便携版安装完成",
+    "source": "来源",
+    "health": {
+      "supported": "受支持",
+      "unverified": "未验证",
+      "legacy": "旧版本"
+    }
+  },
   "tree": {
     "title": "文件树",
     "toggle": "折叠 / 展开文件树",

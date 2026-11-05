@@ -6,6 +6,7 @@ import AgentPlaceholder from './components/AgentPlaceholder.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
+import RuntimeSettings from './components/RuntimeSettings.vue'
 import TabBar from './components/TabBar.vue'
 import { workspaceRoot } from './services/bridge'
 import { resolveProfile } from './services/layoutProfile'
@@ -24,6 +25,7 @@ const profile = computed(() => resolveProfile(ui.value.mode, ui.value.windowWidt
 // 工作区根由 Rust 侧经 workspace_root 注入（传输层安全边界，docs/PLAN.md R3）；
 // 浏览器 dev 无 Tauri，可用 ?root=<路径> 作为占位数据前缀。
 const treeCollapsed = ref(false)
+const showRuntime = ref(false)
 const projectRoot = ref(new URLSearchParams(window.location.search).get('root') ?? '')
 
 function onResize(): void {
@@ -63,6 +65,13 @@ onBeforeUnmount(() => {
         {{ t('app.title') }}
       </div>
       <div class="spacer" />
+      <button
+        type="button"
+        class="runtime-btn"
+        @click="showRuntime = true"
+      >
+        {{ t('runtime.title') }}
+      </button>
       <ModeSwitcher />
     </header>
 
@@ -137,6 +146,11 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
+    <RuntimeSettings
+      v-if="showRuntime"
+      @close="showRuntime = false"
+    />
+
     <footer class="statusbar">
       <span class="item">{{ t('status.branch') }}</span>
       <span class="item dim">Node —</span>
@@ -173,6 +187,21 @@ onBeforeUnmount(() => {
 
 .spacer {
   flex: 1;
+}
+
+.runtime-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-3);
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.runtime-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
 }
 
 .main {

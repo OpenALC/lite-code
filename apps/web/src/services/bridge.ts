@@ -129,17 +129,50 @@ export async function writeFile(
   return { ok: true, data: res.data, fallback: false }
 }
 
-/** Node 探测（惰性触发由前端控制，docs/RUNTIME.md）。 */
-export async function detectNode(): Promise<BridgeResult<NodeStatusResult>> {
-  if (!isTauri()) {
-    return { ok: true, data: { kind: 'node_status', status: { kind: 'need_manual', attempts: [] } }, fallback: true }
+function browserNodeStatus(): BridgeResult<NodeStatusResult> {
+  return {
+    ok: true,
+    data: { kind: 'node_status', status: { kind: 'need_manual', attempts: [] } },
+    fallback: true,
   }
-  const res = await call('node_detect', {})
+}
+
+function asNodeStatus(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<NodeStatusResult> {
   if (!res.ok) return res
   if (res.data.kind !== 'node_status') {
-    return { ok: false, error: internalError(`node_detect 返回 kind=${String(res.data.kind)}`), fallback: false }
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(res.data.kind)}`),
+      fallback: false,
+    }
   }
   return { ok: true, data: res.data, fallback: false }
+}
+
+/** Node 探测（惰性触发由前端控制，docs/RUNTIME.md）。 */
+export async function detectNode(): Promise<BridgeResult<NodeStatusResult>> {
+  if (!isTauri()) return browserNodeStatus()
+  return asNodeStatus(await call('node_detect', {}), 'node_detect')
+}
+
+/** 手动指定 node.exe；Rust 侧校验通过才写配置。 */
+export async function setNodeManual(path: string): Promise<BridgeResult<NodeStatusResult>> {
+  if (!isTauri()) return browserNodeStatus()
+  return asNodeStatus(await call('node_set_manual', { path }), 'node_set_manual')
+}
+
+/** 下载并安装便携版 Node；version 为空时用基准主版本。 */
+export async function downloadNodePortable(
+  version?: string,
+): Promise<BridgeResult<NodeStatusResult>> {
+  if (!isTauri()) return browserNodeStatus()
+  return asNodeStatus(
+    await call('node_download_portable', { version: version ?? null }),
+    'node_download_portable',
+  )
 }
 
 async function call(command: string, args: Record<string, unknown>): Promise<BridgeResult<CommandResult>> {

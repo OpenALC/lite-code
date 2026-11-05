@@ -19,6 +19,31 @@
     "saveFailed": "Save failed",
     "sampleNotSaveable": "Sample buffer is not saveable"
   },
+  "runtime": {
+    "title": "Node runtime",
+    "close": "Close",
+    "status": "Status",
+    "refresh": "Probe again",
+    "detecting": "Probing…",
+    "ready": "Ready",
+    "needManual": "No usable Node.js found",
+    "fallback": "Browser dev mode: probing and installing Node are unavailable",
+    "manualTitle": "Specify node.exe manually",
+    "manualPlaceholder": "C:\\Program Files\\nodejs\\node.exe",
+    "manualAction": "Validate and save",
+    "portableTitle": "Portable build",
+    "portableDesc": "Download official Node 22, verify SHA256 and install into the app data directory.",
+    "portableAction": "Download portable Node 22",
+    "downloading": "Downloading…",
+    "saved": "Runtime configuration saved",
+    "installed": "Portable build installed",
+    "source": "Source",
+    "health": {
+      "supported": "Supported",
+      "unverified": "Unverified",
+      "legacy": "Legacy"
+    }
+  },
   "tree": {
     "title": "Files",
     "toggle": "Collapse / expand file tree",
