@@ -111,8 +111,11 @@ pub enum CoreCommand {
     FsReadFile { path: String },
     /// 保存文本文件；目标必须落在 workspace 根内，允许新建
     FsWriteFile { path: String, content: String },
-    /// 创建 P3 会话（模式在会话级生效）
-    SessionCreate { mode: SessionMode },
+    /// 创建 P3 会话（模式在会话级生效）；`task_id` 存在时在任务 worktree 内运行
+    SessionCreate {
+        mode: SessionMode,
+        task_id: Option<String>,
+    },
     /// 向会话发送用户消息；流式结果走 agent:* 事件
     AgentSend { session_id: String, text: String },
     /// 取消运行中的会话
