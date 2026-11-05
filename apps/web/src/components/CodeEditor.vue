@@ -16,8 +16,13 @@ let editor: monacoNs.editor.IStandaloneCodeEditor | null = null
 let monacoRef: typeof monacoNs | null = null
 let unsubTabs: (() => void) | null = null
 let currentTabId: string | null = null
-/** setValue 触发的 onDidChangeModelContent 不应回写 store */
+/** setValue 触发的 onDidChangeContent 不应回写 store */
 let applying = false
+
+/** 每个标签独立 model：undo/redo、光标与折叠状态随 model 保留。 */
+const models = new Map<string, monacoNs.editor.ITextModel>()
+const modelDisposables = new Map<string, monacoNs.IDisposable>()
+const viewStates = new Map<string, monacoNs.editor.ICodeEditorViewState | null>()
 
 type SaveState = { kind: 'saved' | 'demo' | 'error' | 'sample' | 'readonly'; text: string }
 const saveState = ref<SaveState | null>(null)
@@ -25,6 +30,39 @@ const activeStrategy = ref<EditorFileStrategy | null>(null)
 
 function currentTab(): Tab | null {
   return activeTab(tabsStore.get())
+}
+
+function modelUri(tab: Tab): monacoNs.Uri {
+  const monaco = monacoRef!
+  if (tab.path) return monaco.Uri.file(tab.path)
+  return monaco.Uri.parse(`inmemory://lite-code/${encodeURIComponent(tab.id)}`)
+}
+
+function ensureModel(tab: Tab): monacoNs.editor.ITextModel {
+  const existing = models.get(tab.id)
+  if (existing) {
+    if (existing.getValue() !== tab.content) {
+      applying = true
+      existing.setValue(tab.content)
+      applying = false
+    }
+    return existing
+  }
+  const monaco = monacoRef!
+  const model = monaco.editor.createModel(
+    tab.content,
+    languageForPath(tab.path ?? tab.title),
+    modelUri(tab),
+  )
+  modelDisposables.set(
+    tab.id,
+    model.onDidChangeContent(() => {
+      if (applying) return
+      updateContent(tab.id, model.getValue())
+    }),
+  )
+  models.set(tab.id, model)
+  return model
 }
 
 function applyStrategy(strategy: EditorFileStrategy): void {
@@ -37,28 +75,45 @@ function applyStrategy(strategy: EditorFileStrategy): void {
   })
 }
 
+function disposeMissingModels(state: TabsState): void {
+  const alive = new Set(state.tabs.map(t => t.id))
+  for (const id of [...models.keys()]) {
+    if (alive.has(id) || id === currentTabId) continue
+    modelDisposables.get(id)?.dispose()
+    models.get(id)?.dispose()
+    models.delete(id)
+    modelDisposables.delete(id)
+    viewStates.delete(id)
+  }
+}
+
 function syncFromStore(state: TabsState): void {
   if (!editor) return
   const tab = activeTab(state)
+
   if (!tab) {
+    if (currentTabId) viewStates.set(currentTabId, editor.saveViewState())
     currentTabId = null
-    applying = true
-    editor.setValue('')
-    applying = false
+    editor.setModel(null)
+    activeStrategy.value = null
+    disposeMissingModels(state)
     return
   }
-  const changedTab = tab.id !== currentTabId
-  if (!changedTab && tab.content === editor.getValue()) return
-  if (changedTab) {
+
+  if (tab.id !== currentTabId) {
+    if (currentTabId) viewStates.set(currentTabId, editor.saveViewState())
     saveState.value = null
-    applyStrategy(tab.strategy)
   }
-  const model = editor.getModel()
-  if (model) monacoRef?.editor.setModelLanguage(model, languageForPath(tab.path ?? tab.title))
+
+  const model = ensureModel(tab)
+  if (editor.getModel() !== model) {
+    editor.setModel(model)
+    const view = viewStates.get(tab.id)
+    if (view) editor.restoreViewState(view)
+  }
+  if (tab.id !== currentTabId) applyStrategy(tab.strategy)
   currentTabId = tab.id
-  applying = true
-  editor.setValue(tab.content)
-  applying = false
+  disposeMissingModels(state)
 }
 
 async function saveActive(): Promise<void> {
@@ -126,29 +181,17 @@ onMounted(async () => {
     },
   })
 
-  const initial = currentTab()
-  const initialStrategy = initial?.strategy
-  currentTabId = initial?.id ?? null
-  activeStrategy.value = initialStrategy ?? null
   editor = monaco.editor.create(host.value!, {
-    value: initial?.content ?? '',
-    language: languageForPath(initial?.path ?? initial?.title ?? null),
+    model: null,
     theme: 'lite-code-dark',
     fontSize: 13,
     lineHeight: 21,
-    readOnly: initialStrategy?.readOnly ?? false,
-    occurrencesHighlight: initialStrategy?.occurrences === false ? 'off' : 'singleFile',
-    folding: initialStrategy?.folding ?? true,
-    minimap: { enabled: initialStrategy?.minimap ?? false },
+    minimap: { enabled: false },
     automaticLayout: true,
     renderWhitespace: 'selection',
     scrollBeyondLastLine: false,
   })
 
-  editor.onDidChangeModelContent(() => {
-    if (applying || !currentTabId) return
-    updateContent(currentTabId, editor!.getValue())
-  })
   // 窗口级监听：焦点在文件树/标签栏时 Ctrl+S 也生效。
   window.addEventListener('keydown', onSaveKeydown)
   unsubTabs = tabsStore.subscribe(syncFromStore)
@@ -160,6 +203,11 @@ onBeforeUnmount(() => {
   unsubTabs?.()
   editor?.dispose()
   editor = null
+  for (const d of modelDisposables.values()) d.dispose()
+  for (const m of models.values()) m.dispose()
+  modelDisposables.clear()
+  models.clear()
+  viewStates.clear()
 })
 </script>
 

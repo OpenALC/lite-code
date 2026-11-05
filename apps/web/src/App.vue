@@ -8,7 +8,7 @@ import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import RuntimeSettings from './components/RuntimeSettings.vue'
 import TabBar from './components/TabBar.vue'
-import { workspaceRoot } from './services/bridge'
+import { isTauri, workspaceRoot } from './services/bridge'
 import { resolveProfile } from './services/layoutProfile'
 import { setMode, setWindowWidth, uiStore } from './services/uiStore'
 
@@ -44,7 +44,12 @@ onMounted(() => {
   window.addEventListener('resize', onResize)
   window.addEventListener('keydown', onKey)
   void workspaceRoot().then(res => {
-    if (res.ok && res.data.root) projectRoot.value = res.data.root
+    if (res.ok && res.data.root) {
+      projectRoot.value = res.data.root
+    } else if (!isTauri() && projectRoot.value === '') {
+      // 浏览器 dev 没有真实工作区；用哨兵根加载占位树，避免永远“读取中”。
+      projectRoot.value = 'workspace'
+    }
   })
 })
 
