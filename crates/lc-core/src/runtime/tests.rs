@@ -177,6 +177,16 @@ fn test_patterns() -> Vec<CandidatePattern> {
     ]
 }
 
+/// 注册表 PATH 目录的跨平台夹具：与 enumerate 的 Tier 4 构造同构
+/// （`Path::join` 在 unix 插 `/`，夹具必须走同一条构造路径）。
+fn registry_dir(path: &str) -> String {
+    if cfg!(windows) {
+        path.to_string()
+    } else {
+        path.replace('\\', "/")
+    }
+}
+
 fn resolve(env: &FakeEnv, lister: &FakeLister, runner: &FakeRunner) -> NodeStatus {
     let patterns = test_patterns();
     super::resolve_with(env, lister, runner, &patterns)
@@ -258,8 +268,10 @@ fn same_tier_ordered_version_desc() {
 /// 别名桩只可能经注册表 PATH（Tier 4）枚举到。
 #[test]
 fn store_alias_only() {
-    let env = FakeEnv::new(&[]).with_registry(&[r"C:\Users\t\AppData\Local\Microsoft\WindowsApps"]);
-    let lister = FakeLister::new(&[r"C:\Users\t\AppData\Local\Microsoft\WindowsApps\node.exe"]);
+    let dir = registry_dir(r"C:\Users\t\AppData\Local\Microsoft\WindowsApps");
+    let exe = Path::new(&dir).join("node.exe");
+    let env = FakeEnv::new(&[]).with_registry(&[dir.as_str()]);
+    let lister = FakeLister::new(&[exe.to_str().unwrap()]);
     let runner = FakeRunner::new(&[]);
     let attempts = manual(resolve(&env, &lister, &runner));
     assert_eq!(attempts.len(), 1);
@@ -329,11 +341,13 @@ fn nothing_installed() {
 /// Tier 1 命中即返回，不看 Tier 2/4（首个可用即返回）。
 #[test]
 fn tier1_beats_registry() {
-    let env = FakeEnv::new(&[("ProgramFiles", r"C:\Program Files")])
-        .with_registry(&[r"D:\registry-node"]);
+    let registry = registry_dir(r"D:\registry-node");
+    let registry_exe = Path::new(&registry).join("node.exe");
+    let env =
+        FakeEnv::new(&[("ProgramFiles", r"C:\Program Files")]).with_registry(&[registry.as_str()]);
     let lister = FakeLister::new(&[
         r"C:\Program Files\nodejs\node.exe",
-        r"D:\registry-node\node.exe",
+        registry_exe.to_str().unwrap(),
     ]);
     let runner = FakeRunner::new(&[(r"C:\Program Files\nodejs\node.exe", "v24.15.0")]);
     let r = ready(resolve(&env, &lister, &runner));
@@ -343,9 +357,11 @@ fn tier1_beats_registry() {
 /// PATH 陈旧场景：环境变量缺失时，以注册表为准（Tier 4）。
 #[test]
 fn registry_used_when_env_var_missing() {
-    let env = FakeEnv::new(&[]).with_registry(&[r"D:\nvm-portable"]);
-    let lister = FakeLister::new(&[r"D:\nvm-portable\node.exe"]);
-    let runner = FakeRunner::new(&[(r"D:\nvm-portable\node.exe", "v18.19.0")]);
+    let dir = registry_dir(r"D:\nvm-portable");
+    let exe = Path::new(&dir).join("node.exe");
+    let env = FakeEnv::new(&[]).with_registry(&[dir.as_str()]);
+    let lister = FakeLister::new(&[exe.to_str().unwrap()]);
+    let runner = FakeRunner::new(&[(exe.to_str().unwrap(), "v18.19.0")]);
     let r = ready(resolve(&env, &lister, &runner));
     assert_eq!(r.source, NodeSource::RegistryPath);
     assert_eq!(r.health, NodeHealth::Unverified);
@@ -354,8 +370,10 @@ fn registry_used_when_env_var_missing() {
 /// PATH 陈旧场景（反例）：环境变量在，注册表也在 —— Tier 2 仍优先于 Tier 4。
 #[test]
 fn env_var_beats_stale_registry() {
-    let env = FakeEnv::new(&[("NVM_HOME", r"C:\nvm")]).with_registry(&[r"D:\stale-node"]);
-    let lister = FakeLister::new(&[r"C:\nvm\v20.0.0\node.exe", r"D:\stale-node\node.exe"]);
+    let registry = registry_dir(r"D:\stale-node");
+    let registry_exe = Path::new(&registry).join("node.exe");
+    let env = FakeEnv::new(&[("NVM_HOME", r"C:\nvm")]).with_registry(&[registry.as_str()]);
+    let lister = FakeLister::new(&[r"C:\nvm\v20.0.0\node.exe", registry_exe.to_str().unwrap()]);
     let runner = FakeRunner::new(&[(r"C:\nvm\v20.0.0\node.exe", "v20.0.0")]);
     let r = ready(resolve(&env, &lister, &runner));
     assert_eq!(r.source, NodeSource::VersionManager);

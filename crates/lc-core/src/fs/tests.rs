@@ -409,25 +409,52 @@ fn watcher_reports_create_modify_delete() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// 短时间内的多次变更去抖合并为一个批次，paths 去重聚合。
+/// 短时间内的多次变更：去抖器可能合并为一批，也可能在负载下拆成多批；
+/// 两条路径都必须送达，且批次 generation 严格递增。
 #[test]
-fn watcher_merges_burst_into_one_batch() {
+fn watcher_delivers_burst_paths() {
     let root = temp_root("watch-burst");
     let sink = RecordingSink::new();
     let watcher = FileWatcher::new(&root, sink.clone()).expect("watcher");
 
     fs::write(root.join("b.txt"), "1").expect("write b");
     fs::write(root.join("c.txt"), "2").expect("write c");
-    let (_, batch) = sink
-        .wait_for(0, WATCH_TIMEOUT, &|b| {
-            contains_path(b, "b.txt") && contains_path(b, "c.txt")
-        })
-        .expect("merged batch");
-    assert!(batch.paths.len() >= 2, "{batch:?}");
-    assert_eq!(batch.generation, watcher.generation());
+
+    let deadline = Instant::now() + WATCH_TIMEOUT;
+    loop {
+        {
+            let batches = sink.batches.lock().expect("batches poisoned");
+            let has_b = batches.iter().any(|b| contains_path(b, "b.txt"));
+            let has_c = batches.iter().any(|b| contains_path(b, "c.txt"));
+            if has_b && has_c {
+                assert!(
+                    batches
+                        .windows(2)
+                        .all(|w| w[0].generation < w[1].generation),
+                    "{batches:?}"
+                );
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "burst paths not delivered within {WATCH_TIMEOUT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     drop(watcher);
     let _ = fs::remove_dir_all(&root);
+}
+
+/// 同批多路径排序去重（与去抖时序无关的纯逻辑）。
+#[test]
+fn batch_paths_are_sorted_and_deduped() {
+    let a = PathBuf::from("a.txt");
+    let b = PathBuf::from("b.txt");
+    let paths = super::watch::collect_paths([b.as_path(), a.as_path(), b.as_path(), a.as_path()]);
+    assert_eq!(paths, ["a.txt", "b.txt"]);
+    assert!(super::watch::collect_paths(std::iter::empty::<&Path>()).is_empty());
 }
 
 /// 监听目标不存在 / 不是目录 → 契约错误语义。

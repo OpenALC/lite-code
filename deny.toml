@@ -28,6 +28,16 @@ wildcards = "deny"
 [advisories]
 version = 2
 yanked = "warn"
+# 以下均为“上游不再维护”通告，非漏洞；当前依赖树没有安全升级路径：
+#   proc-macro-error ← glib-macros（Linux GTK 构建期依赖，Tauri 2 上游）
+#   zvariant / zbus_names / zvariant_derive ← zbus 5（Tauri 单实例插件上游）
+# 显式列 ID 而不是关掉 unmaintained 检查，其它新通告仍会阻断。
+ignore = [
+    "RUSTSEC-2024-0370", # proc-macro-error
+    "RUSTSEC-2026-0370", # zvariant
+    "RUSTSEC-2026-0371", # zbus_names
+    "RUSTSEC-2026-0372", # zvariant_derive
+]
 
 [sources]
 unknown-registry = "warn"
