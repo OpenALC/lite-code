@@ -38,3 +38,5 @@
 - SQLite sidecar：Node `node:sqlite` NDJSON JSON-RPC、connect/query/execute/schema/explain、超时与进程回收
 - DB 服务与 Agent 工具：连接配置持久化、`db_list/db_schema/db_query/db_explain/db_execute`；结果标 `untrusted`
 - 数据库面板：连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、只读徽标
+- Git 面板：主工作区 status（staged/unstaged、ahead/behind、merge/rebase）、diff、暂存/取消暂存、提交与最近提交
+- Agent DB 闭环：真实 SQLite 建表 → 写入 → 查询，结果回填后继续

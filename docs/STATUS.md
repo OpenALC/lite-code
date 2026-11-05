@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`c43346d`；版本 `0.4.1-preview.2`；契约 v0.6。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`daaa1d1`；版本 `0.4.1-preview.2`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -61,6 +61,9 @@
 | P5 SQLite sidecar | ✅ Node `node:sqlite` NDJSON JSON-RPC；connect/query/execute/schema/explain；超时/回收 |
 | P5 DB 服务/工具 | ✅ DbService 配置持久化、连接管理；Agent `db_*` 工具与执行器路由 |
 | P5 DB UI | ✅ 连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、untrusted 提示 |
+| P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
+| P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
+| P5 未完成 | ⏳ SSH 终端、TS/JS LSP 面板；pg/mysql/mssql 驱动未打包；结果无分页 handle |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ P4 `preview.2` 全绿；P5 提交由后台 watcher 验证 |
 
@@ -183,6 +186,10 @@
    - Node `node:sqlite` NDJSON JSON-RPC；connect/query/execute/schema/explain；超时与进程回收；14 测试。
 39. **P5 DB 服务/工具/Tauri/UI**（`70aabfc` / `f80cd2a` / `436f621`）
    - DbService 配置持久化与连接管理；Agent `db_*` 工具；Tauri 9 命令；连接列表/schema/SQL/结果网格。
+40. **P5 Git 服务与面板**（`2bd28cb` / `ad0b696`）
+   - 主工作区 status（staged/unstaged、ahead/behind、merge/rebase）、diff、stage/unstage、commit、log；Tauri 6 命令与 Git 面板。
+41. **P5 Agent DB 闭环**（`crates/lc-core/tests/db_agent.rs`）
+   - 真实 SQLite：Agent 调 `db_execute` 建表/写入、`db_query` 查询，输出回填后正常结束。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -225,5 +232,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 323 · lc-cli 33 · lc-proto 10 · lc-desktop 58 · web 246（14 文件）· 合计 **670**。
+lc-core 342 · lc-cli 33 · lc-proto 10 · lc-desktop 64 · web 277（15 文件）· 合计 **726**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
