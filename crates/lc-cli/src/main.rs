@@ -28,6 +28,7 @@ use lc_core::agent::{
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_node_runtime};
 use lc_core::fs::{RealPathResolver, read_dir_level};
 use lc_core::llm::{LlmEvent, RuntimeError, load_default, providers_path};
+use lc_core::mcp::{McpConfig, McpExecutor, McpHost};
 use lc_core::runtime::manual::{self, ManualError};
 use lc_core::runtime::portable::{self, VersionSpec};
 use lc_core::runtime::{detect_shell_real, probe_real};
@@ -437,19 +438,41 @@ fn run_agent(
     };
 
     let session_id = format!("cli-{}", std::process::id());
-    let registry = ToolRegistry::with_builtins();
-    let tools = registry.llm_tools();
+    let mcp_config = McpConfig::load(&workspace).unwrap_or_else(|error| {
+        eprintln!("[mcp] 配置加载失败：{error}");
+        McpConfig::default()
+    });
+    let mcp_executor = McpExecutor::from_host(McpHost::connect(&mcp_config, &workspace));
+    for warning in mcp_executor.warnings() {
+        eprintln!("[mcp] {warning}");
+    }
+    let mcp_shutdown = mcp_executor.clone();
+    let registry = ToolRegistry::with_builtins().with_mcp_tools(mcp_executor.tool_specs());
+    let mut tools = registry.llm_tools();
+    for tool in mcp_executor.llm_tools() {
+        let registered = tool
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| registry.get(name).is_some());
+        if registered {
+            tools.push(tool);
+        }
+    }
+    let executor: Box<dyn lc_core::agent::ToolExecutor> =
+        Box::new(mcp_executor.with_fallback(Box::new(LocalToolExecutor::new(workspace.clone()))));
     let session = build_session(session_id.clone(), mode, max_turns)
         .with_context(runtime.context_k, runtime.compress_at_k);
+    let base_instructions = resolve_instructions(instructions.as_deref());
+    let instructions = lc_core::agent::session_instructions(&workspace, base_instructions);
     let mut agent_loop = AgentLoop::new(
         session,
         Box::new(client),
-        Box::new(LocalToolExecutor::new(workspace.clone())),
+        executor,
         registry,
         workspace,
         runtime.model_id,
     )
-    .with_instructions(resolve_instructions(instructions.as_deref()))
+    .with_instructions(instructions)
     .with_tools(tools);
 
     let compaction_emitter = Arc::clone(&emitter);
@@ -533,6 +556,7 @@ fn run_agent(
         }
     };
 
+    mcp_shutdown.shutdown();
     emitter.lock().expect("emitter mutex").finish();
     exit_code
 }

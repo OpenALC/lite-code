@@ -19,9 +19,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lc_core::agent::{
     AgentLoop, ApprovalDecision as CoreApprovalDecision, CompactionRecord, LocalToolExecutor,
     LoopError, LoopOutcome, Session, SessionError, ToolError, ToolOutput, ToolRegistry, llm_event,
-    loop_outcome, mode_from_contract, session_info,
+    loop_outcome, mode_from_contract, session_info, session_instructions,
 };
 use lc_core::llm::{LlmEvent, RuntimeError, load_default};
+use lc_core::mcp::{McpConfig, McpExecutor, McpHost};
 use lc_proto::{
     ApprovalDecision, CommandResult, CoreEvent, ErrorBody, ErrorCode, EventEnvelope, SessionMode,
 };
@@ -283,6 +284,8 @@ struct Worker {
     cancel: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
     registry: Weak<SessionsInner>,
+    /// 会话结束时终止 MCP 子进程；与 AgentLoop 内的执行器共享同一 host。
+    mcp: Option<McpExecutor>,
 }
 
 impl Worker {
@@ -302,6 +305,9 @@ impl Worker {
             && let Ok(mut sessions) = inner.sessions.lock()
         {
             sessions.remove(&self.id);
+        }
+        if let Some(mcp) = self.mcp.take() {
+            mcp.shutdown();
         }
     }
 
@@ -373,6 +379,7 @@ fn spawn_worker(
     agent: AgentLoop,
     sink: Arc<dyn EventSink>,
     cancel: Arc<AtomicBool>,
+    mcp: Option<McpExecutor>,
 ) -> Result<SessionHandle, ErrorBody> {
     let (sender, receiver) = mpsc::channel();
     let busy = Arc::new(AtomicBool::new(false));
@@ -407,6 +414,7 @@ fn spawn_worker(
         cancel,
         busy,
         registry: Arc::downgrade(&sessions.inner),
+        mcp,
     };
     let spawned = thread::Builder::new()
         .name(format!("agent-{id}"))
@@ -440,16 +448,38 @@ pub(crate) fn session_create(
     let info = session_info(&session);
 
     let registry = ToolRegistry::with_builtins();
-    let tools = registry.llm_tools();
+    let mcp_config = McpConfig::load(&root).unwrap_or_else(|error| {
+        eprintln!("[mcp] 配置加载失败：{error}");
+        McpConfig::default()
+    });
+    let mcp_executor = McpExecutor::from_host(McpHost::connect(&mcp_config, &root));
+    for warning in mcp_executor.warnings() {
+        eprintln!("[mcp] {warning}");
+    }
+    let mcp_shutdown = mcp_executor.clone();
+    let registry = registry.with_mcp_tools(mcp_executor.tool_specs());
+    let mut tools = registry.llm_tools();
+    for tool in mcp_executor.llm_tools() {
+        let registered = tool
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| registry.get(name).is_some());
+        if registered {
+            tools.push(tool);
+        }
+    }
+    let executor: Box<dyn lc_core::agent::ToolExecutor> =
+        Box::new(mcp_executor.with_fallback(Box::new(LocalToolExecutor::new(root.clone()))));
+    let instructions = session_instructions(&root, DEFAULT_INSTRUCTIONS);
     let agent = AgentLoop::new(
         session,
         Box::new(client),
-        Box::new(LocalToolExecutor::new(root.clone())),
+        executor,
         registry,
         root,
         runtime.model_id,
     )
-    .with_instructions(DEFAULT_INSTRUCTIONS)
+    .with_instructions(instructions)
     .with_tools(tools);
 
     let sink = sessions.event_sink(app);
@@ -459,6 +489,7 @@ pub(crate) fn session_create(
         agent,
         sink.clone(),
         Arc::new(AtomicBool::new(false)),
+        Some(mcp_shutdown),
     )?;
     // 创建后立即下发一次会话状态；worker 在下一条命令前不会产生事件。
     sink.emit(CoreEvent::AgentSessionState {
@@ -718,6 +749,7 @@ mod tests {
             test_loop(&id, llm),
             Arc::new(sink.clone()),
             cancel,
+            None,
         )
         .expect("spawn worker");
         (sessions, handle)
@@ -1136,6 +1168,7 @@ mod tests {
             ),
             Arc::new(sink.clone()),
             cancel,
+            None,
         )
         .expect("spawn");
 

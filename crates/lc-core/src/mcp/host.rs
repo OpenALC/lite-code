@@ -207,6 +207,8 @@ impl McpHost {
 pub struct McpExecutor {
     host: Arc<Mutex<McpHost>>,
     routes: Arc<Mutex<HashMap<String, (String, String)>>>,
+    /// 未命中 MCP 路由时回退到内置执行器（CLI/Tauri 传入 LocalToolExecutor）。
+    fallback: Option<Arc<dyn ToolExecutor>>,
 }
 
 impl McpExecutor {
@@ -225,7 +227,14 @@ impl McpExecutor {
         Self {
             host: Arc::new(Mutex::new(host)),
             routes: Arc::new(Mutex::new(routes)),
+            fallback: None,
         }
+    }
+
+    /// 未命中 MCP 路由时交给内置执行器；命中时仍走 MCP。
+    pub fn with_fallback(mut self, fallback: Box<dyn ToolExecutor>) -> Self {
+        self.fallback = Some(Arc::from(fallback));
+        self
     }
 
     /// [`from_host`](Self::from_host) 的别名。
@@ -280,6 +289,9 @@ impl ToolExecutor for McpExecutor {
             routes.get(&call.name).cloned()
         };
         let Some((server, tool)) = route else {
+            if let Some(fallback) = &self.fallback {
+                return fallback.execute(call);
+            }
             return Err(ToolError::Unsupported(format!(
                 "{}（未注册的 MCP 工具）",
                 call.name
@@ -428,6 +440,25 @@ mod tests {
             ))
             .expect_err("host after shutdown");
         assert!(matches!(error, ToolError::Mcp(_)), "{error:?}");
+    }
+
+    #[test]
+    fn fallback_executor_handles_builtin_tool_names() {
+        struct Fallback;
+        impl ToolExecutor for Fallback {
+            fn execute(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+                Ok(ToolOutput {
+                    text: format!("fallback:{}", call.name),
+                })
+            }
+        }
+
+        let executor = McpExecutor::from_host(McpHost::from_initialized_clients(vec![]))
+            .with_fallback(Box::new(Fallback));
+        let output = executor
+            .execute(&ToolCall::new("read_file", json!({"path": "a.txt"})))
+            .expect("fallback");
+        assert_eq!(output.text, "fallback:read_file");
     }
 
     #[test]
