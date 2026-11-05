@@ -1,9 +1,9 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`88424b5`；版本 `0.4.1-preview.2`；契约 v0.5。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`c43346d`；版本 `0.4.1-preview.2`；契约 v0.6。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
-> P4 发布：`v0.4.1-preview.1` 因 Windows 路径断言失败；修复后重建 `preview.2`，tag 与 release 构建进行中。
+> P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -55,8 +55,14 @@
 | P4 Tauri 命令层 | ✅ 8 个 task 命令与事件；session 在 worktree 内运行；后台审批转 Blocked + needs_input |
 | P4 工作台 UI | ✅ 任务列表、三栏布局、变更/检查/Diff/预览标签、应用/丢弃、状态栏待确认 |
 | P4 预览/标签 | ✅ 标签组按任务恢复；iframe 切换销毁、回到任务用原 URL 重建 |
+| P4 发布 | ✅ `v0.4.1-preview.2` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS |
+| P5 契约 v0.6 | ✅ DB DTO、9 个 db 命令、`db:status`、`db_*` 错误码；TS 绑定已导出 |
+| P5 SQL 闸门 | ✅ 单语句、分类、无 WHERE 拦截、静态黑名单、LIMIT 注入、只读拒绝（60 测试） |
+| P5 SQLite sidecar | ✅ Node `node:sqlite` NDJSON JSON-RPC；connect/query/execute/schema/explain；超时/回收 |
+| P5 DB 服务/工具 | ✅ DbService 配置持久化、连接管理；Agent `db_*` 工具与执行器路由 |
+| P5 DB UI | ✅ 连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、untrusted 提示 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `25360a9` 全绿；P4 `preview.2` 提交与 tag 由后台 watcher 验证 |
+| main CI | ✅ P4 `preview.2` 全绿；P5 提交由后台 watcher 验证 |
 
 ## 本轮完成
 
@@ -168,6 +174,15 @@
 35. **P4 冲突收尾与预览存活**（`cd9b782` / `cfde355` / `853d605`）
    - 冲突解决/仅暂存后再次 apply 可收尾；同文件不同行并行合并；基线漂移计数。
    - 工作台标签按任务恢复；iframe 切换销毁、回到任务用原 URL 重建。
+36. **P4 发布**（`v0.4.1-preview.2`）
+   - 首次 preview.1 因 CI Windows 路径断言失败；改为 canonicalize 比较后 preview.2 成功，6 个 draft 资产。
+37. **P5 契约 v0.6 + SQL 闸门**（`4e12255` / `cbb740a`）
+   - DB DTO/9 命令/`db:status`/`db_*` 错误码；TS 绑定导出。
+   - 单语句、读写/DDL 分类、无 WHERE 拦截、黑名单、LIMIT 注入、只读拒绝；60 测试。
+38. **P5 SQLite sidecar**（`a2af30c`）
+   - Node `node:sqlite` NDJSON JSON-RPC；connect/query/execute/schema/explain；超时与进程回收；14 测试。
+39. **P5 DB 服务/工具/Tauri/UI**（`70aabfc` / `f80cd2a` / `436f621`）
+   - DbService 配置持久化与连接管理；Agent `db_*` 工具；Tauri 9 命令；连接列表/schema/SQL/结果网格。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -179,11 +194,11 @@
 
 ## 待办（按序）
 
-1. P4 release draft 产出后核对 6 个资产；已知缺口见下。
-2. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-3. P4 后续：`ViewTarget` code/web/term/doc 完整化、独立系统 WebView 预览、检查 Runner、按项目拆分 `tasks.json`。
-4. P5：数据库/周边与 `db_query` 审批闭环。
-5. 已知限制：取消不强制中断已发出的 HTTP 流；审批挂起期间取消会留下 pending 审批（UI 正常路径不触发）；MCP 仅 stdio 与单工具槽位；真实 OpenAI/Anthropic 端点兼容性未覆盖。
+1. P5 周边：Git 面板（status/diff/stage/commit/log）、SSH 终端、TS/JS LSP。
+2. P5 出口验收：真实 SQLite 项目「schema → 查询 → 审批更新 → 再查验证」；10 万行样本/handle；同连接写串行。
+3. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
+4. P6：稳定化、鸿蒙与正式包。
+5. 已知限制：pg/mysql/mssql 驱动未打包；db_query 仅 SQLite 且无分页 handle；MCP 仅 stdio 与单工具槽位；真实 OpenAI/Anthropic 端点兼容性未覆盖。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -210,5 +225,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 233 · lc-cli 33 · lc-proto 10 · lc-desktop 45 · web 215（13 文件）· 合计 **536**。
+lc-core 323 · lc-cli 33 · lc-proto 10 · lc-desktop 58 · web 246（14 文件）· 合计 **670**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。

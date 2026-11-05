@@ -33,3 +33,8 @@
 - Tauri task 命令与 `task:*` 事件；`session_create` 绑定任务后在 worktree 内运行 Agent
 - 工作台 UI：任务列表、变更/检查/Diff/预览标签、应用/丢弃、后台审批待确认计数
 - 预览与标签恢复：iframe 随任务销毁/重建，工作台标签按任务记忆
+- 契约 v0.6：数据库连接/查询/schema DTO、9 个 `db_*` 命令、`db:status` 事件、`db_*` 错误码
+- SQL 闸门：单语句、读写/DDL 分类、无 WHERE 拦截、静态黑名单、LIMIT 注入、只读连接拒绝
+- SQLite sidecar：Node `node:sqlite` NDJSON JSON-RPC、connect/query/execute/schema/explain、超时与进程回收
+- DB 服务与 Agent 工具：连接配置持久化、`db_list/db_schema/db_query/db_explain/db_execute`；结果标 `untrusted`
+- 数据库面板：连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、只读徽标
