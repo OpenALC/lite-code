@@ -370,4 +370,24 @@ mod tests {
             Ok(AuthorizeOutcome::Denied { .. })
         ));
     }
+
+    #[test]
+    fn context_budget_defaults_and_validates() {
+        let s = session(PolicyMode::Auto);
+        assert_eq!(
+            (s.context_k(), s.compress_at_k()),
+            (DEFAULT_CONTEXT_K, DEFAULT_COMPRESS_AT_K)
+        );
+
+        let s = s.with_context(200, 150);
+        assert_eq!((s.context_k(), s.compress_at_k()), (200, 150));
+
+        // 非法值保持已有预算，不产生除零或阈值倒挂。
+        let s = s.with_context(0, 10);
+        assert_eq!((s.context_k(), s.compress_at_k()), (200, 150));
+        let s = s.with_context(100, 100);
+        assert_eq!((s.context_k(), s.compress_at_k()), (200, 150));
+        let s = s.with_context(100, 0);
+        assert_eq!((s.context_k(), s.compress_at_k()), (200, 150));
+    }
 }

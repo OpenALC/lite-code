@@ -14,6 +14,7 @@ use crate::llm::{LlmError, LlmEvent, LlmInput, LlmRequest, OpenAiResponsesClient
 
 use super::approval::ApprovalRequest;
 use super::collector::{CollectedToolCall, CollectorError, TurnCollector};
+use super::compact::{CompactionRecord, compact, estimate_tokens};
 use super::exec::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use super::policy::PolicySource;
 use super::session::{ApprovalOutcome, AuthorizeOutcome, Session, SessionError};
@@ -22,6 +23,9 @@ use super::tools::{Risk, ToolRegistry};
 /// 工具执行结果观察者（call id 只在循环内部可见）。Tauri/CLI 用它发
 /// `agent:tool_result`；错误不会中断会话，而是作为工具输出回填给模型。
 pub type ToolResultObserver = Box<dyn FnMut(&str, &Result<ToolOutput, ToolError>) + Send>;
+
+/// 压缩记录观察者。Tauri/CLI 用它把记录映射成 `CoreEvent::AgentCompacted`。
+pub type CompactionObserver = Box<dyn FnMut(&CompactionRecord) + Send>;
 
 pub trait LlmStream: Send {
     fn stream(&self, request: &LlmRequest, sink: &mut dyn FnMut(LlmEvent)) -> Result<(), LlmError>;
@@ -47,6 +51,8 @@ pub enum LoopError {
     Tool(#[from] ToolError),
     #[error("provider 错误（{code:?}）：{message}")]
     Provider { code: ErrorCode, message: String },
+    #[error("上下文超出预算：已用 {used_tokens} tokens，超过 {context_k}k 上限；请新建会话后继续")]
+    ContextOverflow { used_tokens: u32, context_k: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +81,10 @@ pub struct AgentLoop {
     messages: Vec<LlmInput>,
     pending_calls: VecDeque<CollectedToolCall>,
     tool_observer: Option<ToolResultObserver>,
+    context_k: u32,
+    compress_at_k: u32,
+    next_compaction_id: u64,
+    compaction_observer: Option<CompactionObserver>,
 }
 
 impl AgentLoop {
@@ -86,6 +96,8 @@ impl AgentLoop {
         root: impl Into<PathBuf>,
         model: impl Into<String>,
     ) -> Self {
+        let context_k = session.context_k();
+        let compress_at_k = session.compress_at_k();
         Self {
             session,
             llm,
@@ -98,7 +110,32 @@ impl AgentLoop {
             messages: Vec::new(),
             pending_calls: VecDeque::new(),
             tool_observer: None,
+            context_k,
+            compress_at_k,
+            next_compaction_id: 0,
+            compaction_observer: None,
         }
+    }
+
+    /// 覆盖会话预算（k token）。非法值（`0 < compress_at_k < context_k` 不成立）
+    /// 时保持当前值（初始为 `Session` 的预算）。
+    pub fn with_budget(mut self, context_k: u32, compress_at_k: u32) -> Self {
+        if context_k > 0 && compress_at_k > 0 && compress_at_k < context_k {
+            self.context_k = context_k;
+            self.compress_at_k = compress_at_k;
+        }
+        self
+    }
+
+    /// 注册压缩记录观察者（每次真正发生压缩后、发请求前调用一次）。
+    pub fn with_compaction_observer(mut self, observer: CompactionObserver) -> Self {
+        self.compaction_observer = Some(observer);
+        self
+    }
+
+    /// 当前预算：`(context_k, compress_at_k)`。
+    pub fn context_budget(&self) -> (u32, u32) {
+        (self.context_k, self.compress_at_k)
     }
 
     /// 注册工具结果观察者（每个 call 执行后调用一次，含失败）。
@@ -171,6 +208,30 @@ impl AgentLoop {
     fn turn_loop(&mut self, sink: &mut dyn FnMut(LlmEvent)) -> Result<LoopOutcome, LoopError> {
         loop {
             self.session.begin_turn()?;
+
+            let record = compact(
+                &mut self.messages,
+                self.instructions.as_deref(),
+                &self.tools,
+                self.context_k,
+                self.compress_at_k,
+                &mut self.next_compaction_id,
+            );
+            if let Some(record) = record
+                && let Some(observer) = self.compaction_observer.as_mut()
+            {
+                observer(&record);
+            }
+
+            let used_tokens =
+                estimate_tokens(self.instructions.as_deref(), &self.tools, &self.messages);
+            if u64::from(used_tokens) > u64::from(self.context_k) * 1000 {
+                return Err(LoopError::ContextOverflow {
+                    used_tokens,
+                    context_k: self.context_k,
+                });
+            }
+
             let request = LlmRequest {
                 model: self.model.clone(),
                 instructions: self.instructions.clone(),
@@ -274,23 +335,28 @@ impl AgentLoop {
 mod tests {
     use super::*;
     use crate::agent::approval::ApprovalDecision;
+    use crate::agent::compact::KEEP_RECENT_MESSAGES;
     use crate::agent::exec::ToolOutput;
     use crate::agent::policy::PolicyMode;
     use crate::llm::StopReason;
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     struct FakeLlm {
         turns: Mutex<VecDeque<Vec<LlmEvent>>>,
-        requests: Mutex<Vec<LlmRequest>>,
+        requests: Arc<Mutex<Vec<LlmRequest>>>,
     }
 
     impl FakeLlm {
         fn new(turns: Vec<Vec<LlmEvent>>) -> Self {
             Self {
                 turns: Mutex::new(turns.into()),
-                requests: Mutex::new(Vec::new()),
+                requests: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn requests(&self) -> Arc<Mutex<Vec<LlmRequest>>> {
+            Arc::clone(&self.requests)
         }
     }
 
@@ -572,6 +638,173 @@ mod tests {
             loop_.run("write", &mut |_| {}),
             Ok(LoopOutcome::Denied { .. })
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn read_tool_turn(ids: &[&str]) -> Vec<LlmEvent> {
+        let mut events = Vec::new();
+        for id in ids {
+            events.push(LlmEvent::ToolUseStart {
+                id: (*id).into(),
+                name: "read_file".into(),
+            });
+            events.push(LlmEvent::ToolUseArgsDelta {
+                id: (*id).into(),
+                json: r#"{"path":"a.txt"}"#.into(),
+            });
+        }
+        events.push(LlmEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        });
+        events
+    }
+
+    fn final_turn(text: &str) -> Vec<LlmEvent> {
+        vec![
+            LlmEvent::TextDelta {
+                index: 0,
+                text: text.into(),
+            },
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            },
+        ]
+    }
+
+    fn input_chars(input: &[LlmInput]) -> usize {
+        input
+            .iter()
+            .map(|message| match message {
+                LlmInput::Message { content, .. } => content.chars().count(),
+                LlmInput::FunctionCall { arguments, .. } => arguments.chars().count(),
+                LlmInput::FunctionCallOutput { output, .. } => output.chars().count(),
+            })
+            .sum()
+    }
+
+    #[test]
+    fn compacts_before_second_request_and_notifies_observer() {
+        let root = temp_root("compact");
+        let llm = FakeLlm::new(vec![
+            read_tool_turn(&["c0", "c1", "c2"]),
+            final_turn("done"),
+        ]);
+        let requests = llm.requests();
+        let observed = Arc::new(Mutex::new(Vec::<CompactionRecord>::new()));
+        let sink = Arc::clone(&observed);
+
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(FakeExecutor::default()),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        )
+        .with_budget(4, 2)
+        .with_compaction_observer(Box::new(move |record| {
+            sink.lock().unwrap().push(record.clone());
+        }));
+
+        let user_text = format!("please read {}", "x".repeat(8_000));
+        let outcome = loop_.run(&user_text, &mut |_| {}).expect("run");
+        assert_eq!(
+            outcome,
+            LoopOutcome::Final {
+                text: "done".into()
+            }
+        );
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        // 第一条请求只有用户消息，未触发压缩。
+        assert_eq!(requests[0].input.len(), 1);
+        // 第二条请求的 input 已从 8 条压缩为 1 条摘要 + 最近 4 条。
+        assert_eq!(requests[1].input.len(), 1 + KEEP_RECENT_MESSAGES);
+        let LlmInput::Message { role, content } = &requests[1].input[0] else {
+            panic!("expected summary message first");
+        };
+        assert_eq!(role, "user");
+        assert!(content.starts_with("[上下文压缩]"), "{content}");
+        assert!(content.contains("read_file"), "{content}");
+        assert!(
+            input_chars(&requests[1].input) < 1_000,
+            "第二次请求应明显变短：{}",
+            input_chars(&requests[1].input)
+        );
+        assert!(
+            estimate_tokens(
+                requests[1].instructions.as_deref(),
+                &requests[1].tools,
+                &requests[1].input
+            ) < 4 * 1000,
+            "请求必须仍在 context 内"
+        );
+
+        let records = observed.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, 0);
+        assert_eq!(records[0].removed_messages, 4);
+        assert!(records[0].before_tokens > records[0].after_tokens);
+        assert!(records[0].summary.contains("已压缩 4 条早期消息"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn context_overflow_is_reported_without_calling_llm() {
+        let root = temp_root("overflow");
+        let llm = FakeLlm::new(vec![]);
+        let requests = llm.requests();
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(FakeExecutor::default()),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        )
+        .with_budget(2, 1);
+
+        let err = loop_
+            .run(&"y".repeat(8_400), &mut |_| {})
+            .expect_err("must overflow");
+        let message = err.to_string();
+        assert!(message.contains("新建会话"), "{message}");
+        assert!(matches!(
+            err,
+            LoopError::ContextOverflow {
+                used_tokens,
+                context_k: 2
+            } if used_tokens > 2_000
+        ));
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "超窗请求不能发给 provider"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn budget_defaults_follow_session_and_invalid_override_is_ignored() {
+        let root = temp_root("budget");
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto).with_context(200, 150),
+            Box::new(FakeLlm::new(vec![])),
+            Box::new(FakeExecutor::default()),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        );
+        assert_eq!(loop_.context_budget(), (200, 150));
+
+        loop_ = loop_.with_budget(100, 100);
+        assert_eq!(loop_.context_budget(), (200, 150));
+        loop_ = loop_.with_budget(0, 50);
+        assert_eq!(loop_.context_budget(), (200, 150));
+        loop_ = loop_.with_budget(100, 60);
+        assert_eq!(loop_.context_budget(), (100, 60));
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }
