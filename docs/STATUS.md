@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`b4dedce`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`2a6818b`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 
 ## 当前位置一览
@@ -17,8 +17,9 @@
 | 大文件分级 | ✅ >5MB 降级能力、>20MB 只读预览并阻止保存 |
 | per-tab model | ✅ 每标签独立 Monaco model，undo/光标/滚动保留；关闭即释放 |
 | dirty 基线 | ✅ `savedContent` 差异推导 dirty；撤销回已保存内容自动变干净 |
+| 布局 | ✅ 侧栏/Agent/底部可拖拽、可折叠，localStorage 持久化；dockview 留 P4 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `226b80c` 全绿；最新提交 CI 进行中 |
+| main CI | ✅ `f2bf769` 全绿；最新提交 CI 进行中 |
 
 ## 本轮完成
 
@@ -42,6 +43,9 @@
    - 浏览器实测：切标签后内容保留，Ctrl+Z 可撤销切标签前的输入；占位树不再永远“读取中”。
 8. **dirty 基线**（`b4dedce`）
    - `savedContent` 作为落盘基线，`dirty = content !== savedContent`；撤销回已保存内容自动变干净。
+9. **布局**（`2a6818b`）
+   - `LayoutPrefs`：侧栏/Agent/底部尺寸与折叠；clamp + localStorage 持久化。
+   - 三个拖拽分隔条、Agent/底部折叠与恢复；dockview 留到 P4 工作台。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -52,10 +56,9 @@
 
 ## 待办（按序）
 
-1. `LayoutProfile` 完整实现与 dockview 可停靠布局。
-3. P1 性能四项实测（scripts/perf/）：冷启动/托盘 RSS/窗口 RSS/残留进程。
-4. P1 出口验收：干净 Win11 无 Node、20 次开关窗口、1 万文件目录。
-5. P2：五 lane 合流冒烟，发布 `v0.1.0-pre`。
+1. P1 性能四项实测（后台 subagent 进行中）：冷启动/托盘 RSS/窗口 RSS/残留进程。
+2. P1 出口验收：干净 Win11 无 Node、20 次开关窗口、1 万文件目录。
+3. P2：五 lane 合流冒烟，发布 `v0.1.0-pre`。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -82,5 +85,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 70 · lc-cli 15 · lc-proto 9 · lc-desktop 11 · web 86（8 文件）· 合计 **191**。
+lc-core 70 · lc-cli 15 · lc-proto 9 · lc-desktop 11 · web 93（9 文件）· 合计 **198**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
