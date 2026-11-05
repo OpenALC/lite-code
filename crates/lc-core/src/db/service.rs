@@ -351,6 +351,9 @@ impl DbService {
     }
 
     /// 执行只读查询。`limit` 夹到 `1..=1000`，未指定时使用默认 100。
+    ///
+    /// 返回行数上限由 sidecar 强制切片：SQL 自带的 `LIMIT 100000` 不能放大
+    /// 返回行数；`truncated` 表示还有未返回的行。
     pub fn query(
         &mut self,
         connection_id: &str,
@@ -358,9 +361,10 @@ impl DbService {
         limit: Option<u32>,
     ) -> Result<DbQueryResult, DbServiceError> {
         let read_only = self.connection(connection_id)?.read_only;
-        let limit = limit.map(|value| value.clamp(1, MAX_QUERY_LIMIT));
-        let default_limit = limit.unwrap_or(DEFAULT_QUERY_LIMIT) as usize;
-        let guarded = SqlGuard::with_default_limit(default_limit).check(sql, read_only)?;
+        let limit = limit
+            .map(|value| value.clamp(1, MAX_QUERY_LIMIT))
+            .unwrap_or(DEFAULT_QUERY_LIMIT);
+        let guarded = SqlGuard::with_default_limit(limit as usize).check(sql, read_only)?;
         if guarded.kind != SqlKind::Read {
             return Err(DbServiceError::DbRejected(format!(
                 "db_query 只接受只读语句（{:?}）",
@@ -373,7 +377,7 @@ impl DbService {
             self.mark_connection_error(connection_id, &error.to_string());
             return Err(error);
         };
-        let result = sidecar.query(connection_id, &guarded.sql, limit);
+        let result = sidecar.query(connection_id, &guarded.sql, Some(limit));
         self.finish(connection_id, result)
     }
 
@@ -1018,6 +1022,51 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_dialect_payloads_cannot_delete_everything() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("dialect");
+        let mut service = DbService::new(dir.config_path(), Some(node));
+        saved(&mut service, "main", "Main", &dir.db_path(), false);
+        service.connect("main").expect("连接");
+        service
+            .execute("main", "CREATE TABLE t (id INTEGER)")
+            .expect("建表");
+        service
+            .execute("main", "INSERT INTO t (id) VALUES (1), (2), (3)")
+            .expect("插入 3 行");
+
+        // C2 PoC：SQLite 在 `\'` 处结束字符串，第一条语句没有 WHERE。
+        // 其余是同一类方言错配：SQLite 不嵌套块注释、没有 dollar quote，
+        // 且 node:sqlite 在 NUL 处截断 SQL。
+        for sql in [
+            "DELETE FROM t RETURNING 'a\\' ; SELECT ' WHERE 1=1",
+            "DELETE FROM t RETURNING 'a\\'",
+            "UPDATE t SET id = 0 RETURNING 'a\\' ; SELECT ' WHERE 1=1",
+            "UPDATE t SET id = 0 RETURNING 'a\\'",
+            "DELETE FROM t RETURNING $$ ; SELECT $$ WHERE 1=1",
+            "DELETE FROM t RETURNING 1 /* /* */ ; SELECT 1 */ WHERE 1=1",
+            "DELETE FROM t RETURNING 1\0 WHERE 1=1",
+        ] {
+            let error = service
+                .execute("main", sql)
+                .expect_err("方言错配 payload 必须被拒绝");
+            assert!(
+                matches!(
+                    error,
+                    DbServiceError::DbRejected(_) | DbServiceError::InvalidArgument(_)
+                ),
+                "{sql}: {error:?}"
+            );
+        }
+
+        let count = service
+            .query("main", "SELECT COUNT(*) AS n FROM t", None)
+            .expect("复查行数");
+        assert_eq!(count.rows, vec![vec![Some("3".to_string())]]);
+        shutdown(&mut service);
+    }
+
+    #[test]
     fn unknown_and_unconnected_connections_report_errors() {
         let dir = TempDir::new("errors");
         let mut service = DbService::new(dir.config_path(), None);
@@ -1126,6 +1175,123 @@ mod tests {
         assert_eq!(result.row_count, 5);
         assert_eq!(result.rows[0][0].as_deref(), Some("1"));
         assert_eq!(result.rows[4][0].as_deref(), Some("5"));
+        shutdown(&mut service);
+    }
+
+    #[test]
+    fn sql_limit_cannot_bypass_row_cap() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("limit-bypass");
+        let mut service = DbService::new(dir.config_path(), Some(node));
+        saved(&mut service, "main", "Main", &dir.db_path(), false);
+        service.connect("main").expect("连接");
+        service
+            .execute("main", "CREATE TABLE numbers (n INTEGER)")
+            .expect("建表");
+
+        let values = (1..=250)
+            .map(|number| format!("({number})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        service
+            .execute("main", &format!("INSERT INTO numbers (n) VALUES {values}"))
+            .expect("插入 250 行");
+
+        // SQL 自带 100000 LIMIT，但未传 limit 时必须仍只返回默认 100 行。
+        let capped = service
+            .query(
+                "main",
+                "SELECT n FROM numbers ORDER BY n LIMIT 100000",
+                None,
+            )
+            .expect("默认上限查询");
+        assert_eq!(capped.rows.len(), 100);
+        assert_eq!(capped.row_count, 100);
+        assert!(capped.truncated, "超过默认上限必须标记 truncated");
+        assert_eq!(capped.rows[99][0].as_deref(), Some("100"));
+
+        // SQL 自带更小的 LIMIT 时按 SQL 返回，不标记 truncated。
+        let smaller = service
+            .query("main", "SELECT n FROM numbers ORDER BY n LIMIT 5", Some(20))
+            .expect("较小 LIMIT 查询");
+        assert_eq!(smaller.rows.len(), 5);
+        assert_eq!(smaller.row_count, 5);
+        assert!(!smaller.truncated);
+
+        // 显式 limit 小于 SQL LIMIT 时仍以 limit 为准。
+        let explicit = service
+            .query(
+                "main",
+                "SELECT n FROM numbers ORDER BY n LIMIT 1000",
+                Some(10),
+            )
+            .expect("显式上限查询");
+        assert_eq!(explicit.rows.len(), 10);
+        assert!(explicit.truncated);
+        shutdown(&mut service);
+    }
+
+    #[test]
+    fn pragma_writes_are_rejected_by_query_but_execute_can_write() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("pragma");
+        let mut service = DbService::new(dir.config_path(), Some(node));
+        let database = dir.db_path();
+        saved(&mut service, "main", "Main", &database, false);
+        saved(&mut service, "ro", "RO", &database, true);
+        service.connect("main").expect("连接");
+        service
+            .execute("main", "CREATE TABLE items (id INTEGER, name TEXT)")
+            .expect("建表");
+        service.connect("ro").expect("只读连接");
+
+        // 只读白名单通过。
+        let table_info = service
+            .query("main", "PRAGMA table_info(items)", None)
+            .expect("只读 pragma");
+        assert!(
+            table_info
+                .rows
+                .iter()
+                .any(|row| row.get(1).and_then(Option::as_deref) == Some("id")),
+            "table_info: {:?}",
+            table_info.rows
+        );
+
+        // 可写 pragma 不能走 db_query。
+        for sql in ["PRAGMA user_version=42", "PRAGMA journal_mode=WAL"] {
+            let error = service
+                .query("main", sql, None)
+                .expect_err("db_query 不得执行可写 pragma");
+            assert!(
+                matches!(error, DbServiceError::DbRejected(_)),
+                "{sql}: {error:?}"
+            );
+        }
+
+        // db_execute 是显式写路径，仍可执行。
+        service
+            .execute("main", "PRAGMA user_version=42")
+            .expect("db_execute 可显式设置 pragma");
+
+        // 只读连接对同一 pragma 一律拒绝。
+        for sql in ["PRAGMA user_version=42", "PRAGMA journal_mode=WAL"] {
+            let query_error = service
+                .query("ro", sql, None)
+                .expect_err("只读连接拒绝 pragma 写");
+            assert!(
+                matches!(query_error, DbServiceError::DbReadOnly(_)),
+                "{sql}: {query_error:?}"
+            );
+
+            let execute_error = service
+                .execute("ro", sql)
+                .expect_err("只读连接拒绝 pragma 写路径");
+            assert!(
+                matches!(execute_error, DbServiceError::DbReadOnly(_)),
+                "{sql}: {execute_error:?}"
+            );
+        }
         shutdown(&mut service);
     }
 

@@ -26,7 +26,8 @@ use lc_proto::{
 };
 use serde_json::{Value, json};
 
-use super::{GuardedSql, SqlError, SqlGuard};
+use super::service::{DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT};
+use super::{GuardedSql, SqlError, SqlGuard, SqlKind};
 
 /// 安装到数据目录的脚本名。
 pub const BRIDGE_FILE_NAME: &str = "db-bridge.mjs";
@@ -210,8 +211,9 @@ impl DbSidecar {
         Ok(())
     }
 
-    /// 执行读查询。先过 [`SqlGuard`]（只读连接拒绝写），再交给 sidecar；
-    /// `limit` 由 sidecar 截断并标记 `truncated`。
+    /// 执行读查询。先过 [`SqlGuard`]（只读连接拒绝写、非 Read 语句拒绝），
+    /// 再交给 sidecar；`limit` 缺省为 100，sidecar 强制切片并标记
+    /// `truncated`。
     pub fn query(
         &mut self,
         connection_id: &str,
@@ -220,15 +222,25 @@ impl DbSidecar {
     ) -> Result<DbQueryResult, DbError> {
         let read_only = self.read_only(connection_id)?;
         let guarded = self.guard(sql, read_only)?;
-        let mut params = json!({
-            "connection_id": connection_id,
-            "sql": guarded.sql,
-        });
-        if let Some(limit) = limit {
-            params["limit"] = json!(limit);
+        if guarded.kind != SqlKind::Read {
+            return Err(DbError::Rejected(format!(
+                "query 只接受只读语句（{:?}）",
+                guarded.kind
+            )));
         }
-        let result = self.request("query", params, QUERY_TIMEOUT)?;
-        parse_query_result(&result)
+        let limit = limit
+            .map(|value| value.clamp(1, MAX_QUERY_LIMIT))
+            .unwrap_or(DEFAULT_QUERY_LIMIT);
+        let result = self.request(
+            "query",
+            json!({
+                "connection_id": connection_id,
+                "sql": guarded.sql,
+                "limit": limit,
+            }),
+            QUERY_TIMEOUT,
+        )?;
+        parse_query_result(&result, limit)
     }
 
     /// 执行写/DDL。同样先过 [`SqlGuard`]；SQLite 侧的 `readOnly` 是第二道防线。
@@ -561,7 +573,7 @@ fn map_bridge_error(error: &Value) -> DbError {
     }
 }
 
-fn parse_query_result(value: &Value) -> Result<DbQueryResult, DbError> {
+fn parse_query_result(value: &Value, limit: u32) -> Result<DbQueryResult, DbError> {
     let columns = value
         .get("columns")
         .and_then(Value::as_array)
@@ -574,6 +586,7 @@ fn parse_query_result(value: &Value) -> Result<DbQueryResult, DbError> {
         .get("rows")
         .and_then(Value::as_array)
         .ok_or_else(|| DbError::Protocol("query 响应缺少 rows".to_string()))?;
+    let raw_row_count = raw_rows.len();
     let mut rows = Vec::with_capacity(raw_rows.len());
     for row in raw_rows {
         let cells = row
@@ -582,19 +595,22 @@ fn parse_query_result(value: &Value) -> Result<DbQueryResult, DbError> {
         rows.push(cells.iter().map(parse_cell).collect());
     }
 
-    let row_count = value
-        .get("row_count")
-        .and_then(Value::as_u64)
-        .unwrap_or_else(|| u64::try_from(rows.len()).unwrap_or(u64::MAX));
+    // sidecar 已按 limit 切片；这里再切一次，防止旧版/异常 sidecar 返回超量行。
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    if rows.len() > limit {
+        rows.truncate(limit);
+    }
+    let truncated = value
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || raw_row_count > limit;
 
     Ok(DbQueryResult {
         columns,
+        row_count: u64::try_from(rows.len()).unwrap_or(u64::MAX),
         rows,
-        row_count,
-        truncated: value
-            .get("truncated")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        truncated,
         handle: value
             .get("handle")
             .and_then(Value::as_str)
@@ -842,6 +858,22 @@ mod tests {
         assert!(timeout.to_error_body().message.contains("query"));
     }
 
+    #[test]
+    fn parse_query_result_enforces_limit_even_if_bridge_returns_extra_rows() {
+        let value = json!({
+            "columns": [{"name": "n", "type_name": "INTEGER", "nullable": false}],
+            "rows": [[1], [2], [3]],
+            "row_count": 3,
+            "truncated": false,
+            "elapsed_ms": 1,
+        });
+        let result = parse_query_result(&value, 2).expect("解析查询结果");
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.row_count, 2);
+        assert!(result.truncated);
+        assert!(result.untrusted);
+    }
+
     // ==== 真实 SQLite（Node 不可用时跳过）====
 
     #[test]
@@ -1086,6 +1118,126 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.rows[0][0].as_deref(), Some("1"));
         assert_eq!(result.rows[19][0].as_deref(), Some("20"));
+    }
+
+    #[test]
+    fn sql_limit_cannot_bypass_sidecar_cap() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("limit-bypass");
+        let db = dir.db_path();
+        let mut sidecar = start(&node);
+        sidecar
+            .connect(&sqlite_config("main", &db, false))
+            .expect("连接 sqlite");
+        sidecar
+            .execute("main", "CREATE TABLE numbers (n INTEGER)")
+            .expect("建表");
+
+        let values = (1..=250)
+            .map(|number| format!("({number})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sidecar
+            .execute("main", &format!("INSERT INTO numbers (n) VALUES {values}"))
+            .expect("插入 250 行");
+
+        // limit=None 也必须使用默认 100，SQL 自带的 LIMIT 不能放大返回值。
+        let capped = sidecar
+            .query(
+                "main",
+                "SELECT n FROM numbers ORDER BY n LIMIT 100000",
+                None,
+            )
+            .expect("默认上限查询");
+        assert_eq!(capped.rows.len(), 100);
+        assert_eq!(capped.row_count, 100);
+        assert!(capped.truncated);
+        assert_eq!(capped.rows[99][0].as_deref(), Some("100"));
+
+        let smaller = sidecar
+            .query("main", "SELECT n FROM numbers ORDER BY n LIMIT 5", Some(20))
+            .expect("较小 LIMIT 查询");
+        assert_eq!(smaller.rows.len(), 5);
+        assert_eq!(smaller.row_count, 5);
+        assert!(!smaller.truncated);
+
+        let explicit = sidecar
+            .query(
+                "main",
+                "SELECT n FROM numbers ORDER BY n LIMIT 1000",
+                Some(10),
+            )
+            .expect("显式上限查询");
+        assert_eq!(explicit.rows.len(), 10);
+        assert!(explicit.truncated);
+    }
+
+    #[test]
+    fn query_rejects_writes_and_writable_pragmas() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("query-only");
+        let db = dir.db_path();
+        let mut sidecar = start(&node);
+        sidecar
+            .connect(&sqlite_config("rw", &db, false))
+            .expect("读写连接");
+        sidecar
+            .execute("rw", "CREATE TABLE items (id INTEGER, name TEXT)")
+            .expect("建表");
+
+        let whitelisted = sidecar
+            .query("rw", "PRAGMA table_info(items)", None)
+            .expect("只读 pragma");
+        assert!(
+            whitelisted
+                .rows
+                .iter()
+                .any(|row| row.get(1).and_then(Option::as_deref) == Some("id")),
+            "table_info: {:?}",
+            whitelisted.rows
+        );
+
+        for sql in [
+            "INSERT INTO items (id) VALUES (1)",
+            "PRAGMA user_version=42",
+            "PRAGMA journal_mode=WAL",
+        ] {
+            let error = sidecar
+                .query("rw", sql, None)
+                .expect_err("query 不得执行写语句");
+            assert!(matches!(error, DbError::Rejected(_)), "{sql}: {error:?}");
+        }
+
+        // 显式写路径仍可执行 pragma。
+        sidecar
+            .execute("rw", "PRAGMA user_version=42")
+            .expect("execute 可写 pragma");
+
+        sidecar
+            .connect(&sqlite_config("ro", &db, true))
+            .expect("只读连接");
+        let read = sidecar
+            .query("ro", "PRAGMA table_info(items)", None)
+            .expect("只读连接允许只读 pragma");
+        assert!(!read.rows.is_empty());
+
+        for sql in ["PRAGMA user_version=42", "PRAGMA journal_mode=WAL"] {
+            let query_error = sidecar
+                .query("ro", sql, None)
+                .expect_err("只读连接拒绝 pragma 写");
+            assert!(
+                matches!(query_error, DbError::ReadOnly(_)),
+                "{sql}: {query_error:?}"
+            );
+
+            let execute_error = sidecar
+                .execute("ro", sql)
+                .expect_err("只读连接拒绝 pragma 写路径");
+            assert!(
+                matches!(execute_error, DbError::ReadOnly(_)),
+                "{sql}: {execute_error:?}"
+            );
+        }
     }
 
     #[test]

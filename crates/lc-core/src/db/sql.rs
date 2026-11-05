@@ -1,14 +1,20 @@
 //! SQL 分类、单语句、静态黑名单与 `LIMIT` 注入（P5 数据库闸门）。
 //!
 //! 解析是**词法级**的，不引数据库驱动或 SQL 解析依赖：
-//! - 扫描时跳过 `--` 行注释、`/* ... */` 块注释（支持嵌套）、单引号字符串
-//!   （`''` 与反斜杠转义）、双引号/反引号/方括号标识符、`$$...$$` 与
-//!   `$tag$...$tag$` dollar-quoted 字符串；
+//! - 扫描时跳过 `--` 行注释、`/* ... */` 块注释（SQLite/MySQL 不嵌套）、
+//!   单引号字符串、双引号/反引号/方括号标识符；`$` 按 SQLite 参数前缀
+//!   当作普通词 token，不启用 Postgres dollar-quoted 字符串；
+//! - 默认按 SQLite 方言解析：单引号字符串只接受 `''` 转义，`\` 是普通
+//!   字符。MySQL 方言（显式选择时）才启用反斜杠转义；当前 sidecar 只执行
+//!   SQLite，方言默认值必须保持 SQLite；
 //! - 关键字只在括号深度 0 上判定，`(SELECT ... WHERE ...)` 里的 `WHERE`
 //!   不会被当成外层条件；`WITH` / `EXPLAIN` 会继续看主语句或 CTE 体内的
 //!   数据修改，避免 `WITH ... DELETE` / `EXPLAIN ANALYZE DELETE` 被当成 Read；
+//! - `PRAGMA` 只把只读白名单（`table_info` / `index_list` 等）归为 Read；
+//!   带 `=`、括号赋值或未知名称的 pragma 归 Write，`db_query` 会拒绝；
 //! - 单语句按顶层 `;` 切分，空语句忽略；
-//! - 黑名单同样只匹配 token，字符串/注释里的“DROP DATABASE”不会误伤。
+//! - 黑名单同样只匹配 token，字符串/注释里的“DROP DATABASE”不会误伤；
+//! - 解析不了的输入（未闭合字符串/注释等）一律报错，不降级为放行。
 //!
 //! 已知边界（需要执行层兜底，见 `docs/MILESTONES.md` P5 出口标准）：
 //! MySQL `#` 行注释与 MSSQL `#temp`、MySQL 可执行注释 `/*! ... */` 存在
@@ -22,14 +28,26 @@ use lc_proto::{ErrorBody, ErrorCode};
 /// 语句类型。`Unknown` 一律 fail-closed 拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SqlKind {
-    /// 只读查询：SELECT / WITH / EXPLAIN / PRAGMA / SHOW / DESCRIBE。
+    /// 只读查询：SELECT / WITH / EXPLAIN / 只读 PRAGMA / SHOW / DESCRIBE。
     Read,
-    /// 写数据：INSERT / UPDATE / DELETE / MERGE。
+    /// 写数据：INSERT / UPDATE / DELETE / MERGE，以及可写 PRAGMA。
     Write,
     /// 结构变更：CREATE / ALTER / DROP / TRUNCATE / GRANT / REVOKE。
     Ddl,
     /// 无法识别的语句。
     Unknown,
+}
+
+/// SQL 词法方言。当前 sidecar 只执行 SQLite，默认值必须是 [`SqlDialect::Sqlite`]。
+///
+/// MySQL 方言仅用于显式选择时的词法兼容：单引号/双引号里的反斜杠按转义
+/// 处理。SQLite 不把 `\` 当转义，若用 MySQL 方言解析 SQLite SQL，会把字符串
+/// 边界判断错，因此调用方不得在 SQLite 连接上切换方言。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SqlDialect {
+    #[default]
+    Sqlite,
+    Mysql,
 }
 
 /// 通过闸门的语句：改写后的 SQL、分类与是否注入过 `LIMIT`。
@@ -83,28 +101,44 @@ impl SqlError {
     }
 }
 
-/// SQL 闸门。默认 `LIMIT 100`；`with_default_limit` 把值夹到 `1..=1000`。
+/// SQL 闸门。默认 `LIMIT 100`、SQLite 方言；`with_default_limit` 把值夹到
+/// `1..=1000`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqlGuard {
     default_limit: usize,
+    dialect: SqlDialect,
 }
 
 impl Default for SqlGuard {
     fn default() -> Self {
-        Self { default_limit: 100 }
+        Self {
+            default_limit: 100,
+            dialect: SqlDialect::Sqlite,
+        }
     }
 }
 
 impl SqlGuard {
-    /// 构造自定义默认 `LIMIT`。越界值自动夹紧，不 panic。
+    /// 构造自定义默认 `LIMIT`。越界值自动夹紧，不 panic；方言保持 SQLite。
     pub fn with_default_limit(limit: usize) -> Self {
         Self {
             default_limit: limit.clamp(1, 1000),
+            ..Self::default()
         }
+    }
+
+    /// 切换词法方言。默认 SQLite；仅显式需要 MySQL 词法时使用。
+    pub fn with_dialect(mut self, dialect: SqlDialect) -> Self {
+        self.dialect = dialect;
+        self
     }
 
     pub fn default_limit(&self) -> usize {
         self.default_limit
+    }
+
+    pub fn dialect(&self) -> SqlDialect {
+        self.dialect
     }
 
     /// 校验单条 SQL 并按需注入 `LIMIT`。
@@ -112,7 +146,7 @@ impl SqlGuard {
     /// `read_only` 表示连接/事务只读：除 Read 以外的类型一律拒绝。无顶层
     /// `WHERE` 的 UPDATE/DELETE/MERGE 在**任何**模式下都拒绝。
     pub fn check(&self, sql: &str, read_only: bool) -> Result<GuardedSql, SqlError> {
-        let tokens = lex(sql)?;
+        let tokens = lex(sql, self.dialect)?;
         let statements = split_statements(&tokens);
         if statements.is_empty() {
             return Err(SqlError::EmptyStatement);
@@ -207,7 +241,8 @@ struct Classification {
     kind: SqlKind,
 }
 
-fn lex(sql: &str) -> Result<Vec<Token<'_>>, SqlError> {
+fn lex(sql: &str, dialect: SqlDialect) -> Result<Vec<Token<'_>>, SqlError> {
+    let backslash_escapes = dialect == SqlDialect::Mysql;
     let bytes = sql.as_bytes();
     let len = bytes.len();
     let mut tokens = Vec::new();
@@ -216,6 +251,13 @@ fn lex(sql: &str) -> Result<Vec<Token<'_>>, SqlError> {
 
     while i < len {
         let byte = bytes[i];
+        // node:sqlite 在 NUL 处截断 SQL；若放过 NUL，闸门会看到被截断部分
+        // 之后的 WHERE，而 SQLite 实际执行的是没有 WHERE 的前缀。
+        if byte == 0 {
+            return Err(SqlError::UnsupportedSyntax {
+                construct: "NUL byte",
+            });
+        }
         if byte.is_ascii_whitespace() {
             i += 1;
             continue;
@@ -238,7 +280,7 @@ fn lex(sql: &str) -> Result<Vec<Token<'_>>, SqlError> {
             });
         }
 
-        // 块注释；Postgres 允许嵌套，按嵌套处理。
+        // 块注释。SQLite/MySQL 都不支持嵌套：到第一个 `*/` 结束。
         if byte == b'/' && bytes.get(i + 1) == Some(&b'*') {
             // MySQL 的 `/*! ... */` 是会被执行的代码，不是普通注释；
             // 分类器不解析其内容，直接拒绝以免藏语句。
@@ -248,22 +290,16 @@ fn lex(sql: &str) -> Result<Vec<Token<'_>>, SqlError> {
                 });
             }
             i += 2;
-            let mut level = 1usize;
+            let mut terminated = false;
             while i < len {
-                if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-                    level += 1;
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
                     i += 2;
-                } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                    level -= 1;
-                    i += 2;
-                    if level == 0 {
-                        break;
-                    }
-                } else {
-                    i += 1;
+                    terminated = true;
+                    break;
                 }
+                i += 1;
             }
-            if level != 0 {
+            if !terminated {
                 return Err(SqlError::Unterminated {
                     construct: "block comment",
                 });
@@ -274,7 +310,7 @@ fn lex(sql: &str) -> Result<Vec<Token<'_>>, SqlError> {
         let start = i;
         match byte {
             b'\'' => {
-                let end = scan_quoted(bytes, start, b'\'', "string literal", true)?;
+                let end = scan_quoted(bytes, start, b'\'', "string literal", backslash_escapes)?;
                 tokens.push(Token {
                     kind: TokenKind::StringLiteral,
                     text: &sql[start..end],
@@ -285,7 +321,7 @@ fn lex(sql: &str) -> Result<Vec<Token<'_>>, SqlError> {
                 i = end;
             }
             b'"' => {
-                let end = scan_quoted(bytes, start, b'"', "quoted identifier", false)?;
+                let end = scan_quoted(bytes, start, b'"', "quoted identifier", backslash_escapes)?;
                 tokens.push(Token {
                     kind: TokenKind::QuotedIdentifier,
                     text: &sql[start..end],
@@ -318,26 +354,17 @@ fn lex(sql: &str) -> Result<Vec<Token<'_>>, SqlError> {
                 i = end;
             }
             b'$' => {
-                if let Some(end) = scan_dollar_quoted(bytes, start)? {
-                    tokens.push(Token {
-                        kind: TokenKind::StringLiteral,
-                        text: &sql[start..end],
-                        depth,
-                        start,
-                        end,
-                    });
-                    i = end;
-                } else {
-                    let end = consume_word(bytes, start);
-                    tokens.push(Token {
-                        kind: TokenKind::Word,
-                        text: &sql[start..end],
-                        depth,
-                        start,
-                        end,
-                    });
-                    i = end;
-                }
+                // SQLite/MySQL 没有 Postgres dollar-quoted 字符串：`$` 是
+                // 参数前缀，按普通词处理，不能吞掉 `;` 或 `WHERE`。
+                let end = consume_word(bytes, start);
+                tokens.push(Token {
+                    kind: TokenKind::Word,
+                    text: &sql[start..end],
+                    depth,
+                    start,
+                    end,
+                });
+                i = end;
             }
             b'(' => {
                 tokens.push(Token {
@@ -428,8 +455,8 @@ fn consume_word(bytes: &[u8], start: usize) -> usize {
 }
 
 /// 扫描单引号/双引号/反引号/方括号包围的 token，返回闭合符之后的位置。
-/// 单引号额外接受 MySQL 风格的反斜杠转义；双写闭合符（`''`、`""`、`` `` ``、
-/// `]]`）按转义处理。
+/// `backslash_escapes` 只在 MySQL 方言为 true；SQLite 下 `\` 是普通字符。
+/// 双写闭合符（`''`、`""`、`` `` ``、`]]`）始终按转义处理。
 fn scan_quoted(
     bytes: &[u8],
     start: usize,
@@ -457,33 +484,6 @@ fn scan_quoted(
         i += 1;
     }
     Err(SqlError::Unterminated { construct })
-}
-
-/// 识别 Postgres dollar-quoted 字符串；不是合法 dollar quote 时返回 None。
-fn scan_dollar_quoted(bytes: &[u8], start: usize) -> Result<Option<usize>, SqlError> {
-    let len = bytes.len();
-    let mut tag_end = start + 1;
-    if tag_end < len && (bytes[tag_end].is_ascii_alphabetic() || bytes[tag_end] == b'_') {
-        tag_end += 1;
-        while tag_end < len && (bytes[tag_end].is_ascii_alphanumeric() || bytes[tag_end] == b'_') {
-            tag_end += 1;
-        }
-    }
-    if tag_end >= len || bytes[tag_end] != b'$' {
-        return Ok(None);
-    }
-
-    let delimiter = &bytes[start..=tag_end];
-    let mut i = tag_end + 1;
-    while i + delimiter.len() <= len {
-        if &bytes[i..i + delimiter.len()] == delimiter {
-            return Ok(Some(i + delimiter.len()));
-        }
-        i += 1;
-    }
-    Err(SqlError::Unterminated {
-        construct: "dollar-quoted string",
-    })
 }
 
 fn split_statements<'a, 'sql>(tokens: &'a [Token<'sql>]) -> Vec<&'a [Token<'sql>]> {
@@ -525,7 +525,12 @@ fn classify(tokens: &[Token<'_>]) -> Classification {
         "EXPLAIN" => explain_verb(tokens),
         _ => Some(head.clone()),
     };
-    let kind = verb.as_deref().map_or(SqlKind::Unknown, kind_of);
+    // PRAGMA 不能只看首词：`PRAGMA user_version=42` 会写库。
+    let kind = if head == "PRAGMA" {
+        pragma_kind(tokens)
+    } else {
+        verb.as_deref().map_or(SqlKind::Unknown, kind_of)
+    };
     Classification {
         head,
         verb: verb.unwrap_or_default(),
@@ -539,6 +544,65 @@ fn kind_of(verb: &str) -> SqlKind {
         "INSERT" | "UPDATE" | "DELETE" | "MERGE" => SqlKind::Write,
         "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "GRANT" | "REVOKE" => SqlKind::Ddl,
         _ => SqlKind::Unknown,
+    }
+}
+
+/// SQLite 只读 PRAGMA 白名单（名称大写）。
+///
+/// 括号参数只在白名单名称下被视为读参数；带 `=`、未知名称（包括
+/// `user_version` / `journal_mode` / `foreign_keys` 等可写 pragma）一律按
+/// Write 处理，由 `db_query` 拒绝，`db_execute` 才走写路径。
+const READ_ONLY_PRAGMAS: &[&str] = &[
+    "TABLE_INFO",
+    "TABLE_XINFO",
+    "TABLE_LIST",
+    "INDEX_LIST",
+    "INDEX_INFO",
+    "INDEX_XINFO",
+    "FOREIGN_KEY_LIST",
+    "DATABASE_LIST",
+    "COLLATION_LIST",
+    "COMPILE_OPTIONS",
+    "FUNCTION_LIST",
+    "MODULE_LIST",
+    "PRAGMA_LIST",
+];
+
+/// `PRAGMA [schema.]name [(args)] [= value]` 的分类。
+///
+/// 无法确定名称（空 PRAGMA、只有表达式）时返回 `Unknown`，由闸门 fail-closed
+/// 拒绝。可写/未知名称返回 `Write`，保留 `db_execute` 的显式写路径。
+fn pragma_kind(tokens: &[Token<'_>]) -> SqlKind {
+    let Some(first) = tokens.first() else {
+        return SqlKind::Unknown;
+    };
+    if first.kind != TokenKind::Word || !first.text.eq_ignore_ascii_case("PRAGMA") {
+        return SqlKind::Unknown;
+    }
+
+    let mut name = None;
+    let mut assignment = false;
+    for token in tokens.iter().skip(1) {
+        if token.depth != 0 {
+            break;
+        }
+        match token.kind {
+            TokenKind::Punct if token.text == "=" => {
+                assignment = true;
+                break;
+            }
+            TokenKind::Punct if token.text == ";" || token.text == "(" => break,
+            TokenKind::Punct if token.text == "." => continue,
+            TokenKind::Word | TokenKind::QuotedIdentifier => name = token_name(token),
+            _ => break,
+        }
+    }
+
+    match (name.as_deref(), assignment) {
+        (None, _) => SqlKind::Unknown,
+        (Some(_), true) => SqlKind::Write,
+        (Some(name), false) if READ_ONLY_PRAGMAS.contains(&name) => SqlKind::Read,
+        (Some(_), false) => SqlKind::Write,
     }
 }
 
@@ -994,6 +1058,46 @@ mod tests {
     }
 
     #[test]
+    fn default_dialect_is_sqlite_and_backslash_is_not_an_escape() {
+        let guard = SqlGuard::default();
+        assert_eq!(guard.dialect(), SqlDialect::Sqlite);
+
+        // SQLite 在反斜杠后的单引号处结束字符串，`''` 才是转义。
+        let guarded = ok("SELECT 'a\\' AS note");
+        assert_eq!(guarded.kind, SqlKind::Read);
+        assert_eq!(guarded.sql, "SELECT 'a\\' AS note LIMIT 100");
+
+        let doubled = ok("SELECT 'a''b' AS note");
+        assert_eq!(doubled.sql, "SELECT 'a''b' AS note LIMIT 100");
+    }
+
+    #[test]
+    fn mysql_dialect_is_opt_in() {
+        let guard = SqlGuard::default().with_dialect(SqlDialect::Mysql);
+        assert_eq!(guard.dialect(), SqlDialect::Mysql);
+
+        let guarded = guard
+            .check("SELECT 'a\\'b' AS note", false)
+            .expect("MySQL 方言按反斜杠转义解析");
+        assert_eq!(guarded.sql, "SELECT 'a\\'b' AS note LIMIT 100");
+    }
+
+    #[test]
+    fn backslash_quote_payload_cannot_hide_missing_where() {
+        // C2 PoC：MySQL 词法会把第一条语句看成带顶层 WHERE，SQLite 实际在
+        // `\'` 处结束字符串，`;` 后的 SELECT 才是第二条语句。
+        assert!(
+            SqlGuard::default()
+                .check("DELETE FROM t RETURNING 'a\\' ; SELECT ' WHERE 1=1", false)
+                .is_err()
+        );
+
+        // 截断到单条语句时，SQLite 解析后确实没有 WHERE。
+        assert_missing_where("DELETE FROM t RETURNING 'a\\'", "DELETE");
+        assert_missing_where("UPDATE t SET x = 'a\\' RETURNING x", "UPDATE");
+    }
+
+    #[test]
     fn limit_in_string_or_comment_does_not_suppress_injection() {
         let from_string = ok("SELECT 'LIMIT 5' AS note");
         assert!(from_string.injected_limit);
@@ -1117,6 +1221,24 @@ mod tests {
     }
 
     #[test]
+    fn read_only_allows_read_only_pragmas_and_rejects_writes() {
+        let allowed = ok_read_only("PRAGMA table_info(users)");
+        assert_eq!(allowed.kind, SqlKind::Read);
+
+        for sql in [
+            "PRAGMA user_version=42",
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA foreign_keys=ON",
+            "PRAGMA optimize",
+        ] {
+            match error_read_only(sql) {
+                SqlError::ReadOnly { kind } => assert_eq!(kind, SqlKind::Write),
+                other => panic!("expected ReadOnly for {sql:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn read_only_rejects_ddl() {
         match error_read_only("CREATE TABLE users (id INTEGER)") {
             SqlError::ReadOnly { kind } => assert_eq!(kind, SqlKind::Ddl),
@@ -1168,13 +1290,55 @@ mod tests {
     }
 
     #[test]
-    fn show_describe_and_pragma_are_read_without_limit() {
-        for sql in ["SHOW TABLES", "DESCRIBE users", "PRAGMA table_info(users)"] {
+    fn show_describe_and_read_only_pragmas_are_read_without_limit() {
+        for sql in [
+            "SHOW TABLES",
+            "DESCRIBE users",
+            "PRAGMA table_info(users)",
+            "PRAGMA main.table_info(users)",
+            "PRAGMA \"main\".\"table_info\"(\"users\")",
+            "PRAGMA index_list(users)",
+            "PRAGMA index_info(idx_users_name)",
+            "PRAGMA foreign_key_list(users)",
+            "PRAGMA database_list",
+            "PRAGMA compile_options",
+        ] {
             let guarded = ok(sql);
             assert_eq!(guarded.kind, SqlKind::Read, "kind for {sql:?}");
             assert!(!guarded.injected_limit, "limit for {sql:?}");
             assert_eq!(guarded.sql, sql);
         }
+    }
+
+    #[test]
+    fn pragma_assignment_and_unknown_names_are_write() {
+        for sql in [
+            "PRAGMA user_version=42",
+            "PRAGMA user_version = 42",
+            "PRAGMA main.user_version = 42",
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA journal_mode = 'WAL'",
+            "PRAGMA foreign_keys=ON",
+            "PRAGMA user_version(42)",
+            "PRAGMA optimize",
+        ] {
+            let guarded = ok(sql);
+            assert_eq!(guarded.kind, SqlKind::Write, "kind for {sql:?}");
+            assert!(!guarded.injected_limit, "limit for {sql:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_pragma_fails_closed() {
+        assert!(matches!(error("PRAGMA"), SqlError::UnknownStatement { .. }));
+        assert!(matches!(
+            error("PRAGMA = 42"),
+            SqlError::UnknownStatement { .. }
+        ));
+        assert!(matches!(
+            error("PRAGMA (user_version)"),
+            SqlError::UnknownStatement { .. }
+        ));
     }
 
     // ==== 静态黑名单 ====
@@ -1334,39 +1498,63 @@ mod tests {
         }
     }
 
-    // ==== 引号/注释/美元引号 ====
+    // ==== 引号/注释/美元符号 ====
 
     #[test]
-    fn dollar_quoted_semicolon_and_keywords_do_not_split_or_classify() {
-        let guarded = ok("SELECT $$a;b -- WHERE$$ AS body");
+    fn dollar_quoted_payload_is_not_treated_as_a_string() {
+        // SQLite 没有 Postgres dollar-quoted 字符串；`$$` 只是参数前缀，
+        // `;` 必须被识别为语句分隔符，不能把后续 SELECT/WHERE 藏起来。
+        assert!(matches!(
+            error("SELECT $$a;b -- WHERE$$ AS body"),
+            SqlError::MultipleStatements { .. }
+        ));
+        assert!(matches!(
+            error("DELETE FROM t RETURNING $$ ; SELECT $$ WHERE 1=1"),
+            SqlError::MultipleStatements { .. }
+        ));
+
+        // `$name` 形式的参数仍是普通词，不影响顶层 WHERE 判定。
+        let guarded = ok("SELECT * FROM users WHERE id = $id");
         assert_eq!(guarded.kind, SqlKind::Read);
-        assert!(guarded.injected_limit);
-        assert_eq!(guarded.sql, "SELECT $$a;b -- WHERE$$ AS body LIMIT 100");
+        assert_eq!(guarded.sql, "SELECT * FROM users WHERE id = $id LIMIT 100");
     }
 
     #[test]
-    fn tagged_dollar_quote_is_opaque() {
-        let guarded = ok("SELECT $tag$; DELETE FROM users; $tag$ AS body");
-        assert_eq!(guarded.kind, SqlKind::Read);
-        assert_eq!(
-            guarded.sql,
-            "SELECT $tag$; DELETE FROM users; $tag$ AS body LIMIT 100"
-        );
-    }
-
-    #[test]
-    fn do_block_with_semicolons_is_one_unknown_statement() {
+    fn do_block_is_not_accepted_by_sqlite_dialect() {
         assert!(matches!(
             error("DO $$ BEGIN DELETE FROM users; END $$"),
-            SqlError::UnknownStatement { .. }
+            SqlError::MultipleStatements { .. }
         ));
     }
 
     #[test]
-    fn nested_block_comment_is_skipped() {
-        let guarded = ok("/* outer /* ; */ still */ SELECT 1");
-        assert_eq!(guarded.kind, SqlKind::Read);
+    fn nested_block_comment_cannot_hide_statement_boundary() {
+        // SQLite 在第一个 `*/` 结束注释；后面的 `;` 必须切分语句，不能让
+        // 顶层 WHERE 替第一条无 WHERE 的 DELETE 作保。
+        assert!(matches!(
+            error("DELETE FROM t RETURNING 1 /* /* */ ; SELECT 1 */ WHERE 1=1"),
+            SqlError::MultipleStatements { .. }
+        ));
+
+        let guarded = ok("SELECT 1 /* comment */");
         assert_eq!(guarded.sql, "SELECT 1 LIMIT 100");
+    }
+
+    #[test]
+    fn nul_byte_is_rejected_even_with_where_after_it() {
+        // node:sqlite 在 NUL 处截断，不能让它前面的 DELETE 无 WHERE 执行。
+        assert!(matches!(
+            error("DELETE FROM t RETURNING 1\0 WHERE 1=1"),
+            SqlError::UnsupportedSyntax {
+                construct: "NUL byte"
+            }
+        ));
+        assert!(matches!(
+            error("SELECT 1\0"),
+            SqlError::UnsupportedSyntax {
+                construct: "NUL byte"
+            }
+        ));
     }
 
     #[test]
@@ -1381,12 +1569,6 @@ mod tests {
             error("SELECT 1 /* abc"),
             SqlError::Unterminated {
                 construct: "block comment"
-            }
-        ));
-        assert!(matches!(
-            error("SELECT $$abc"),
-            SqlError::Unterminated {
-                construct: "dollar-quoted string"
             }
         ));
     }

@@ -12,6 +12,8 @@ import { performance } from 'node:perf_hooks';
 import readline from 'node:readline';
 
 const PROTOCOL_VERSION = 1;
+const DEFAULT_QUERY_LIMIT = 100;
+const MAX_QUERY_LIMIT = 1000;
 
 /** @type {Map<string, {db: DatabaseSync, database: string, readOnly: boolean}>} */
 const connections = new Map();
@@ -113,14 +115,19 @@ function connect(params) {
 function query(params) {
   const sql = requireString(params, 'sql');
   const entry = requireConnection(params);
-  const limit = params?.limit;
+  const requestedLimit = params?.limit;
   if (
-    limit !== undefined &&
-    limit !== null &&
-    (!Number.isInteger(limit) || limit < 0)
+    requestedLimit !== undefined &&
+    requestedLimit !== null &&
+    (!Number.isInteger(requestedLimit) || requestedLimit < 0)
   ) {
     throw invalidArgument('limit must be a non-negative integer');
   }
+  // 缺省上限也必须在 bridge 侧生效：SQL 自带的 LIMIT 不能放大返回行数。
+  const limit = Math.min(
+    requestedLimit ?? DEFAULT_QUERY_LIMIT,
+    MAX_QUERY_LIMIT,
+  );
 
   const started = performance.now();
   let rows;
@@ -147,8 +154,8 @@ function query(params) {
 
   if (!Array.isArray(rows)) rows = [];
   const rowCount = rows.length;
-  const limited =
-    limit !== undefined && limit !== null ? rows.slice(0, limit) : rows;
+  const truncated = rowCount > limit;
+  const limited = truncated ? rows.slice(0, limit) : rows;
 
   const normalized = [];
   for (const row of limited) {
@@ -183,7 +190,7 @@ function query(params) {
     columns,
     rows: normalized,
     row_count: normalized.length,
-    truncated: limited.length < rowCount,
+    truncated,
     elapsed_ms: Math.max(0, Math.round(performance.now() - started)),
     untrusted: true,
   };
