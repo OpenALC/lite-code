@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`37deae5`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`8b5df1d`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -32,6 +32,7 @@
 | P3 Tools+Policy | ✅ 工具注册表（≤12）+ 四模式策略 + 三层判定的纯函数骨架与单测 |
 | P3 会话审批 | ✅ 模式/yolo 确认、轮次上限、取消、审批队列、AllowOnce/AllowSession/Deny |
 | P3 工具执行 | ✅ read/write/edit/glob/grep（根内校验、输出截断）；shell 待 PTY lane |
+| P3 LLM 解析 | ✅ SSE 增量解析 + OpenAI Responses 事件归一化（文本/思考/工具/usage/停止原因） |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
 
@@ -87,6 +88,10 @@
    - `LocalToolExecutor`：read/write/edit/glob/grep，全部先经根内校验，输出截断。
    - edit 拒绝 0/多次匹配，`replace_all` 显式开启；shell 明确 Unsupported 待 PTY lane。
    - 5 个临时目录集成测试；lane 脚本修复 `pub use {}` 展开误报。
+18. **P3 LLM 解析**（`8b5df1d`）
+   - `SseParser`：增量 chunk、CRLF、多行 data、注释、finish 兜底。
+   - OpenAI Responses 映射：text/thinking、tool start/args、usage、stop reason、failed。
+   - 8 个协议/映射单测；网络传输与 Anthropic Messages 留后续 lane。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -99,8 +104,8 @@
 ## 待办（按序）
 
 1. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-2. P3 下一块：shell 工具执行（接 ProcessSupervisor / PowerShell 7 探测）。
-3. P3 后续：LLM 网关（Responses + SSE）、Agent UI（会话流/工具卡片/内联审批/composer）。
+2. P3 下一块：LLM 网络传输 + 供应商配置 + Agent Loop 串联。
+3. P3 后续：shell 执行、Agent UI（会话流/工具卡片/内联审批/composer）。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -127,5 +132,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 94 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **231**。
+lc-core 102 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **239**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
