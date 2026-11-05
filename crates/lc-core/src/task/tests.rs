@@ -107,8 +107,14 @@ fn worktree_path(task: &lc_proto::TaskInfo) -> PathBuf {
     PathBuf::from(task.worktree_path.clone().expect("task has worktree"))
 }
 
-fn norm_path(text: &str) -> String {
-    text.replace('\\', "/").to_lowercase()
+fn worktree_listed(repo: &Path, path: &Path) -> bool {
+    let target = std::fs::canonicalize(path).ok();
+    let listing = git(repo, &["worktree", "list", "--porcelain"]);
+    listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .filter_map(|listed| std::fs::canonicalize(listed).ok())
+        .any(|listed| target.as_deref() == Some(listed.as_path()))
 }
 
 fn assert_port_in_range(port: u16) {
@@ -263,7 +269,11 @@ fn worktree_lives_in_data_dir_and_branch_is_valid() {
     git(&repo, &["check-ref-format", "--branch", &branch]);
 
     let listing = git(&repo, &["worktree", "list", "--porcelain"]);
-    assert!(norm_path(&listing).contains(&norm_path(&path.to_string_lossy())));
+    assert!(
+        worktree_listed(&repo, &path),
+        "worktree list must contain {}:\n{listing}",
+        path.display()
+    );
     assert!(task.base_sha.is_some());
 }
 
@@ -499,8 +509,8 @@ fn apply_success_merges_and_cleans_up() {
             .success()
     );
     assert!(
-        !norm_path(&git(&repo, &["worktree", "list", "--porcelain"]))
-            .contains(&norm_path(&wt.to_string_lossy()))
+        !worktree_listed(&repo, &wt),
+        "removed worktree must disappear from git worktree list"
     );
 }
 
