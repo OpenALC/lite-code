@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import AgentPanel from './components/AgentPanel.vue'
 import CodeEditor from './components/CodeEditor.vue'
+import DbPanel from './components/DbPanel.vue'
 import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import RuntimeSettings from './components/RuntimeSettings.vue'
@@ -15,6 +16,15 @@ import { createAgentSession } from './services/agentSession'
 import {
   agentCancel,
   agentSend,
+  dbConnect,
+  dbDeleteConnection,
+  dbDisconnect,
+  dbExecute,
+  dbExplain,
+  dbList,
+  dbQuery,
+  dbSaveConnection,
+  dbSchema,
   isTauri,
   onCoreEvent,
   openWorkspace,
@@ -30,6 +40,7 @@ import {
   taskStart,
   workspaceRoot,
 } from './services/bridge'
+import { createDbController } from './services/dbStore'
 import {
   LAYOUT_LIMITS,
   NARROW_WIDTH_PX,
@@ -70,6 +81,30 @@ const taskSession = createTaskController({
   taskBindSession,
   onCoreEvent,
 })
+
+// P5 数据库面板：与 Agent/任务共用 core:event 流；打开面板时拉取连接列表。
+const dbSession = createDbController({
+  dbList,
+  dbConnect,
+  dbDisconnect,
+  dbSchema,
+  dbQuery,
+  dbExecute,
+  dbExplain,
+  dbSaveConnection,
+  dbDeleteConnection,
+  onCoreEvent,
+})
+const dbOpen = ref(false)
+
+async function toggleDatabase(): Promise<void> {
+  if (dbOpen.value) {
+    dbOpen.value = false
+    return
+  }
+  dbOpen.value = true
+  await dbSession.refresh()
+}
 
 // 工作台挂载点保持稳定：任务切换只更新 controller，组件不随 activeTaskId 重建。
 // 窄窗口浮层重挂载时也从 controller 读回各任务的标签与预览 URL。
@@ -215,6 +250,7 @@ onBeforeUnmount(() => {
   unsub()
   agentSession.dispose()
   taskSession.dispose()
+  dbSession.dispose()
   window.removeEventListener('resize', onResize)
   window.removeEventListener('keydown', onKey)
 })
@@ -230,6 +266,14 @@ onBeforeUnmount(() => {
         {{ t('app.title') }}
       </div>
       <div class="spacer" />
+      <button
+        type="button"
+        class="runtime-btn"
+        :class="{ active: dbOpen }"
+        @click="toggleDatabase"
+      >
+        {{ t('db.open') }}
+      </button>
       <button
         type="button"
         class="runtime-btn"
@@ -328,41 +372,48 @@ onBeforeUnmount(() => {
       />
 
       <section class="center">
-        <TabBar v-if="profile.tabsVisible" />
-        <CodeEditor v-if="profile.centerView === 'editor'" />
-        <AgentPanel
-          v-else
-          :controller="agentSession"
+        <DbPanel
+          v-if="dbOpen"
+          :controller="dbSession"
+          @close="dbOpen = false"
         />
-        <div
-          v-if="profile.bottomPanelVisible"
-          class="resizer h"
-          role="separator"
-          aria-orientation="horizontal"
-          @pointerdown="startResize('bottom', $event)"
-        />
-        <div
-          v-if="profile.bottomPanelVisible"
-          class="bottom-panel"
-          :style="{ height: `${profile.bottomHeight}px` }"
-        >
-          <div class="bottom-tabs">
-            <span class="bottom-tab active">{{ t('bottom.terminal') }}</span>
-            <span class="bottom-tab">{{ t('bottom.output') }}</span>
-            <span class="bottom-tab">{{ t('bottom.problems') }}</span>
-            <button
-              type="button"
-              class="bottom-collapse"
-              :title="t('bottom.collapse')"
-              @click="toggleBottom"
-            >
-              ▾
-            </button>
+        <template v-else>
+          <TabBar v-if="profile.tabsVisible" />
+          <CodeEditor v-if="profile.centerView === 'editor'" />
+          <AgentPanel
+            v-else
+            :controller="agentSession"
+          />
+          <div
+            v-if="profile.bottomPanelVisible"
+            class="resizer h"
+            role="separator"
+            aria-orientation="horizontal"
+            @pointerdown="startResize('bottom', $event)"
+          />
+          <div
+            v-if="profile.bottomPanelVisible"
+            class="bottom-panel"
+            :style="{ height: `${profile.bottomHeight}px` }"
+          >
+            <div class="bottom-tabs">
+              <span class="bottom-tab active">{{ t('bottom.terminal') }}</span>
+              <span class="bottom-tab">{{ t('bottom.output') }}</span>
+              <span class="bottom-tab">{{ t('bottom.problems') }}</span>
+              <button
+                type="button"
+                class="bottom-collapse"
+                :title="t('bottom.collapse')"
+                @click="toggleBottom"
+              >
+                ▾
+              </button>
+            </div>
+            <div class="bottom-body">
+              —
+            </div>
           </div>
-          <div class="bottom-body">
-            —
-          </div>
-        </div>
+        </template>
       </section>
 
       <div
@@ -578,6 +629,12 @@ onBeforeUnmount(() => {
 .runtime-btn:hover {
   color: var(--fg);
   border-color: var(--accent);
+}
+
+.runtime-btn.active {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 .main {

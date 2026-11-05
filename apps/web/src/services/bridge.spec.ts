@@ -6,6 +6,15 @@ import {
   agentCancel,
   agentSend,
   CORE_EVENT_CHANNEL,
+  dbConnect,
+  dbDeleteConnection,
+  dbDisconnect,
+  dbExecute,
+  dbExplain,
+  dbList,
+  dbQuery,
+  dbSaveConnection,
+  dbSchema,
   detectNode,
   downloadNodePortable,
   isTauri,
@@ -27,10 +36,22 @@ import {
   workspaceRoot,
   writeFile,
   type BridgeResult,
+  type DbConnectionResult,
+  type DbExecCommandResult,
+  type DbExplainCommandResult,
+  type DbListResult,
+  type DbQueryCommandResult,
+  type DbSchemaResult,
   type DirListingResult,
   type TaskDiffResult,
   type TaskListResult,
 } from './bridge'
+import type {
+  DbConnectionConfig,
+  DbConnectionInfo,
+  DbQueryResult,
+  UiCoreEvent,
+} from './dbTypes'
 import type { TaskInfo } from './taskTypes'
 
 // node 环境无 window：默认走 fallback 占位路径；Tauri 路径用注入的假
@@ -590,6 +611,227 @@ describe('Task 工作台命令', () => {
   })
 })
 
+describe('数据库命令', () => {
+  function dbConnection(overrides: Partial<DbConnectionInfo> = {}): DbConnectionInfo {
+    return {
+      connection_id: 'c1',
+      name: 'Local',
+      kind: 'sqlite',
+      read_only: false,
+      state: 'disconnected',
+      host: null,
+      database: 'app.db',
+      ...overrides,
+    }
+  }
+
+  function dbResult(overrides: Partial<DbQueryResult> = {}): DbQueryResult {
+    return {
+      columns: [{ name: 'id', type_name: 'INTEGER', nullable: false }],
+      rows: [['1'], [null]],
+      row_count: 2,
+      truncated: false,
+      handle: null,
+      elapsed_ms: 4,
+      untrusted: true,
+      ...overrides,
+    }
+  }
+
+  function config(): DbConnectionConfig {
+    return {
+      connection_id: 'c1',
+      name: 'Local',
+      kind: 'sqlite',
+      host: '',
+      port: 0,
+      database: 'app.db',
+      user: '',
+      secret_ref: '',
+      read_only: true,
+    }
+  }
+
+  it('浏览器 dev：连接 CRUD 与查询都返回 fallback 占位，不连真实数据库', async () => {
+    const initial = await dbList()
+    expect(initial.ok).toBe(true)
+    expect(initial.fallback).toBe(true)
+    if (initial.ok) expect(initial.data).toEqual({ kind: 'connections', connections: [] })
+
+    const saved = await dbSaveConnection(config())
+    expect(saved.ok).toBe(true)
+    expect(saved.fallback).toBe(true)
+    if (saved.ok) {
+      expect(saved.data.connection).toMatchObject({
+        connection_id: 'c1',
+        state: 'disconnected',
+        database: 'app.db',
+        read_only: true,
+      })
+    }
+
+    const list = await dbList()
+    if (list.ok) expect(list.data.connections.map(item => item.connection_id)).toEqual(['c1'])
+
+    const connected = await dbConnect('c1')
+    if (connected.ok) expect(connected.data.connection.state).toBe('connected')
+    const disconnected = await dbDisconnect('c1')
+    if (disconnected.ok) expect(disconnected.data.connection.state).toBe('disconnected')
+
+    const schema = await dbSchema('c1')
+    expect(schema.ok).toBe(true)
+    expect(schema.fallback).toBe(true)
+    if (schema.ok) expect(schema.data.nodes).toEqual([])
+
+    const query = await dbQuery('c1', 'SELECT * FROM t')
+    if (query.ok) {
+      expect(query.data.result).toMatchObject({
+        rows: [],
+        row_count: 0,
+        untrusted: true,
+      })
+    }
+    const exec = await dbExecute('c1', 'DELETE FROM t')
+    if (exec.ok) expect(exec.data.result.affected_rows).toBe(0)
+    const explain = await dbExplain('c1', 'SELECT * FROM t')
+    expect(explain.ok).toBe(true)
+    if (explain.ok) expect(explain.data.result.plan).toContain('浏览器演示')
+
+    const deleted = await dbDeleteConnection('c1')
+    expect(deleted.ok).toBe(true)
+    expect(deleted.fallback).toBe(true)
+    const after = await dbList()
+    if (after.ok) expect(after.data.connections).toEqual([])
+  })
+
+  it('Tauri：9 个命令名与 snake_case 参数与契约 CoreCommand 对应', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const item = dbConnection()
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        switch (cmd) {
+          case 'db_list':
+            return { kind: 'connections', connections: [item] }
+          case 'db_connect':
+          case 'db_disconnect':
+          case 'db_save_connection':
+            return { kind: 'connection', connection: item }
+          case 'db_schema':
+            return { kind: 'db_schema', connection_id: 'c1', nodes: [] }
+          case 'db_query':
+            return { kind: 'db_query', result: dbResult() }
+          case 'db_execute':
+            return { kind: 'db_exec', result: { affected_rows: 2, elapsed_ms: 3 } }
+          case 'db_explain':
+            return { kind: 'db_explain', result: { plan: 'SCAN t', elapsed_ms: 1 } }
+          default:
+            return { kind: 'ack' }
+        }
+      },
+    })
+
+    const list: BridgeResult<DbListResult> = await dbList()
+    const connected: BridgeResult<DbConnectionResult> = await dbConnect('c1')
+    const disconnected: BridgeResult<DbConnectionResult> = await dbDisconnect('c1')
+    const schema: BridgeResult<DbSchemaResult> = await dbSchema('c1')
+    const query: BridgeResult<DbQueryCommandResult> = await dbQuery('c1', 'SELECT 1', 50)
+    const exec: BridgeResult<DbExecCommandResult> = await dbExecute('c1', 'DELETE FROM t')
+    const explain: BridgeResult<DbExplainCommandResult> = await dbExplain('c1', 'SELECT 1')
+    const saved: BridgeResult<DbConnectionResult> = await dbSaveConnection(config())
+    const deleted = await dbDeleteConnection('c1')
+
+    for (const res of [list, connected, disconnected, schema, query, exec, explain, saved, deleted]) {
+      expect(res.ok).toBe(true)
+      expect(res.fallback).toBe(false)
+    }
+    expect(calls).toEqual([
+      { cmd: 'db_list', args: {} },
+      { cmd: 'db_connect', args: { connection_id: 'c1' } },
+      { cmd: 'db_disconnect', args: { connection_id: 'c1' } },
+      { cmd: 'db_schema', args: { connection_id: 'c1' } },
+      { cmd: 'db_query', args: { connection_id: 'c1', sql: 'SELECT 1', limit: 50 } },
+      { cmd: 'db_execute', args: { connection_id: 'c1', sql: 'DELETE FROM t' } },
+      { cmd: 'db_explain', args: { connection_id: 'c1', sql: 'SELECT 1' } },
+      { cmd: 'db_save_connection', args: { connection: config() } },
+      { cmd: 'db_delete_connection', args: { connection_id: 'c1' } },
+    ])
+  })
+
+  it('Tauri：db_query 缺省 limit 以 null 下发（契约 Option<u32>）', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'db_query', result: dbResult() }
+      },
+    })
+    expect((await dbQuery('c1', 'SELECT 1')).ok).toBe(true)
+    expect(calls).toEqual([
+      { cmd: 'db_query', args: { connection_id: 'c1', sql: 'SELECT 1', limit: null } },
+    ])
+  })
+
+  it('Tauri：畸形连接列表 / schema 载荷归入 internal', async () => {
+    installTauri({
+      invoke: async cmd => {
+        if (cmd === 'db_list') {
+          return {
+            kind: 'connections',
+            connections: [{ ...dbConnection(), kind: 'oracle' }],
+          }
+        }
+        return {
+          kind: 'db_schema',
+          connection_id: 'c1',
+          nodes: [{ name: 'users', kind: 'table' }],
+        }
+      },
+    })
+    const list = await dbList()
+    expect(list.ok).toBe(false)
+    if (!list.ok) expect(list.error.code).toBe('internal')
+    const schema = await dbSchema('c1')
+    expect(schema.ok).toBe(false)
+    if (!schema.ok) expect(schema.error.message).toContain('db_schema')
+  })
+
+  it('Tauri：畸形查询/执行/EXPLAIN 载荷归入 internal', async () => {
+    installTauri({
+      invoke: async cmd => {
+        if (cmd === 'db_query') {
+          return { kind: 'db_query', result: { ...dbResult(), rows: [[42]] } }
+        }
+        if (cmd === 'db_execute') {
+          return { kind: 'db_exec', result: { affected_rows: -1, elapsed_ms: 0 } }
+        }
+        return { kind: 'db_explain', result: { plan: 42, elapsed_ms: 0 } }
+      },
+    })
+    const query = await dbQuery('c1', 'SELECT 1')
+    const exec = await dbExecute('c1', 'DELETE FROM t')
+    const explain = await dbExplain('c1', 'SELECT 1')
+    for (const res of [query, exec, explain]) {
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.error.code).toBe('internal')
+    }
+  })
+
+  it('Tauri：连接命令 kind 不匹配或连接载荷非法时归入 internal', async () => {
+    installTauri({ invoke: async () => ({ kind: 'ack' }) })
+    const wrongKind = await dbConnect('c1')
+    expect(wrongKind.ok).toBe(false)
+    if (!wrongKind.ok) expect(wrongKind.error.code).toBe('internal')
+
+    installTauri({
+      invoke: async () => ({ kind: 'connection', connection: { connection_id: 'c1' } }),
+    })
+    const badShape = await dbSaveConnection(config())
+    expect(badShape.ok).toBe(false)
+    if (!badShape.ok) expect(badShape.error.code).toBe('internal')
+  })
+})
+
 describe('onCoreEvent', () => {
   interface FakeEventWindow {
     callbacks: Map<number, (response: unknown) => void>
@@ -657,6 +899,40 @@ describe('onCoreEvent', () => {
     expect(seen).toHaveLength(2)
     expect(seen[0]).toMatchObject({ type: 'agent:text_delta', text: 'hi' })
     expect(seen[1]).toMatchObject({ type: 'agent:done', stop_reason: 'end_turn' })
+  })
+
+  it('转发 db:status，畸形连接载荷被丢弃', () => {
+    const fake = installEventTauri()
+    const seen: UiCoreEvent[] = []
+    onCoreEvent(event => seen.push(event))
+    const callback = fake.callbacks.get(1)
+
+    callback?.(
+      tauriEvent({
+        type: 'db:status',
+        connection: {
+          connection_id: 'c1',
+          name: 'Local',
+          kind: 'sqlite',
+          read_only: true,
+          state: 'connected',
+          database: 'app.db',
+        },
+      }),
+    )
+    callback?.(
+      tauriEvent({
+        type: 'db:status',
+        connection: { connection_id: 'c1', kind: 'sqlite' },
+      }),
+    )
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ type: 'db:status' })
+    if (seen[0].type === 'db:status') {
+      expect(seen[0].connection.connection_id).toBe('c1')
+      expect(seen[0].connection.read_only).toBe(true)
+    }
   })
 
   it('兼容 EventEnvelope 包装与裸 CoreEvent', () => {

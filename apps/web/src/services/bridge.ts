@@ -21,6 +21,20 @@ import type {
 } from '@lc-proto'
 
 import {
+  isDbConnectionInfo,
+  isDbExecResult,
+  isDbExplainResult,
+  isDbQueryResult,
+  isDbSchemaNode,
+  type DbConnectionConfig,
+  type DbConnectionInfo,
+  type DbExecResult,
+  type DbExplainResult,
+  type DbQueryResult,
+  type DbSchemaNode,
+  type UiCoreEvent,
+} from './dbTypes'
+import {
   isFileChangeDto,
   isTaskCheck,
   isTaskInfo,
@@ -53,6 +67,33 @@ export interface TaskDiffResult {
   task_id: string
   patch: string
   files: FileChangeDto[]
+}
+
+// 数据库命令结果（契约 v0.6）。本地镜像原因见 dbTypes.ts 头注释。
+export interface DbListResult {
+  kind: 'connections'
+  connections: DbConnectionInfo[]
+}
+export interface DbConnectionResult {
+  kind: 'connection'
+  connection: DbConnectionInfo
+}
+export interface DbSchemaResult {
+  kind: 'db_schema'
+  connection_id: string
+  nodes: DbSchemaNode[]
+}
+export interface DbQueryCommandResult {
+  kind: 'db_query'
+  result: DbQueryResult
+}
+export interface DbExecCommandResult {
+  kind: 'db_exec'
+  result: DbExecResult
+}
+export interface DbExplainCommandResult {
+  kind: 'db_explain'
+  result: DbExplainResult
 }
 
 /** Tauri webview 注入的 IPC 内部入口（@tauri-apps/api 的 invoke 底层）。 */
@@ -517,6 +558,372 @@ function asTaskDiff(
   }
 }
 
+// ==== 数据库命令（契约 v0.6；DTO 镜像见 dbTypes.ts） ====
+
+/** 浏览器 dev 的内存连接表：不连真实数据库，仅让连接 CRUD 流程可演示。 */
+const browserDbConnections = new Map<string, DbConnectionInfo>()
+
+function browserDbConnection(connectionId: string): DbConnectionInfo {
+  return (
+    browserDbConnections.get(connectionId) ?? {
+      connection_id: connectionId,
+      name: connectionId,
+      kind: 'sqlite',
+      read_only: false,
+      state: 'disconnected',
+      host: null,
+      database: null,
+      error: null,
+    }
+  )
+}
+
+function browserDbInfoFromConfig(config: DbConnectionConfig): DbConnectionInfo {
+  const previous = browserDbConnections.get(config.connection_id)
+  return {
+    connection_id: config.connection_id,
+    name: config.name,
+    kind: config.kind,
+    read_only: config.read_only,
+    state: previous?.state ?? 'disconnected',
+    host: config.kind === 'sqlite' ? null : (config.host || null),
+    database: config.database || null,
+    error: null,
+  }
+}
+
+export async function dbList(): Promise<BridgeResult<DbListResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { kind: 'connections', connections: [...browserDbConnections.values()] },
+      fallback: true,
+    }
+  }
+  return asDbList(await call('db_list', {}), 'db_list')
+}
+
+export async function dbConnect(
+  connectionId: string,
+): Promise<BridgeResult<DbConnectionResult>> {
+  if (!isTauri()) {
+    const connection: DbConnectionInfo = {
+      ...browserDbConnection(connectionId),
+      state: 'connected',
+      error: null,
+    }
+    browserDbConnections.set(connectionId, connection)
+    return { ok: true, data: { kind: 'connection', connection }, fallback: true }
+  }
+  return asDbConnection(
+    await call('db_connect', { connection_id: connectionId }),
+    'db_connect',
+  )
+}
+
+export async function dbDisconnect(
+  connectionId: string,
+): Promise<BridgeResult<DbConnectionResult>> {
+  if (!isTauri()) {
+    const connection: DbConnectionInfo = {
+      ...browserDbConnection(connectionId),
+      state: 'disconnected',
+      error: null,
+    }
+    browserDbConnections.set(connectionId, connection)
+    return { ok: true, data: { kind: 'connection', connection }, fallback: true }
+  }
+  return asDbConnection(
+    await call('db_disconnect', { connection_id: connectionId }),
+    'db_disconnect',
+  )
+}
+
+export async function dbSchema(
+  connectionId: string,
+): Promise<BridgeResult<DbSchemaResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { kind: 'db_schema', connection_id: connectionId, nodes: [] },
+      fallback: true,
+    }
+  }
+  return asDbSchema(
+    await call('db_schema', { connection_id: connectionId }),
+    'db_schema',
+  )
+}
+
+export async function dbQuery(
+  connectionId: string,
+  sql: string,
+  limit?: number,
+): Promise<BridgeResult<DbQueryCommandResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: {
+        kind: 'db_query',
+        result: {
+          columns: [],
+          rows: [],
+          row_count: 0,
+          truncated: false,
+          handle: null,
+          elapsed_ms: 0,
+          untrusted: true,
+        },
+      },
+      fallback: true,
+    }
+  }
+  return asDbQuery(
+    await call('db_query', {
+      connection_id: connectionId,
+      sql,
+      limit: limit ?? null,
+    }),
+    'db_query',
+  )
+}
+
+export async function dbExecute(
+  connectionId: string,
+  sql: string,
+): Promise<BridgeResult<DbExecCommandResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { kind: 'db_exec', result: { affected_rows: 0, elapsed_ms: 0 } },
+      fallback: true,
+    }
+  }
+  return asDbExec(
+    await call('db_execute', { connection_id: connectionId, sql }),
+    'db_execute',
+  )
+}
+
+export async function dbExplain(
+  connectionId: string,
+  sql: string,
+): Promise<BridgeResult<DbExplainCommandResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: {
+        kind: 'db_explain',
+        result: { plan: '浏览器演示模式：无真实执行计划', elapsed_ms: 0 },
+      },
+      fallback: true,
+    }
+  }
+  return asDbExplain(
+    await call('db_explain', { connection_id: connectionId, sql }),
+    'db_explain',
+  )
+}
+
+export async function dbSaveConnection(
+  connection: DbConnectionConfig,
+): Promise<BridgeResult<DbConnectionResult>> {
+  if (!isTauri()) {
+    const info = browserDbInfoFromConfig(connection)
+    browserDbConnections.set(info.connection_id, info)
+    return { ok: true, data: { kind: 'connection', connection: info }, fallback: true }
+  }
+  return asDbConnection(
+    await call('db_save_connection', { connection }),
+    'db_save_connection',
+  )
+}
+
+export async function dbDeleteConnection(
+  connectionId: string,
+): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    browserDbConnections.delete(connectionId)
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(
+    await call('db_delete_connection', { connection_id: connectionId }),
+    'db_delete_connection',
+  )
+}
+
+function asDbList(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<DbListResult> {
+  if (!res.ok) return res
+  const data = res.data as unknown as Record<string, unknown>
+  if (data.kind !== 'connections') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(data.kind)}`),
+      fallback: false,
+    }
+  }
+  const connections: unknown = data.connections
+  if (!Array.isArray(connections) || !connections.every(isDbConnectionInfo)) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 DbConnectionInfo 列表`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: { kind: 'connections', connections: connections as DbConnectionInfo[] },
+    fallback: false,
+  }
+}
+
+function asDbConnection(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<DbConnectionResult> {
+  if (!res.ok) return res
+  const data = res.data as unknown as Record<string, unknown>
+  if (data.kind !== 'connection') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(data.kind)}`),
+      fallback: false,
+    }
+  }
+  if (!isDbConnectionInfo(data.connection)) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 DbConnectionInfo`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: { kind: 'connection', connection: data.connection },
+    fallback: false,
+  }
+}
+
+function asDbSchema(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<DbSchemaResult> {
+  if (!res.ok) return res
+  const data = res.data as unknown as Record<string, unknown>
+  if (data.kind !== 'db_schema') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(data.kind)}`),
+      fallback: false,
+    }
+  }
+  const nodes: unknown = data.nodes
+  if (
+    !isString(data.connection_id) ||
+    !Array.isArray(nodes) ||
+    !nodes.every(isDbSchemaNode)
+  ) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 db_schema 载荷`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: {
+      kind: 'db_schema',
+      connection_id: data.connection_id,
+      nodes: nodes as DbSchemaNode[],
+    },
+    fallback: false,
+  }
+}
+
+function asDbQuery(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<DbQueryCommandResult> {
+  if (!res.ok) return res
+  const data = res.data as unknown as Record<string, unknown>
+  if (data.kind !== 'db_query') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(data.kind)}`),
+      fallback: false,
+    }
+  }
+  if (!isDbQueryResult(data.result)) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 DbQueryResult`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: { kind: 'db_query', result: data.result },
+    fallback: false,
+  }
+}
+
+function asDbExec(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<DbExecCommandResult> {
+  if (!res.ok) return res
+  const data = res.data as unknown as Record<string, unknown>
+  if (data.kind !== 'db_exec') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(data.kind)}`),
+      fallback: false,
+    }
+  }
+  if (!isDbExecResult(data.result)) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 DbExecResult`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: { kind: 'db_exec', result: data.result },
+    fallback: false,
+  }
+}
+
+function asDbExplain(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<DbExplainCommandResult> {
+  if (!res.ok) return res
+  const data = res.data as unknown as Record<string, unknown>
+  if (data.kind !== 'db_explain') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(data.kind)}`),
+      fallback: false,
+    }
+  }
+  if (!isDbExplainResult(data.result)) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 DbExplainResult`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: { kind: 'db_explain', result: data.result },
+    fallback: false,
+  }
+}
+
 // ==== 核心事件订阅（Tauri v2 event plugin 的低层入口） ====
 
 /**
@@ -535,9 +942,17 @@ export const CORE_EVENT_CHANNEL = 'core:event'
  * `transformCallback` 注册回调 → `plugin:event|listen` 拿到 eventId →
  * 取消订阅时 `plugin:event|unlisten`。不引入 @tauri-apps/api 依赖。
  *
- * 只转发 agent:*、task:* 与 error 事件；载荷形状不符（非契约数据）直接丢弃。
+ * 只转发 agent:*、task:*、db:status 与 error 事件；载荷形状不符（非契约数据）直接丢弃。
+ *
+ * db:status 属于契约 v0.6，但仓内 codegen 产物尚未更新（见 dbTypes.ts 头注释），
+ * 因此保留 CoreEvent 重载给现有调用方，另加 UiCoreEvent 重载给数据库面板。
  */
-export function onCoreEvent(handler: (event: CoreEvent) => void): () => void {
+export function onCoreEvent(handler: (event: CoreEvent) => void): () => void
+export function onCoreEvent(handler: (event: UiCoreEvent) => void): () => void
+export function onCoreEvent(
+  handler: ((event: CoreEvent) => void) | ((event: UiCoreEvent) => void),
+): () => void {
+  const dispatch = handler as (event: UiCoreEvent) => void
   const tauri = internals()
   const transform = tauri?.transformCallback
   if (!tauri || typeof transform !== 'function') return () => {}
@@ -548,7 +963,7 @@ export function onCoreEvent(handler: (event: CoreEvent) => void): () => void {
   const callbackId = transform((raw: unknown) => {
     if (!active) return
     const event = asCoreEvent(raw)
-    if (event) handler(event)
+    if (event) dispatch(event)
   })
 
   void tauri
@@ -639,9 +1054,11 @@ function isErrorBodyLike(value: unknown): boolean {
  * 校验字段是 reducer 会直接读取的那些（如 approval.approval_id），
  * 防止跨 IPC 的畸形数据在 reducer 里抛错。
  */
-function isCoreEvent(value: unknown): value is CoreEvent {
+function isCoreEvent(value: unknown): value is UiCoreEvent {
   if (!isRecord(value) || !isString(value.type)) return false
   switch (value.type) {
+    case 'db:status':
+      return isDbConnectionInfo(value.connection)
     case 'task:created':
       return isString(value.task_id) && isString(value.title)
     case 'task:status':
@@ -709,12 +1126,12 @@ function isCoreEvent(value: unknown): value is CoreEvent {
 }
 
 /**
- * Tauri 事件回调 → CoreEvent。兼容三种载荷：
+ * Tauri 事件回调 → UiCoreEvent。兼容三种载荷：
  * - `{ event, id, payload }`（Tauri Event）
  * - `{ seq, event }`（契约 EventEnvelope）
- * - 裸 CoreEvent
+ * - 裸 CoreEvent / db:status
  */
-function asCoreEvent(raw: unknown): CoreEvent | null {
+function asCoreEvent(raw: unknown): UiCoreEvent | null {
   const eventPayload = isRecord(raw) && 'payload' in raw ? raw.payload : raw
   const candidate =
     isRecord(eventPayload) && isFiniteNumber(eventPayload.seq) && 'event' in eventPayload
