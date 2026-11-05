@@ -52,6 +52,9 @@ pub struct NodeRuntime {
 pub struct AppConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_runtime: Option<NodeRuntime>,
+    /// 上次打开的工作区根（绝对路径）；无打开流程时为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
     #[serde(flatten, default)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -219,4 +222,18 @@ pub fn store_node_runtime(store: &dyn ConfigStore, rt: NodeRuntime) -> Result<()
 /// `node info` 读取入口：读出当前已解析的 node 运行时（可能为 None）。
 pub fn load_node_runtime(store: &dyn ConfigStore) -> Result<Option<NodeRuntime>, ConfigError> {
     Ok(store.load()?.node_runtime)
+}
+
+/// 读取/写入已打开的工作区根（Tauri 传输层使用；lc-cli 不暴露打开命令）。
+pub fn load_workspace_root(store: &dyn ConfigStore) -> Result<Option<String>, ConfigError> {
+    Ok(store.load()?.workspace_root)
+}
+
+pub fn store_workspace_root(
+    store: &dyn ConfigStore,
+    root: Option<String>,
+) -> Result<(), ConfigError> {
+    let mut cfg = store.load()?;
+    cfg.workspace_root = root;
+    store.save(&cfg)
 }

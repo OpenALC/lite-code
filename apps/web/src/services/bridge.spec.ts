@@ -6,6 +6,7 @@ import {
   detectNode,
   downloadNodePortable,
   isTauri,
+  openWorkspace,
   readFile,
   readDir,
   setNodeManual,
@@ -84,6 +85,13 @@ describe('fallback 占位（浏览器 dev）', () => {
     expect(res.ok).toBe(true)
     expect(res.fallback).toBe(true)
     if (res.ok) expect(res.data).toEqual({ kind: 'workspace_root', root: null })
+  })
+
+  it('openWorkspace 在浏览器 dev 返回 fallback 根', async () => {
+    const res = await openWorkspace('D:/proj')
+    expect(res.ok).toBe(true)
+    expect(res.fallback).toBe(true)
+    if (res.ok) expect(res.data.root).toBe('D:/proj')
   })
 
   it('writeFile 返回 ack + fallback（不写真实磁盘）', async () => {
@@ -178,6 +186,20 @@ describe('Tauri 路径', () => {
       data: { kind: 'workspace_root', root: 'D:/proj' },
       fallback: false,
     })
+  })
+
+  it('workspace_open 以 { path } 调用并返回新根', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'workspace_root', root: 'D:/new' }
+      },
+    })
+    const res = await openWorkspace('D:/new')
+    expect(calls).toEqual([{ cmd: 'workspace_open', args: { path: 'D:/new' } }])
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.data.root).toBe('D:/new')
   })
 
   it('writeFile 以 { path, content } 调 fs_write_file', async () => {

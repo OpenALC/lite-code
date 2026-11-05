@@ -20,6 +20,13 @@
     "sampleNotSaveable": "Sample buffer is not saveable",
     "readOnlyPreview": "Large file read-only preview; open it in a system editor"
   },
+  "workspace": {
+    "open": "Open workspace",
+    "placeholder": "Type or paste a directory path",
+    "action": "Open",
+    "cancel": "Cancel",
+    "error": "Could not open workspace"
+  },
   "runtime": {
     "title": "Node runtime",
     "close": "Close",

@@ -8,7 +8,7 @@ import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import RuntimeSettings from './components/RuntimeSettings.vue'
 import TabBar from './components/TabBar.vue'
-import { isTauri, workspaceRoot } from './services/bridge'
+import { isTauri, openWorkspace, workspaceRoot } from './services/bridge'
 import {
   LAYOUT_LIMITS,
   NARROW_WIDTH_PX,
@@ -91,7 +91,29 @@ function toggleBottom(): void {
 // 浏览器 dev 无 Tauri，可用 ?root=<路径> 作为占位数据前缀。
 const treeCollapsed = ref(false)
 const showRuntime = ref(false)
+const showOpen = ref(false)
+const workspaceInput = ref('')
+const workspaceError = ref<string | null>(null)
+const openingWorkspace = ref(false)
 const projectRoot = ref(new URLSearchParams(window.location.search).get('root') ?? '')
+
+async function submitOpenWorkspace(): Promise<void> {
+  const path = workspaceInput.value.trim()
+  if (!path || openingWorkspace.value) return
+  openingWorkspace.value = true
+  workspaceError.value = null
+  const res = await openWorkspace(path)
+  openingWorkspace.value = false
+  if (!res.ok) {
+    workspaceError.value = res.error.message
+    return
+  }
+  if (res.data.root) {
+    projectRoot.value = res.data.root
+    showOpen.value = false
+    workspaceInput.value = ''
+  }
+}
 
 function onResize(): void {
   setWindowWidth(window.innerWidth)
@@ -138,12 +160,53 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="runtime-btn"
+        @click="showOpen = true"
+      >
+        {{ t('workspace.open') }}
+      </button>
+      <button
+        type="button"
+        class="runtime-btn"
         @click="showRuntime = true"
       >
         {{ t('runtime.title') }}
       </button>
       <ModeSwitcher />
     </header>
+
+    <div
+      v-if="showOpen"
+      class="workspace-open"
+    >
+      <input
+        v-model="workspaceInput"
+        class="workspace-input"
+        :placeholder="t('workspace.placeholder')"
+        spellcheck="false"
+        @keydown.enter="submitOpenWorkspace"
+      >
+      <button
+        type="button"
+        class="workspace-action"
+        :disabled="openingWorkspace || workspaceInput.trim().length === 0"
+        @click="submitOpenWorkspace"
+      >
+        {{ t('workspace.action') }}
+      </button>
+      <button
+        type="button"
+        class="workspace-cancel"
+        @click="showOpen = false; workspaceError = null"
+      >
+        {{ t('workspace.cancel') }}
+      </button>
+      <div
+        v-if="workspaceError"
+        class="workspace-error"
+      >
+        {{ t('workspace.error') }}: {{ workspaceError }}
+      </div>
+    </div>
 
     <div class="main">
       <!-- 编辑器模式：可折叠、可拖宽的文件树面板（docs/UI.md §3） -->
@@ -286,10 +349,73 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .shell {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+
+.workspace-open {
+  position: absolute;
+  top: 40px;
+  left: 12px;
+  z-index: 40;
+  width: min(560px, calc(100vw - 24px));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+}
+
+.workspace-input {
+  flex: 1;
+  min-width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.workspace-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.workspace-action,
+.workspace-cancel {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-3);
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.workspace-action:hover:not(:disabled),
+.workspace-cancel:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.workspace-action:disabled {
+  color: var(--fg-faint);
+}
+
+.workspace-error {
+  flex-basis: 100%;
+  color: #e06c75;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .topbar {

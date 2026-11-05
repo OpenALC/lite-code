@@ -4,7 +4,7 @@
 use crate::runtime::{NodeStatus, ShellInfo};
 
 /// 当前契约版本。规则见 docs/VERSIONING.md §8。
-pub const CONTRACT_VERSION: &str = "0.1.0";
+pub const CONTRACT_VERSION: &str = "0.2.0";
 
 /// 全部命令名，与 [`CoreCommand`] 的 serde tag 一一对应。
 /// 单元测试保证与枚举同步（数量 + 命名）。
@@ -14,6 +14,7 @@ pub const CONTRACT_COMMANDS: &[&str] = &[
     "node_download_portable",
     "shell_detect",
     "workspace_root",
+    "workspace_open",
     "fs_read_dir",
     "fs_read_file",
     "fs_write_file",
@@ -77,6 +78,8 @@ pub enum CoreCommand {
     ShellDetect,
     /// 当前工作区根（文件树与 fs 命令的安全边界，docs/PLAN.md R3）
     WorkspaceRoot,
+    /// 打开一个目录作为工作区根；路径必须存在且是目录
+    WorkspaceOpen { path: String },
     /// 目录按层返回，不整树序列化（docs/ARCHITECTURE.md §5.2）
     FsReadDir { path: String },
     /// 读文件。v0 返回文本；P1 传输层改走原始字节（避免 base64 往返）

@@ -1,6 +1,6 @@
 // 由 lc-proto codegen 生成，请勿手改。
 // 重新生成：cargo run --locked -p lc-proto --features codegen --bin codegen
-// 契约版本：0.1.0
+// 契约版本：0.2.0
 
 // ---- lc_proto::ErrorCode ----
 export type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch";
@@ -49,7 +49,7 @@ export type DirEntryDto = { name: string, path: string, kind: EntryKind, size?: 
 export type ContractMeta = { name: string, contract_version: string, commands: Array<string>, events: Array<string>, error_codes: Array<string>, };
 
 // ---- lc_proto::CoreCommand ----
-export type CoreCommand = { "method": "node_detect" } | { "method": "node_set_manual", path: string, } | { "method": "node_download_portable", version: string | null, } | { "method": "shell_detect" } | { "method": "workspace_root" } | { "method": "fs_read_dir", path: string, } | { "method": "fs_read_file", path: string, } | { "method": "fs_write_file", path: string, content: string, } | { "method": "contract_info" };
+export type CoreCommand = { "method": "node_detect" } | { "method": "node_set_manual", path: string, } | { "method": "node_download_portable", version: string | null, } | { "method": "shell_detect" } | { "method": "workspace_root" } | { "method": "workspace_open", path: string, } | { "method": "fs_read_dir", path: string, } | { "method": "fs_read_file", path: string, } | { "method": "fs_write_file", path: string, content: string, } | { "method": "contract_info" };
 
 // ---- lc_proto::CommandEnvelope ----
 export type CommandEnvelope = { id: number, command: CoreCommand, };

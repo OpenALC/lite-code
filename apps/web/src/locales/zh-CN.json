@@ -20,6 +20,13 @@
     "sampleNotSaveable": "示例缓冲区不可保存",
     "readOnlyPreview": "大文件只读预览；请用系统编辑器打开"
   },
+  "workspace": {
+    "open": "打开工作区",
+    "placeholder": "输入或粘贴目录路径",
+    "action": "打开",
+    "cancel": "取消",
+    "error": "无法打开工作区"
+  },
   "runtime": {
     "title": "Node 运行时",
     "close": "关闭",

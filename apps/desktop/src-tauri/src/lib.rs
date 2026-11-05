@@ -9,8 +9,9 @@
 //! 二次启动 → 唤回主窗口；关闭请求 → 隐藏窗口（核心常驻）；托盘"退出"才真正退出。
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use lc_core::config::NodeRuntime;
+use lc_core::config::{JsonConfigStore, NodeRuntime, load_workspace_root, store_workspace_root};
 use lc_core::fs::{
     DirLevel, FsError, RealPathResolver, ensure_within_root, read_dir_level, write_file_text,
 };
@@ -24,26 +25,78 @@ use lc_proto::{
 #[cfg(desktop)]
 use tauri::Manager;
 
-/// workspace 根由传输层注入（docs/PLAN.md R3）：`LC_WORKSPACE_ROOT` 供
-/// dev/测试显式覆盖，否则用进程当前目录。fs 命令不接受前端传入的 root。
-fn current_workspace_root() -> Option<PathBuf> {
-    let root = std::env::var_os("LC_WORKSPACE_ROOT")
+/// workspace 根由传输层持有（docs/PLAN.md R3）：显式打开优先，其次
+/// `LC_WORKSPACE_ROOT`、配置文件、进程当前目录。fs 命令不接受前端 root。
+struct WorkspaceState(Mutex<Option<PathBuf>>);
+
+impl WorkspaceState {
+    fn new() -> Self {
+        Self(Mutex::new(initial_workspace_root()))
+    }
+
+    fn get(&self) -> Option<PathBuf> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+
+    fn set(&self, root: PathBuf) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = Some(root);
+        }
+    }
+}
+
+fn initial_workspace_root() -> Option<PathBuf> {
+    let saved = JsonConfigStore::at_default_path()
+        .ok()
+        .and_then(|store| load_workspace_root(&store).ok().flatten())
+        .map(PathBuf::from);
+    std::env::var_os("LC_WORKSPACE_ROOT")
         .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())?;
-    root.is_dir().then_some(root)
+        .or(saved)
+        .or_else(|| std::env::current_dir().ok())
+        .filter(|p| p.is_dir())
 }
 
 fn workspace_unavailable() -> ErrorBody {
     ErrorBody::new(ErrorCode::NotFound, "workspace root unavailable")
 }
 
+fn validate_workspace_dir(path: &str) -> Result<PathBuf, ErrorBody> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| ErrorBody::new(ErrorCode::NotFound, format!("workspace not found: {e}")))?;
+    if !canonical.is_dir() {
+        return Err(ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            "workspace path is not a directory",
+        ));
+    }
+    Ok(canonical)
+}
+
 /// 当前工作区根（文件树与 fs 命令的安全边界）。前端据此拿到文件树起点，
 /// 不再依赖 URL query 或手填路径。
 #[tauri::command]
-fn workspace_root() -> CommandResult {
+fn workspace_root(state: tauri::State<'_, WorkspaceState>) -> CommandResult {
     CommandResult::WorkspaceRoot {
-        root: current_workspace_root().map(|p| lc_core::fs::display_path(&p)),
+        root: state.get().map(|p| lc_core::fs::display_path(&p)),
     }
+}
+
+/// 打开目录作为工作区根并持久化；后续 fs 命令都使用该根。
+#[tauri::command]
+fn workspace_open(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let canonical = validate_workspace_dir(&path)?;
+    let display = lc_core::fs::display_path(&canonical);
+    state.set(canonical);
+    if let Ok(store) = JsonConfigStore::at_default_path() {
+        let _ = store_workspace_root(&store, Some(display.clone()));
+    }
+    Ok(CommandResult::WorkspaceRoot {
+        root: Some(display),
+    })
 }
 
 /// 转发 lc-core 的 Node 探测。惰性触发由前端控制，这里不做缓存。
@@ -146,8 +199,11 @@ fn contract_info() -> CommandResult {
 /// 契约的 `CoreCommand::FsReadDir { path }` 只带 path，root 由传输层注入；
 /// 前端传入的路径必须落在 workspace 根内（docs/PLAN.md R3）。
 #[tauri::command]
-fn fs_read_dir(path: String) -> Result<CommandResult, ErrorBody> {
-    let root = current_workspace_root().ok_or_else(workspace_unavailable)?;
+fn fs_read_dir(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
     let level = list_dir(&root, &path)?;
     Ok(CommandResult::DirListing {
         path: level.path,
@@ -161,8 +217,11 @@ fn fs_read_dir(path: String) -> Result<CommandResult, ErrorBody> {
 /// 读文件为文本（契约 v0 语义：`CommandResult::FileContent { path, text }`；
 /// 原始字节传输在后续里程碑改 `tauri::ipc::Response`，docs/ARCHITECTURE.md §5.2）。
 #[tauri::command]
-fn fs_read_file(path: String) -> Result<CommandResult, ErrorBody> {
-    let root = current_workspace_root().ok_or_else(workspace_unavailable)?;
+fn fs_read_file(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
     let (display, text) = read_file_text(&root, &path)?;
     Ok(CommandResult::FileContent {
         path: display,
@@ -172,8 +231,12 @@ fn fs_read_file(path: String) -> Result<CommandResult, ErrorBody> {
 
 /// 保存文本文件（P1 Editor UI lane）。目标必须落在 workspace 根内，允许新建。
 #[tauri::command]
-fn fs_write_file(path: String, content: String) -> Result<CommandResult, ErrorBody> {
-    let root = current_workspace_root().ok_or_else(workspace_unavailable)?;
+fn fs_write_file(
+    path: String,
+    content: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
     write_text(&root, &path, &content)?;
     Ok(CommandResult::Ack)
 }
@@ -274,6 +337,7 @@ pub fn run() {
     };
 
     builder
+        .manage(WorkspaceState::new())
         .invoke_handler(tauri::generate_handler![
             node_detect,
             node_set_manual,
@@ -281,6 +345,7 @@ pub fn run() {
             shell_detect,
             contract_info,
             workspace_root,
+            workspace_open,
             fs_read_dir,
             fs_read_file,
             fs_write_file
@@ -313,7 +378,10 @@ mod tests {
     use lc_core::config::NodeRuntime;
     use lc_proto::{CommandResult, ErrorCode, NodeHealth, NodeSource, SemVer};
 
-    use super::{list_dir, node_health, read_file_text, runtime_info, write_text};
+    use super::{
+        WorkspaceState, list_dir, node_health, read_file_text, runtime_info,
+        validate_workspace_dir, write_text,
+    };
 
     /// 进程内唯一临时目录（lc-core 不引 tempfile，薄壳同样不引入新依赖）。
     fn temp_root(tag: &str) -> PathBuf {
@@ -352,6 +420,28 @@ mod tests {
         assert_eq!(info.version, rt.version);
         assert_eq!(info.source, NodeSource::Manual);
         assert_eq!(info.health, NodeHealth::Unverified);
+    }
+
+    #[test]
+    fn workspace_dir_validation_and_state() {
+        let root = temp_root("workspace");
+        let canonical = validate_workspace_dir(root.to_str().unwrap()).expect("dir ok");
+        assert!(canonical.is_dir());
+
+        let file = root.join("a.txt");
+        fs::write(&file, "x").unwrap();
+        let err = validate_workspace_dir(file.to_str().unwrap()).expect_err("file rejected");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            validate_workspace_dir(root.join("ghost").to_str().unwrap())
+                .expect_err("missing rejected")
+                .code,
+            ErrorCode::NotFound
+        );
+
+        let state = WorkspaceState::new();
+        state.set(canonical.clone());
+        assert_eq!(state.get(), Some(canonical));
     }
 
     #[test]

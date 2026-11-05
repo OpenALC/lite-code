@@ -86,6 +86,19 @@ export async function workspaceRoot(): Promise<BridgeResult<WorkspaceRootResult>
   return { ok: true, data: res.data, fallback: false }
 }
 
+/** 打开目录作为工作区根；Rust 侧校验存在且为目录，并持久化。 */
+export async function openWorkspace(path: string): Promise<BridgeResult<WorkspaceRootResult>> {
+  if (!isTauri()) {
+    return { ok: true, data: { kind: 'workspace_root', root: path }, fallback: true }
+  }
+  const res = await call('workspace_open', { path })
+  if (!res.ok) return res
+  if (res.data.kind !== 'workspace_root') {
+    return { ok: false, error: internalError(`workspace_open 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  return { ok: true, data: res.data, fallback: false }
+}
+
 export async function readDir(root: string, path: string): Promise<BridgeResult<DirListingResult>> {
   if (!isTauri()) {
     return { ok: true, data: placeholderListing(root, path), fallback: true }

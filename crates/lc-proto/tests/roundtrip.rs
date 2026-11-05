@@ -15,7 +15,7 @@ fn command_tags_match_constant_list() {
     // 数量守卫：新增命令必须同步登记
     assert_eq!(
         CONTRACT_COMMANDS.len(),
-        9,
+        10,
         "命令数量变化时须更新 CONTRACT_COMMANDS 与此测试"
     );
 }
@@ -33,6 +33,12 @@ fn command_serializes_with_documented_tag() {
 
     let json = serde_json::to_string(&CoreCommand::WorkspaceRoot).unwrap();
     assert_eq!(json, r#"{"method":"workspace_root"}"#);
+
+    let json = serde_json::to_string(&CoreCommand::WorkspaceOpen {
+        path: "D:/p".into(),
+    })
+    .unwrap();
+    assert_eq!(json, r#"{"method":"workspace_open","path":"D:/p"}"#);
 
     let json = serde_json::to_string(&CoreCommand::FsWriteFile {
         path: "D:/p/a.txt".into(),
@@ -113,6 +119,7 @@ fn contract_meta_is_complete() {
     assert_eq!(meta.error_codes.len(), CONTRACT_ERROR_CODES.len());
     assert!(meta.commands.contains(&"node_detect".to_string()));
     assert!(meta.commands.contains(&"workspace_root".to_string()));
+    assert!(meta.commands.contains(&"workspace_open".to_string()));
     assert!(meta.commands.contains(&"fs_write_file".to_string()));
     assert!(meta.events.contains(&"task:needs_input".to_string()));
 }
