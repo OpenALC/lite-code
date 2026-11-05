@@ -199,6 +199,19 @@
 4. `activeRssMb` 缺 UI 自动化入口未测；cold/warm 终点是“窗口可见”而非应用内“可交互”。
 5. `@lc-proto` 目前只有 tsconfig 别名，未来若生成运行时常量需补 Vite alias。
 
+## P6 外部依赖（阻塞项）
+
+P6 出口要求包含无法在本会话/本机完成的项，需维护者或外部环境：
+
+1. **30 天无 P0/P1 缺陷、崩溃率 < 0.1%**：需要真实用户/长周期遥测；当前仓库无遥测后端。
+2. **第三方安全审计高危清零**：需要外部审计方与报告。
+3. **代码签名（SignPath / Azure Trusted Signing）**：需要证书/账号与仓库 secrets；当前安装包未签名。
+4. **HarmonyOS spike**：需要 DevEco/ArkWeb SDK 与真机；本机未安装。
+5. **Linux arm64 正式包**：需要 arm64 构建/运行环境与发布矩阵扩展。
+6. **更新器与回滚通道**：需要签名密钥与发布端点。
+
+可本地完成的部分（i18n 完整性、cargo-deny、clippy/test、性能回归）已纳入 CI。
+
 ## 待办（按序）
 
 1. P5 周边：Git 面板（status/diff/stage/commit/log）、SSH 终端、TS/JS LSP。

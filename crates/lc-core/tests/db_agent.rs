@@ -183,3 +183,77 @@ fn agent_completes_sqlite_flow_with_db_tools() {
     service.lock().expect("service").shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn parallel_writes_serialize_on_one_connection() {
+    let node = match probe_real() {
+        NodeStatus::Ready { runtime } => PathBuf::from(runtime.path),
+        _ => {
+            eprintln!("skip: Node runtime unavailable");
+            return;
+        }
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "lc-db-serial-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut service = DbService::new(dir.join("db.json"), Some(node));
+    let id = "c1".to_string();
+    service
+        .save_connection(DbConnectionConfig {
+            connection_id: id.clone(),
+            name: "demo".into(),
+            kind: DbKind::Sqlite,
+            host: String::new(),
+            port: 0,
+            database: dir.join("demo.sqlite").display().to_string(),
+            user: String::new(),
+            secret_ref: String::new(),
+            read_only: false,
+            extra: None,
+        })
+        .expect("save");
+    service.connect(&id).expect("connect");
+    service
+        .execute(&id, "CREATE TABLE t (name TEXT)")
+        .expect("create");
+
+    let service = Arc::new(Mutex::new(service));
+    let handles: Vec<_> = ["a", "b"]
+        .into_iter()
+        .map(|name| {
+            let service = Arc::clone(&service);
+            let id = id.clone();
+            std::thread::spawn(move || {
+                service
+                    .lock()
+                    .expect("service")
+                    .execute(&id, &format!("INSERT INTO t VALUES ('{name}')"))
+                    .expect("insert");
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("join");
+    }
+
+    let result = service
+        .lock()
+        .expect("service")
+        .query(&id, "SELECT name FROM t ORDER BY name", Some(10))
+        .expect("query");
+    let rows: Vec<String> = result
+        .rows
+        .iter()
+        .filter_map(|row| row.first().cloned().flatten())
+        .collect();
+    assert_eq!(rows, vec!["a".to_string(), "b".to_string()]);
+
+    service.lock().expect("service").shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
