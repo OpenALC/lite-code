@@ -11,12 +11,17 @@
 //! 二次启动 → 唤回主窗口；关闭请求 → 隐藏窗口（核心常驻）；托盘"退出"才真正退出。
 
 mod agent;
+mod db;
 mod task;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use agent::{AgentSessions, agent_cancel, agent_send, approval_resolve, session_create};
+use db::{
+    DbEvents, DbState, db_connect, db_delete_connection, db_disconnect, db_execute, db_explain,
+    db_list, db_query, db_save_connection, db_schema,
+};
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_workspace_root, store_workspace_root};
 use lc_core::fs::{
     DirLevel, FsError, RealPathResolver, ensure_within_root, read_dir_level, write_file_text,
@@ -365,6 +370,8 @@ pub fn run() {
         .manage(AgentSessions::default())
         .manage(TaskState::new())
         .manage(TaskEvents::default())
+        .manage(DbState::default())
+        .manage(DbEvents::default())
         .invoke_handler(tauri::generate_handler![
             node_detect,
             node_set_manual,
@@ -380,6 +387,15 @@ pub fn run() {
             agent_send,
             agent_cancel,
             approval_resolve,
+            db_list,
+            db_connect,
+            db_disconnect,
+            db_schema,
+            db_query,
+            db_execute,
+            db_explain,
+            db_save_connection,
+            db_delete_connection,
             task_list,
             task_create,
             task_start,

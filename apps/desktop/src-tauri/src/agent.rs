@@ -30,6 +30,7 @@ use lc_proto::{
 };
 use tauri::Emitter;
 
+use crate::db::{self, DbState};
 use crate::task::{self, TaskEvents, TaskState};
 use crate::{WorkspaceState, workspace_unavailable};
 
@@ -526,6 +527,7 @@ fn spawn_worker(
 /// `task_id` 存在时以任务的 worktree 作为工作区根（MCP/记忆/工具边界一致），
 /// 非 git 任务回退 workspace 根；随后把会话绑定到任务并置 Running。
 /// provider/MCP/AgentLoop 构建期间不持有 `TaskState` 锁。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(rename_all = "snake_case")]
 pub(crate) fn session_create(
     mode: SessionMode,
@@ -535,6 +537,7 @@ pub(crate) fn session_create(
     sessions: tauri::State<'_, AgentSessions>,
     tasks: tauri::State<'_, TaskState>,
     task_events: tauri::State<'_, TaskEvents>,
+    db: tauri::State<'_, DbState>,
 ) -> Result<CommandResult, ErrorBody> {
     let workspace_root = workspace.get().ok_or_else(workspace_unavailable)?;
     let target = match task_id.as_deref() {
@@ -573,8 +576,11 @@ pub(crate) fn session_create(
             tools.push(tool);
         }
     }
-    let executor: Box<dyn lc_core::agent::ToolExecutor> =
-        Box::new(mcp_executor.with_fallback(Box::new(LocalToolExecutor::new(root.clone()))));
+    let executor: Arc<dyn lc_core::agent::ToolExecutor> =
+        Arc::new(mcp_executor.with_fallback(Box::new(LocalToolExecutor::new(root.clone()))));
+    // DB 工具优先：db_* 由 DbExecutor 处理，其余交给 MCP → 本地执行器。
+    // 初始化失败只让 db_* 返回 ToolError::Database，不阻止普通会话。
+    let executor = db::agent_executor(db.inner(), executor);
     let instructions = session_instructions(&root, DEFAULT_INSTRUCTIONS);
     let agent = AgentLoop::new(
         session,
@@ -798,6 +804,10 @@ fn tool_error_body(error: &ToolError) -> ErrorBody {
         ToolError::PathOutsideRoot(_) => ErrorCode::PathOutsideRoot,
         ToolError::NotFound(_) => ErrorCode::NotFound,
         ToolError::InvalidArgs(_) => ErrorCode::InvalidArgument,
+        // 服务错误在 ToolError::Database 里只剩文本：闸门拒绝与不可用分开映射，
+        // 其余（连接不存在、未连接、Node 缺失）统一按不可用处理。
+        ToolError::Database(message) if message.contains("拒绝") => ErrorCode::DbRejected,
+        ToolError::Database(_) => ErrorCode::DbUnavailable,
         _ => ErrorCode::Internal,
     };
     ErrorBody::new(code, error.to_string())
@@ -1164,6 +1174,31 @@ mod tests {
         assert_eq!(overflow.code, ErrorCode::InvalidArgument);
         assert!(overflow.message.contains("500000"), "{}", overflow.message);
         assert!(overflow.message.contains("400k"), "{}", overflow.message);
+    }
+
+    #[test]
+    fn tool_database_errors_map_to_db_codes() {
+        let rejected = tool_error_body(&ToolError::Database(
+            "数据库拒绝执行：只允许单条语句".into(),
+        ));
+        assert_eq!(rejected.code, ErrorCode::DbRejected);
+        assert!(rejected.message.contains("拒绝"), "{}", rejected.message);
+
+        let unavailable = tool_error_body(&ToolError::Database("数据库连接未建立：main".into()));
+        assert_eq!(unavailable.code, ErrorCode::DbUnavailable);
+        assert!(
+            unavailable.message.contains("未建立"),
+            "{}",
+            unavailable.message
+        );
+
+        assert_eq!(
+            loop_error_body(&LoopError::Tool(ToolError::Database(
+                "数据库 sidecar 未启动".into(),
+            )))
+            .code,
+            ErrorCode::DbUnavailable
+        );
     }
 
     #[test]
