@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`daaa1d1`；版本 `0.4.1-preview.2`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`d34521d`；版本 `0.5.1-preview.1`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -63,7 +63,7 @@
 | P5 DB UI | ✅ 连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、untrusted 提示 |
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
-| P5 未完成 | ⏳ SSH 终端、TS/JS LSP 面板；pg/mysql/mssql 驱动未打包；结果无分页 handle |
+| P5 发布 | ⏳ `v0.5.1-preview.1` tag/release 构建中；SSH/LSP、pg/mysql/mssql、分页 handle 列为已知问题 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ P4 `preview.2` 全绿；P5 提交由后台 watcher 验证 |
 
