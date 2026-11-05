@@ -3,7 +3,8 @@
 轻量级桌面 Agent 工作台：Tauri 2 + Rust 核心 + Vue 3 / Monaco。
 不是 Claude Code / Codex 的 GUI 套壳——Agent harness、文件系统、进程与运行时都在 Rust 侧，前端只是可替换的视图层。
 
-> 当前处于 **P1 编辑器 alpha**：文件树、Monaco 编辑、保存、Node 运行时设置与可调布局可用；Agent 模式仍是占位。
+> 当前处于 **P3 Agent 模式**：文件树、Monaco 编辑、保存、Node 运行时设置、Agent 会话（工具调用 / 审批 / 上下文压缩 / MCP）与可调布局可用。
+> OpenAI Responses 为默认端点；Anthropic Messages 已完成事件解码，传输层在后续版本接入。
 
 ## 下载与安装
 
@@ -22,6 +23,37 @@ Lite Code **不捆绑 Node**。未安装 Node 时：
 - 可在"Node 运行时"面板手动指定 `node.exe`，或下载官方便携版（校验 SHA256 后安装到应用数据目录）。
 
 harness、编辑器与 Git 不依赖 Node；MCP、数据库等可选集成才需要它。
+
+## Agent 模式
+
+在 Agent 面板里选择模式（`plan` / `chat` / `auto` / `yolo`），输入任务即可。会话默认使用 `~/.lite-code/providers.json` 里的 `defaultModel`：
+
+```json
+{
+  "providers": [
+    {"id": "openai", "kind": "openai-responses", "label": "OpenAI",
+     "baseUrl": "https://api.openai.com/v1", "apiKeyRef": "env:OPENAI_API_KEY", "enabled": true}
+  ],
+  "models": [
+    {"id": "gpt-5", "provider": "openai", "modelId": "gpt-5",
+     "thinking": ["off", "low"], "contextK": 400, "compressAtK": 300, "capabilities": ["tools"]}
+  ],
+  "defaultModel": "gpt-5"
+}
+```
+
+- 密钥优先读 `LC_API_KEY`，否则解析 `apiKeyRef: "env:NAME"`；没有配置文件时可只设 `LC_API_KEY` / `LC_BASE_URL` / `LC_MODEL`。
+- `auto` 下高风险操作会弹审批（仅本次 / 本会话同类 / 拒绝）；`yolo` 每次应用启动需二次确认。
+- 上下文超过 `compressAtK` 会压缩并在会话流留下可展开记录。
+- MCP：在项目根放 `.mcp.json`（Claude Code 的 `mcpServers` 格式），stdio server 的工具会以 `mcp_<server>_<tool>` 注册，调用前按 Network 风险审批。
+
+Headless CLI（CI / 脚本）：
+
+```bash
+lc-cli agent run --prompt "读 src/lib.rs，修格式并跑测试" --workspace . --json --yes
+```
+
+退出码：`0` 正常结束，`1` 运行错误，`2` 权限拒绝或审批未通过。
 
 ## 开发
 
