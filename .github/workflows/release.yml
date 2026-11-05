@@ -176,6 +176,65 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  build-linux-arm64:
+    name: build (linux arm64)
+    needs: [prep, verify]
+    if: needs.prep.outputs.rust == 'true'
+    # GitHub 托管的 arm64 标准 runner，公共仓库可用且免费：
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        if: needs.prep.outputs.web == 'true'
+        # version 省略 → 读取根 package.json 的 packageManager 字段
+      - uses: actions/setup-node@v4
+        if: needs.prep.outputs.web == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: system deps (webkit2gtk-4.1)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: install frontend deps
+        if: needs.prep.outputs.web == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: build bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
+            pnpm tauri build --bundles appimage,deb
+          else
+            cargo build --release --locked
+            echo "::notice::Tauri 壳未就绪，仅产出二进制"
+          fi
+      - name: build lc-cli
+        shell: bash
+        run: cargo build --release --locked -p lc-cli
+      # A 类门禁关闭条件就是「产出 AppImage」，不能让缺包的 job 绿着过去。
+      - name: verify arm64 bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
+            ls -l target/release/bundle/appimage/*.AppImage
+            ls -l target/release/bundle/deb/*.deb
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: |
+            target/release/bundle/**
+            target/release/lc-cli
+          if-no-files-found: error
+          retention-days: 7
+
   sign:
     name: sign (windows)
     needs: [prep, build-windows]
@@ -229,15 +288,19 @@ jobs:
 
   publish:
     name: publish draft
-    needs: [prep, build-windows, build-linux, sbom, sign]
+    needs: [prep, build-windows, build-linux, build-linux-arm64, sbom, sign]
     # 签名启用时 sign 失败就不发，否则「签名失败则发布页不出现」是空话。
+    # arm64 是 A 类门禁：runner 不可用或产物缺失时 workflow 必须失败，不能少资产照发。
     if: |
       always() &&
       needs.build-windows.result == 'success' &&
       needs.build-linux.result == 'success' &&
+      needs.build-linux-arm64.result == 'success' &&
       (needs.prep.outputs.signing != 'true' || needs.sign.result == 'success')
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      # 不指定 name：一次下载 win-x64[-signed]、linux-x64、linux-arm64、sbom。
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -251,6 +314,21 @@ jobs:
           shopt -s nullglob
           win=win-x64
           [ "$SIGNING" = "true" ] && win=win-x64-signed
+          # arm64 是 A 类门禁产物：缺失就失败，不允许少资产静默发布。
+          for pattern in \
+            'linux-arm64/bundle/appimage/*.AppImage' \
+            'linux-arm64/bundle/deb/*.deb'; do
+            if ! compgen -G "$pattern" >/dev/null; then
+              echo "::error::缺少 arm64 产物：$pattern"
+              exit 1
+            fi
+          done
+          if [ ! -f linux-arm64/lc-cli ]; then
+            echo "::error::缺少 arm64 产物：linux-arm64/lc-cli"
+            exit 1
+          fi
+          # 两个 Linux 构建的 CLI 同名，发布资产不能重名：arm64 加后缀。
+          mv linux-arm64/lc-cli linux-arm64/lc-cli-arm64
           : > SHA256SUMS
           for f in \
             "$win"/bundle/nsis/*.exe \
@@ -258,7 +336,10 @@ jobs:
             "$win"/lc-cli.exe \
             linux-x64/bundle/appimage/*.AppImage \
             linux-x64/bundle/deb/*.deb \
-            linux-x64/lc-cli; do
+            linux-x64/lc-cli \
+            linux-arm64/bundle/appimage/*.AppImage \
+            linux-arm64/bundle/deb/*.deb \
+            linux-arm64/lc-cli-arm64; do
             [ -f "$f" ] || continue
             name=$(basename "$f" | tr ' ' '.')
             sha256sum "$f" | awk -v n="$name" '{print $1"  "n}' >> SHA256SUMS
@@ -271,6 +352,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.prep.outputs.prerelease }}
           VERSION: ${{ needs.prep.outputs.version }}
+          SIGNING: ${{ needs.prep.outputs.signing }}
         run: |
           set -euo pipefail
           args=(--draft --title "$GITHUB_REF_NAME" --notes-file "docs/releases/$VERSION.md")
@@ -281,14 +363,19 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
           # 只上传安装包，不递归 AppDir；sbom 允许缺失。
           shopt -s nullglob
+          win=artifacts/win-x64
+          [ "$SIGNING" = "true" ] && win=artifacts/win-x64-signed
           assets=()
           for f in \
-            artifacts/win-x64/bundle/nsis/*.exe \
-            artifacts/win-x64/*.msi \
-            artifacts/win-x64/lc-cli.exe \
+            "$win"/bundle/nsis/*.exe \
+            "$win"/*.msi \
+            "$win"/lc-cli.exe \
             artifacts/linux-x64/bundle/appimage/*.AppImage \
             artifacts/linux-x64/bundle/deb/*.deb \
-            artifacts/linux-x64/lc-cli; do
+            artifacts/linux-x64/lc-cli \
+            artifacts/linux-arm64/bundle/appimage/*.AppImage \
+            artifacts/linux-arm64/bundle/deb/*.deb \
+            artifacts/linux-arm64/lc-cli-arm64; do
             [ -f "$f" ] || continue
             assets+=("$f")
           done

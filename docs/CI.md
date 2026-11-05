@@ -80,12 +80,17 @@ ci.yml env.RUST_TOOLCHAIN
 
 ```
 tag v* ──▶ verify（复用 ci 的 fmt/clippy/test）
-       ──▶ build-windows   (x86_64-pc-windows-msvc)
-       ──▶ build-linux     (x86_64-unknown-linux-gnu, ubuntu-22.04 容器)
-       ──▶ sbom            (cargo-cyclonedx + pnpm licenses)
-       ──▶ sign            (条件执行，见下)
-       ──▶ publish         (draft release + SHA256SUMS + 已知问题)
+       ──▶ build-windows     (x86_64-pc-windows-msvc)
+       ──▶ build-linux       (x86_64-unknown-linux-gnu, ubuntu-22.04)
+       ──▶ build-linux-arm64 (aarch64-unknown-linux-gnu, ubuntu-24.04-arm)
+       ──▶ sbom              (cargo-cyclonedx + pnpm licenses)
+       ──▶ sign              (条件执行，见下)
+       ──▶ publish           (draft release + SHA256SUMS + 已知问题)
 ```
+
+Linux arm64 使用 GitHub 托管的 `ubuntu-24.04-arm` 原生构建（公共仓库免费；私有仓库走付费额度），
+不交叉编译。该 job 是 P6 A 类门禁：`publish` 要求它 success，且 AppImage / deb / CLI 缺一即失败，
+不会发出少资产的 release。发布资产里 arm64 CLI 命名为 `lc-cli-arm64`，避免与 x64 的 `lc-cli` 重名。
 
 规则：
 
