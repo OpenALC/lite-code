@@ -30,6 +30,10 @@ pub enum ErrorCode {
     DbRejected,
     /// 只读连接上的写操作
     DbReadOnly,
+    /// git 不可用（未安装 / 非仓库）
+    GitUnavailable,
+    /// git 操作被拒绝（脏工作区、冲突、空 message 等）
+    GitRejected,
 }
 
 /// 事件流 / 命令响应统一使用的错误体。

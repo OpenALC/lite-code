@@ -6,11 +6,12 @@ use crate::db::{
     DbConnectionConfig, DbConnectionInfo, DbExecResult, DbExplainResult, DbQueryResult,
     DbSchemaNode,
 };
+use crate::git::{GitCommit, GitFileStatus, GitStatus};
 use crate::runtime::{NodeStatus, ShellInfo};
 use crate::task::{FileChangeDto, TaskInfo};
 
 /// 当前契约版本。规则见 docs/VERSIONING.md §8。
-pub const CONTRACT_VERSION: &str = "0.6.0";
+pub const CONTRACT_VERSION: &str = "0.7.0";
 
 /// 全部命令名，与 [`CoreCommand`] 的 serde tag 一一对应。
 /// 单元测试保证与枚举同步（数量 + 命名）。
@@ -45,6 +46,12 @@ pub const CONTRACT_COMMANDS: &[&str] = &[
     "db_explain",
     "db_save_connection",
     "db_delete_connection",
+    "git_status",
+    "git_diff",
+    "git_stage",
+    "git_unstage",
+    "git_commit",
+    "git_log",
     "contract_info",
 ];
 
@@ -94,6 +101,8 @@ pub const CONTRACT_ERROR_CODES: &[&str] = &[
     "db_unavailable",
     "db_rejected",
     "db_read_only",
+    "git_unavailable",
+    "git_rejected",
 ];
 
 /// 请求信封。`id` 用于关联响应（会话内单调递增）。
@@ -188,6 +197,18 @@ pub enum CoreCommand {
     DbSaveConnection { connection: DbConnectionConfig },
     /// 删除连接配置
     DbDeleteConnection { connection_id: String },
+    /// Git 状态（主工作区）
+    GitStatus,
+    /// Git diff；path 为空时返回全量
+    GitDiff { path: Option<String>, staged: bool },
+    /// 暂存路径
+    GitStage { paths: Vec<String> },
+    /// 取消暂存
+    GitUnstage { paths: Vec<String> },
+    /// 提交（message 必须非空）
+    GitCommit { message: String },
+    /// 最近提交
+    GitLog { limit: Option<u32> },
     /// 契约元信息（lc-cli 与 UI 关于页共用）
     ContractInfo,
 }
@@ -235,6 +256,16 @@ pub enum CommandResult {
     },
     DbExplain {
         result: DbExplainResult,
+    },
+    GitStatus {
+        status: GitStatus,
+    },
+    GitDiff {
+        patch: String,
+        files: Vec<GitFileStatus>,
+    },
+    GitLog {
+        commits: Vec<GitCommit>,
     },
     WorkspaceRoot {
         root: Option<String>,

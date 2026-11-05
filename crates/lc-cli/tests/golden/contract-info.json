@@ -1,6 +1,6 @@
 {
   "name": "lc-proto",
-  "contract_version": "0.6.0",
+  "contract_version": "0.7.0",
   "commands": [
     "node_detect",
     "node_set_manual",
@@ -32,6 +32,12 @@
     "db_explain",
     "db_save_connection",
     "db_delete_connection",
+    "git_status",
+    "git_diff",
+    "git_stage",
+    "git_unstage",
+    "git_commit",
+    "git_log",
     "contract_info"
   ],
   "events": [
@@ -76,6 +82,8 @@
     "permission_denied",
     "db_unavailable",
     "db_rejected",
-    "db_read_only"
+    "db_read_only",
+    "git_unavailable",
+    "git_rejected"
   ]
 }
