@@ -9,6 +9,7 @@ pub mod command;
 pub mod error;
 pub mod event;
 pub mod runtime;
+pub mod task;
 
 pub use agent::{ApprovalDecision, ApprovalPrompt, ApprovalSource, SessionInfo, SessionMode};
 pub use command::{
@@ -20,6 +21,9 @@ pub use event::{CoreEvent, EventEnvelope};
 pub use runtime::{
     NodeFailureReason, NodeHealth, NodeProbeAttempt, NodeRuntimeInfo, NodeSource, NodeStatus,
     SemVer, ShellInfo, ShellKind,
+};
+pub use task::{
+    ChangeStatus, FileChangeDto, TaskCheck, TaskInfo, TaskStatus, TaskStep, TaskStepState,
 };
 
 /// 当前契约版本。新增可选字段/命令 → minor+1；删除/改名/改语义 → major+1（独立 PR）。

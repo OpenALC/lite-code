@@ -3,9 +3,10 @@
 
 use crate::agent::{ApprovalDecision, SessionInfo, SessionMode};
 use crate::runtime::{NodeStatus, ShellInfo};
+use crate::task::{FileChangeDto, TaskInfo};
 
 /// 当前契约版本。规则见 docs/VERSIONING.md §8。
-pub const CONTRACT_VERSION: &str = "0.4.0";
+pub const CONTRACT_VERSION: &str = "0.5.0";
 
 /// 全部命令名，与 [`CoreCommand`] 的 serde tag 一一对应。
 /// 单元测试保证与枚举同步（数量 + 命名）。
@@ -23,6 +24,14 @@ pub const CONTRACT_COMMANDS: &[&str] = &[
     "agent_send",
     "agent_cancel",
     "approval_resolve",
+    "task_list",
+    "task_create",
+    "task_start",
+    "task_cancel",
+    "task_apply",
+    "task_discard",
+    "task_diff",
+    "task_bind_session",
     "contract_info",
 ];
 
@@ -34,8 +43,13 @@ pub const CONTRACT_EVENTS: &[&str] = &[
     "fs:entry",
     "task:created",
     "task:status",
+    "task:step",
+    "task:change",
+    "task:check",
+    "task:updated",
     "task:needs_input",
     "task:merged",
+    "task:discarded",
     "agent:text_delta",
     "agent:thinking_delta",
     "agent:tool_start",
@@ -109,6 +123,28 @@ pub enum CoreCommand {
         approval_id: u64,
         decision: ApprovalDecision,
     },
+    /// 任务列表（工作台首次加载 / 重连时拉取）
+    TaskList,
+    /// 创建任务；有 git 仓库时同时创建 worktree
+    TaskCreate {
+        title: String,
+        session_id: Option<String>,
+    },
+    /// 启动排队/待规划任务
+    TaskStart { task_id: String },
+    /// 取消任务；worktree 保留供 Review
+    TaskCancel { task_id: String },
+    /// 应用任务变更到主工作区（一次一个）
+    TaskApply { task_id: String },
+    /// 丢弃任务与 worktree
+    TaskDiscard { task_id: String },
+    /// 读取任务的 unified diff 与文件统计
+    TaskDiff { task_id: String },
+    /// 绑定/解绑 Agent 会话（None = 解绑）
+    TaskBindSession {
+        task_id: String,
+        session_id: Option<String>,
+    },
     /// 契约元信息（lc-cli 与 UI 关于页共用）
     ContractInfo,
 }
@@ -126,6 +162,17 @@ pub enum CommandResult {
     },
     Session {
         session: SessionInfo,
+    },
+    Tasks {
+        tasks: Vec<TaskInfo>,
+    },
+    Task {
+        task: TaskInfo,
+    },
+    TaskDiff {
+        task_id: String,
+        patch: String,
+        files: Vec<FileChangeDto>,
     },
     WorkspaceRoot {
         root: Option<String>,

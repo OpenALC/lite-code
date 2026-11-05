@@ -4,6 +4,7 @@
 use crate::agent::{ApprovalPrompt, SessionInfo};
 use crate::error::ErrorBody;
 use crate::runtime::{NodeStatus, ShellInfo};
+use crate::task::{FileChangeDto, TaskCheck, TaskInfo, TaskStepState};
 
 /// 事件信封。`seq` 在连接内单调递增，前端发现跳变即重拉（generation 语义）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -36,6 +37,30 @@ pub enum CoreEvent {
 
     #[serde(rename = "task:status")]
     TaskStatus { task_id: String, status: String },
+
+    /// 任务完整快照：创建/状态/步骤/变更/检查任意变化后下发，UI 直接替换
+    #[serde(rename = "task:updated")]
+    TaskUpdated { task: TaskInfo },
+
+    #[serde(rename = "task:step")]
+    TaskStepEvent {
+        task_id: String,
+        index: u32,
+        title: String,
+        state: TaskStepState,
+    },
+
+    #[serde(rename = "task:change")]
+    TaskChangeEvent {
+        task_id: String,
+        change: FileChangeDto,
+    },
+
+    #[serde(rename = "task:check")]
+    TaskCheckEvent { task_id: String, check: TaskCheck },
+
+    #[serde(rename = "task:discarded")]
+    TaskDiscarded { task_id: String },
 
     /// 触发状态栏“待确认”计数
     #[serde(rename = "task:needs_input")]

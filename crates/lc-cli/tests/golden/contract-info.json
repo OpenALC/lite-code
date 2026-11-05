@@ -1,6 +1,6 @@
 {
   "name": "lc-proto",
-  "contract_version": "0.4.0",
+  "contract_version": "0.5.0",
   "commands": [
     "node_detect",
     "node_set_manual",
@@ -15,6 +15,14 @@
     "agent_send",
     "agent_cancel",
     "approval_resolve",
+    "task_list",
+    "task_create",
+    "task_start",
+    "task_cancel",
+    "task_apply",
+    "task_discard",
+    "task_diff",
+    "task_bind_session",
     "contract_info"
   ],
   "events": [
@@ -24,8 +32,13 @@
     "fs:entry",
     "task:created",
     "task:status",
+    "task:step",
+    "task:change",
+    "task:check",
+    "task:updated",
     "task:needs_input",
     "task:merged",
+    "task:discarded",
     "agent:text_delta",
     "agent:thinking_delta",
     "agent:tool_start",
