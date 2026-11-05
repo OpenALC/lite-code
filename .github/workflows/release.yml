@@ -229,9 +229,13 @@ jobs:
 
   publish:
     name: publish draft
-    needs: [prep, build-windows, build-linux, sbom]
-    if: always() && needs.build-windows.result == 'success' && needs.build-linux.result == 'success'
-    runs-on: ubuntu-22.04
+    needs: [prep, build-windows, build-linux, sbom, sign]
+    # 签名启用时 sign 失败就不发，否则「签名失败则发布页不出现」是空话。
+    if: |
+      always() &&
+      needs.build-windows.result == 'success' &&
+      needs.build-linux.result == 'success' &&
+      (needs.prep.outputs.signing != 'true' || needs.sign.result == 'success')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -239,15 +243,19 @@ jobs:
           path: artifacts
       - name: checksums
         shell: bash
+        env:
+          SIGNING: ${{ needs.prep.outputs.signing }}
         run: |
           set -euo pipefail
           cd artifacts
           shopt -s nullglob
+          win=win-x64
+          [ "$SIGNING" = "true" ] && win=win-x64-signed
           : > SHA256SUMS
           for f in \
-            win-x64/bundle/nsis/*.exe \
-            win-x64/*.msi \
-            win-x64/lc-cli.exe \
+            "$win"/bundle/nsis/*.exe \
+            "$win"/*.msi \
+            "$win"/lc-cli.exe \
             linux-x64/bundle/appimage/*.AppImage \
             linux-x64/bundle/deb/*.deb \
             linux-x64/lc-cli; do
