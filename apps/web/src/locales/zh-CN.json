@@ -15,6 +15,17 @@
   "editor": {
     "ready": "Monaco 已就绪：本缓冲区可编辑（P0 起壳验证）"
   },
+  "tree": {
+    "title": "文件树",
+    "toggle": "折叠 / 展开文件树",
+    "noRoot": "未打开工作区",
+    "fallback": "浏览器开发模式：占位数据（非真实文件系统）",
+    "loading": "读取中…",
+    "empty": "空目录",
+    "loadError": "无法读取该目录",
+    "fileError": "无法读取该文件",
+    "readOnly": "文件以只读方式打开，编辑与保存将在后续批次接入"
+  },
   "agent": {
     "placeholderTitle": "Agent 模式",
     "placeholderDesc": "P0 占位。会话流、工具卡片与内联审批在 P3（Agent 模式可用）落地。"

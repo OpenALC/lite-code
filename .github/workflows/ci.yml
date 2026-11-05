@@ -191,6 +191,9 @@ jobs:
         with:
           command: check
           arguments: --locked
+          # 仓库 rust-toolchain.toml 会 override action 自带的 musl 工具链；
+          # 显式传入与文件一致的版本，让 action 先行安装，避免 rustup 报未安装
+          rust-version: "1.99.1"
 
   summary:
     name: ci

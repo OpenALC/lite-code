@@ -15,6 +15,17 @@
   "editor": {
     "ready": "Monaco ready: this buffer is editable (P0 shell validation)"
   },
+  "tree": {
+    "title": "Files",
+    "toggle": "Collapse / expand file tree",
+    "noRoot": "No workspace open",
+    "fallback": "Browser dev mode: placeholder data (not a real filesystem)",
+    "loading": "Loading…",
+    "empty": "Empty directory",
+    "loadError": "Failed to read this directory",
+    "fileError": "Failed to read this file",
+    "readOnly": "Files open read-only; editing and saving arrive in a later batch"
+  },
   "agent": {
     "placeholderTitle": "Agent mode",
     "placeholderDesc": "P0 placeholder. Session stream, tool cards and inline approvals land in P3."

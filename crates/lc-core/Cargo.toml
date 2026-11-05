@@ -19,6 +19,11 @@ thiserror = { workspace = true }
 ignore = "0.4"
 notify = "8"
 notify-debouncer-full = "0.5"
+dirs = "7.0.0"
+ureq = "3.5.1"
+zip = "9.3.0"
+sha2 = "0.11.1"
 
 [target.'cfg(windows)'.dependencies]
+win32job = "2.0.3"
 winreg = "0.52"

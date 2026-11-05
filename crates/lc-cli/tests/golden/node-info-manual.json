@@ -1,0 +1,12 @@
+{
+  "node": {
+    "path": "C:\\tools\\node-v22.14.0\\node.exe",
+    "version": {
+      "major": 22,
+      "minor": 14,
+      "patch": 0
+    },
+    "source": "manual",
+    "resolved_at": "2026-11-05T08:09:10Z"
+  }
+}

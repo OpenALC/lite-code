@@ -15,8 +15,9 @@ license = "Apache-2.0 OR MIT"
 authors = ["lite-code contributors"]
 
 [workspace.dependencies]
-lc-proto = { path = "crates/lc-proto" }
-lc-core = { path = "crates/lc-core" }
+# 内部 crate 带 version：cargo-deny 的 wildcards=deny 检查要求无通配依赖
+lc-proto = { version = "0.0.1-preview.1", path = "crates/lc-proto" }
+lc-core = { version = "0.0.1-preview.1", path = "crates/lc-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

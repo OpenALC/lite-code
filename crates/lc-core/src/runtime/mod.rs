@@ -17,6 +17,8 @@ use lc_proto::{
 
 pub mod env;
 pub mod lister;
+pub mod manual;
+pub mod portable;
 pub mod runner;
 pub mod shell;
 
@@ -367,10 +369,13 @@ fn health_of(v: SemVer) -> NodeHealth {
     }
 }
 
-type ValidateError = (NodeFailureReason, Option<String>);
+/// 校验失败：`(失败原因, 原始细节)`。细节通常是 spawn 错误串或
+/// `--version` 的原始输出（docs/RUNTIME.md §5：失败显示原始 stderr）。
+pub(crate) type ValidateError = (NodeFailureReason, Option<String>);
 
 /// 单个候选的校验流程（docs/RUNTIME.md §4）。
-fn validate(
+/// 探测、手动指定（manual.rs）、便携版（portable.rs）三方共用同一套语义。
+pub(crate) fn validate(
     path: &Path,
     source: NodeSource,
     lister: &dyn DirLister,

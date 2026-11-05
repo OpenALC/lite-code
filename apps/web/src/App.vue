@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import AgentPlaceholder from './components/AgentPlaceholder.vue'
 import CodeEditor from './components/CodeEditor.vue'
+import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import TabBar from './components/TabBar.vue'
 import { resolveProfile } from './services/layoutProfile'
@@ -18,6 +19,11 @@ const unsub = uiStore.subscribe(s => {
 })
 
 const profile = computed(() => resolveProfile(ui.value.mode, ui.value.windowWidth))
+
+// 编辑器模式的左侧文件树面板（P1 bridge lane）。工作区根目前没有契约命令
+// 可取（见提交说明的契约请求），dev 手测经 URL query 注入：?root=<路径>。
+const treeCollapsed = ref(false)
+const projectRoot = new URLSearchParams(window.location.search).get('root') ?? ''
 
 function onResize(): void {
   setWindowWidth(window.innerWidth)
@@ -57,7 +63,33 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="main">
+      <!-- 编辑器模式：可折叠文件树面板（docs/UI.md §3）；Agent 模式保留占位 rail -->
       <aside
+        v-if="profile.mode === 'editor'"
+        class="side"
+      >
+        <div class="side-head">
+          <button
+            type="button"
+            class="side-toggle"
+            :title="t('tree.toggle')"
+            :aria-expanded="!treeCollapsed"
+            @click="treeCollapsed = !treeCollapsed"
+          >
+            {{ treeCollapsed ? '▸' : '▾' }}
+          </button>
+          <span
+            v-if="!treeCollapsed"
+            class="side-title"
+          >{{ t('tree.title') }}</span>
+        </div>
+        <FileTree
+          v-if="!treeCollapsed"
+          :root="projectRoot"
+        />
+      </aside>
+      <aside
+        v-else
         class="rail"
         aria-hidden="true"
       >
@@ -156,6 +188,46 @@ onBeforeUnmount(() => {
   color: var(--fg-faint);
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+.side {
+  width: 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.side-toggle {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+
+.side-toggle:hover {
+  color: var(--fg);
+  background: var(--panel-3);
+}
+
+.side-title {
+  font-size: 11px;
+  color: var(--fg-dim);
+  letter-spacing: 0.04em;
 }
 
 .center {

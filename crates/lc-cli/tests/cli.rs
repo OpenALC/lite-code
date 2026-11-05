@@ -62,3 +62,28 @@ fn shell_detect_json_outputs_shell_field() {
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(v.get("shell").is_some(), "必须有 shell 字段（可为 null）");
 }
+
+#[test]
+fn node_set_manual_missing_path_fails_with_json_report() {
+    // set-manual 是显式动作：校验失败退出非 0（与 detect 的“永远 0”不同），
+    // 但失败也输出 JSON 报告，reason 用契约标签
+    let (code, stdout, stderr) = run_cli(&[
+        "node",
+        "set-manual",
+        r"C:\definitely\missing\node.exe",
+        "--json",
+    ]);
+    assert_ne!(code, 0, "校验失败必须非零退出；stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("失败也要输出 JSON 报告");
+    assert_eq!(v.get("ok").and_then(|o| o.as_bool()), Some(false));
+    assert_eq!(v.get("reason").and_then(|r| r.as_str()), Some("missing"));
+}
+
+#[test]
+fn node_info_json_outputs_node_field_and_exits_zero() {
+    // 无配置 → {"node": null}，仍是合法输出且退出 0
+    let (code, stdout, stderr) = run_cli(&["node", "info", "--json"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(v.get("node").is_some(), "必须有 node 字段（可为 null）");
+}

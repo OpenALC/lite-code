@@ -1,4 +1,8 @@
 {
+  // 契约类型单一来源：lc-proto codegen 产物以环境式 type 别名（无 export）发布，
+  // 只能用 files/include 纳入编译单元（paths/import 拿不到名字），见 services/contract.ts。
+  // CI contract job 重新生成并 git diff --exit-code，防契约漂移。
+  "files": ["../../crates/lc-proto/bindings/lc-proto.d.ts"],
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
