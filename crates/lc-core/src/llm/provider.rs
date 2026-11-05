@@ -5,9 +5,12 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderKind {
-    /// v1 只实现该端点；OpenAI 兼容服务通过 baseUrl 覆盖。
+    /// v1 端点；OpenAI 兼容服务通过 baseUrl 覆盖。
     #[serde(rename = "openai-responses")]
     OpenAiResponses,
+    /// v1.x 端点：Anthropic Messages API（docs/AGENT.md §3）。
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,5 +174,44 @@ mod tests {
             file.validate(),
             Err(ProviderError::UnknownDefaultModel(_))
         ));
+    }
+
+    #[test]
+    fn provider_kind_roundtrips_both_serde_names() {
+        let openai = serde_json::to_string(&ProviderKind::OpenAiResponses).unwrap();
+        assert_eq!(openai, r#""openai-responses""#);
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>(&openai).unwrap(),
+            ProviderKind::OpenAiResponses
+        );
+
+        let anthropic = serde_json::to_string(&ProviderKind::AnthropicMessages).unwrap();
+        assert_eq!(anthropic, r#""anthropic-messages""#);
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>(&anthropic).unwrap(),
+            ProviderKind::AnthropicMessages
+        );
+    }
+
+    #[test]
+    fn parses_mixed_provider_config_without_breaking_existing() {
+        const MIXED: &str = r#"{
+          "providers": [
+            {"id":"openai","kind":"openai-responses","label":"OpenAI","baseUrl":"https://api.openai.com/v1","apiKeyRef":"keyring://openai","enabled":true},
+            {"id":"anthropic","kind":"anthropic-messages","label":"Anthropic","baseUrl":"https://api.anthropic.com/v1","apiKeyRef":"keyring://anthropic","enabled":true}
+          ],
+          "models": [
+            {"id":"gpt-5","provider":"openai","modelId":"gpt-5","thinking":["off","low"],"contextK":400,"compressAtK":300,"capabilities":["tools"]},
+            {"id":"claude","provider":"anthropic","modelId":"claude-sonnet-4-5","thinking":["off","low","high"],"contextK":200,"compressAtK":150,"capabilities":["tools"]}
+          ],
+          "defaultModel": "claude",
+          "defaultThinking": "low"
+        }"#;
+        let file = ProvidersFile::parse(MIXED).expect("parse");
+        file.validate().expect("valid");
+        assert_eq!(file.providers[1].kind, ProviderKind::AnthropicMessages);
+        assert_eq!(file.models[1].provider, "anthropic");
+        let roundtrip = ProvidersFile::parse(&file.serialize()).expect("roundtrip");
+        assert_eq!(roundtrip, file);
     }
 }

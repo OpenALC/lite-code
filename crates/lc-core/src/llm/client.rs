@@ -236,4 +236,172 @@ mod tests {
         assert_eq!(headers[0].1, "Bearer secret");
         assert_eq!(body["stream"], json!(true));
     }
+
+    // ---- loopback HTTP/1.1 SSE（不访问外网）----
+
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::thread::{self, JoinHandle};
+    use std::time::Duration;
+
+    struct Loopback {
+        addr: SocketAddr,
+        handle: JoinHandle<()>,
+    }
+
+    impl Loopback {
+        /// 起一个只接受一次连接的本地服务；`chunked` 选择响应传输方式。
+        fn start(payload: &str, chunked: bool) -> Self {
+            let payload = payload.to_string();
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let addr = listener.local_addr().expect("loopback addr");
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept loopback");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("read timeout");
+                read_request(&mut stream);
+
+                let response = if chunked {
+                    chunked_response(payload.as_bytes(), 17)
+                } else {
+                    content_length_response(payload.as_bytes())
+                };
+                // 分两次写，覆盖任意 TCP 分片下的 SSE 行缓冲。
+                let split = response.len() / 2;
+                stream.write_all(&response[..split]).expect("write part 1");
+                stream.flush().expect("flush part 1");
+                thread::sleep(Duration::from_millis(10));
+                stream.write_all(&response[split..]).expect("write part 2");
+                stream.flush().expect("flush part 2");
+            });
+            Self { addr, handle }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/v1/responses", self.addr)
+        }
+
+        fn join(self) {
+            self.handle.join().expect("loopback thread");
+        }
+    }
+
+    fn read_request(stream: &mut TcpStream) {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).expect("read request") == 0 {
+                break;
+            }
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        if content_length > 0 {
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).expect("read request body");
+        }
+    }
+
+    fn content_length_response(payload: &[u8]) -> Vec<u8> {
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(payload);
+        response
+    }
+
+    fn chunked_response(payload: &[u8], chunk_size: usize) -> Vec<u8> {
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+        for chunk in payload.chunks(chunk_size) {
+            response.extend_from_slice(format!("{:X}\r\n", chunk.len()).as_bytes());
+            response.extend_from_slice(chunk);
+            response.extend_from_slice(b"\r\n");
+        }
+        response.extend_from_slice(b"0\r\n\r\n");
+        response
+    }
+
+    fn loopback_agent() -> ureq::Agent {
+        let config = ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build();
+        ureq::Agent::new_with_config(config)
+    }
+
+    fn openai_sse_payload() -> String {
+        concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1},\"output\":[]}}\n\n",
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn ureq_transport_streams_content_length_sse_from_loopback() {
+        let server = Loopback::start(&openai_sse_payload(), false);
+        let client = OpenAiResponsesClient::new(
+            format!("http://{}/v1", server.addr),
+            "test-key",
+            Box::new(UreqSseTransport {
+                agent: loopback_agent(),
+            }),
+        );
+        let mut request = LlmRequest::new("gpt-5");
+        request.input.push(LlmInput::new("user", "hi"));
+
+        let mut events = Vec::new();
+        client
+            .stream(&request, &mut |event| events.push(event))
+            .expect("stream loopback");
+        server.join();
+
+        assert_eq!(
+            events,
+            vec![
+                LlmEvent::TextDelta {
+                    index: 0,
+                    text: "hello".into()
+                },
+                LlmEvent::Usage {
+                    input: 3,
+                    output: 1,
+                    cached: 0
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn ureq_transport_reads_chunked_sse() {
+        let server = Loopback::start("data: one\n\ndata: two\n\n", true);
+        let transport = UreqSseTransport {
+            agent: loopback_agent(),
+        };
+        let mut chunks = Vec::new();
+        transport
+            .stream(&server.url(), &[], &json!({"stream": true}), &mut |data| {
+                chunks.push(data.to_string());
+                Ok(())
+            })
+            .expect("stream chunked loopback");
+        server.join();
+
+        assert_eq!(chunks, vec!["one".to_string(), "two".to_string()]);
+    }
 }
