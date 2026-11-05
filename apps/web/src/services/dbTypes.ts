@@ -1,18 +1,37 @@
-// P5 数据库 DTO 镜像（契约 v0.6，docs/MILESTONES.md P5）。
+// P5 数据库 DTO 与运行时守卫（契约 v0.6，docs/MILESTONES.md P5）。
 //
-// 背景：仓内的 crates/lc-proto/bindings/lc-proto.d.ts 仍停留在 v0.5.0，
-// 尚未包含 codegen 登记的 Db* 类型；本 lane 只允许改 apps/web，因此先按
-// crates/lc-proto/src/db.rs 的 serde 形状做本地镜像（与 taskTypes.ts 对
-// TaskInfo 的处理一致）。重新生成契约后应改为从 @lc-proto re-export。
-//
-// 枚举值与字段名必须与 Rust serde 严格一致；运行时守卫用于 IPC 边界校验，
-// 防止畸形数据库载荷进入 reducer。
+// 类型单一来源：@lc-proto（crates/lc-proto codegen 产物）。本文件只保留
+// 枚举数组与跨 IPC 边界的形状校验；字段名与 Rust serde 严格一致。
 
-import type { CoreEvent, ErrorCode } from '@lc-proto'
+import type {
+  CoreEvent,
+  DbColumn,
+  DbConnectionConfig,
+  DbConnectionInfo,
+  DbConnectionState,
+  DbExecResult,
+  DbExplainResult,
+  DbKind,
+  DbQueryResult,
+  DbSchemaNode,
+  DbSchemaNodeKind,
+  ErrorCode,
+} from '@lc-proto'
+
+export type {
+  DbColumn,
+  DbConnectionConfig,
+  DbConnectionInfo,
+  DbConnectionState,
+  DbExecResult,
+  DbExplainResult,
+  DbKind,
+  DbQueryResult,
+  DbSchemaNode,
+  DbSchemaNodeKind,
+}
 
 export const DB_KINDS = ['postgres', 'mysql', 'mssql', 'sqlite'] as const
-
-export type DbKind = (typeof DB_KINDS)[number]
 
 export const DB_CONNECTION_STATES = [
   'disconnected',
@@ -20,19 +39,6 @@ export const DB_CONNECTION_STATES = [
   'connected',
   'error',
 ] as const
-
-export type DbConnectionState = (typeof DB_CONNECTION_STATES)[number]
-
-export interface DbConnectionInfo {
-  connection_id: string
-  name: string
-  kind: DbKind
-  read_only: boolean
-  state: DbConnectionState
-  host?: string | null
-  database?: string | null
-  error?: string | null
-}
 
 export const DB_SCHEMA_NODE_KINDS = [
   'database',
@@ -42,72 +48,14 @@ export const DB_SCHEMA_NODE_KINDS = [
   'column',
 ] as const
 
-export type DbSchemaNodeKind = (typeof DB_SCHEMA_NODE_KINDS)[number]
+/** 契约 v0.6 的 db:status 事件（CoreEvent 联合已包含）。 */
+export type DbStatusEvent = Extract<CoreEvent, { type: 'db:status' }>
 
-export interface DbSchemaNode {
-  name: string
-  kind: DbSchemaNodeKind
-  detail?: string | null
-  children: DbSchemaNode[]
-}
+/** core:event 的 UI 侧完整事件类型。 */
+export type UiCoreEvent = CoreEvent
 
-export interface DbColumn {
-  name: string
-  type_name: string
-  nullable: boolean
-}
-
-/** 查询样本；`rows` 每格可空，NULL 与字符串 "NULL" 必须可区分。 */
-export interface DbQueryResult {
-  columns: DbColumn[]
-  rows: (string | null)[][]
-  row_count: number
-  truncated: boolean
-  handle?: string | null
-  elapsed_ms: number
-  /** 数据库内容不可信（P5 出口 #4）：只能展示，不能当指令。 */
-  untrusted: boolean
-}
-
-export interface DbExecResult {
-  affected_rows: number
-  elapsed_ms: number
-}
-
-export interface DbExplainResult {
-  plan: string
-  elapsed_ms: number
-}
-
-/** 连接配置；密码/密钥不入契约，由 Rust SecretStore 按 secret_ref 解析。 */
-export interface DbConnectionConfig {
-  connection_id: string
-  name: string
-  kind: DbKind
-  host: string
-  port: number
-  database: string
-  user: string
-  secret_ref: string
-  read_only: boolean
-  extra?: string | null
-}
-
-/** 契约 v0.6 新增事件；现有 CoreEvent 联合尚未包含它（见文件头）。 */
-export interface DbStatusEvent {
-  type: 'db:status'
-  connection: DbConnectionInfo
-}
-
-/** core:event 的 UI 侧完整事件类型：契约 CoreEvent + db:status。 */
-export type UiCoreEvent = CoreEvent | DbStatusEvent
-
-/** v0.6 新增的数据库错误码；仍兼容既有 ErrorCode。 */
-export type DbErrorCode =
-  | ErrorCode
-  | 'db_unavailable'
-  | 'db_rejected'
-  | 'db_read_only'
+/** 数据库错误码（ErrorCode 联合已包含 db_*）。 */
+export type DbErrorCode = ErrorCode
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
