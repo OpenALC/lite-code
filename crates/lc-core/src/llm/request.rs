@@ -1,19 +1,70 @@
 //! 归一化请求 → OpenAI Responses body（docs/AGENT.md §3）。
-//! 透传字段（tools / 私有 header）由调用方决定，这里只负责稳定骨架。
+//! 支持普通消息、function_call 与 function_call_output 三种输入项。
 
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LlmInput {
-    pub role: String,
-    pub content: String,
+pub enum LlmInput {
+    Message {
+        role: String,
+        content: String,
+    },
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    FunctionCallOutput {
+        call_id: String,
+        output: String,
+    },
 }
 
 impl LlmInput {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
-        Self {
+        Self::Message {
             role: role.into(),
             content: content.into(),
+        }
+    }
+
+    pub fn function_call(
+        call_id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Self::FunctionCall {
+            call_id: call_id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
+
+    pub fn function_call_output(call_id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self::FunctionCallOutput {
+            call_id: call_id.into(),
+            output: output.into(),
+        }
+    }
+
+    fn to_openai(&self) -> Value {
+        match self {
+            Self::Message { role, content } => json!({"role": role, "content": content}),
+            Self::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => json!({
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
+            }),
+            Self::FunctionCallOutput { call_id, output } => json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            }),
         }
     }
 }
@@ -41,11 +92,7 @@ impl LlmRequest {
     }
 
     pub fn to_openai_body(&self) -> Value {
-        let input: Vec<Value> = self
-            .input
-            .iter()
-            .map(|message| json!({"role": message.role, "content": message.content}))
-            .collect();
+        let input: Vec<Value> = self.input.iter().map(LlmInput::to_openai).collect();
         let mut body = json!({
             "model": self.model,
             "input": input,
@@ -86,6 +133,20 @@ mod tests {
         assert_eq!(body["input"][0]["content"], "hi");
         assert_eq!(body["tools"][0]["name"], "read_file");
         assert_eq!(body["max_output_tokens"], 128);
+    }
+
+    #[test]
+    fn function_call_and_output_are_distinct_items() {
+        let mut request = LlmRequest::new("m");
+        request.input = vec![
+            LlmInput::function_call("call_1", "read_file", r#"{"path":"a"}"#),
+            LlmInput::function_call_output("call_1", "file text"),
+        ];
+        let body = request.to_openai_body();
+        assert_eq!(body["input"][0]["type"], "function_call");
+        assert_eq!(body["input"][0]["call_id"], "call_1");
+        assert_eq!(body["input"][1]["type"], "function_call_output");
+        assert_eq!(body["input"][1]["output"], "file text");
     }
 
     #[test]

@@ -4,13 +4,15 @@
 pub mod approval;
 pub mod collector;
 pub mod exec;
+pub mod r#loop;
 pub mod policy;
 pub mod session;
 pub mod tools;
 
 pub use approval::{ApprovalCache, ApprovalDecision, ApprovalId, ApprovalQueue, ApprovalRequest};
-pub use collector::{CollectedTurn, CollectorError, TurnCollector};
+pub use collector::{CollectedToolCall, CollectedTurn, CollectorError, TurnCollector};
 pub use exec::{LocalToolExecutor, ToolCall, ToolError, ToolExecutor, ToolOutput};
+pub use r#loop::{AgentLoop, LlmStream, LoopError, LoopOutcome};
 pub use policy::{Policy, PolicyDecision, PolicyError, PolicyMode, PolicyRequest, PolicySource};
 pub use session::{
     ApprovalOutcome, AuthorizeOutcome, DEFAULT_MAX_TURNS, ModeChange, Session, SessionError,

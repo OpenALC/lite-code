@@ -7,13 +7,18 @@ use serde_json::Value;
 
 use crate::llm::{LlmEvent, StopReason};
 
-use super::exec::ToolCall;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectedToolCall {
+    pub id: String,
+    pub name: String,
+    pub args: Value,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectedTurn {
     pub assistant_text: String,
     pub thinking: String,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<CollectedToolCall>,
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub cached_tokens: u32,
@@ -96,7 +101,11 @@ impl TurnCollector {
                     message: e.to_string(),
                 })?
             };
-            tool_calls.push(ToolCall::new(call.name, args));
+            tool_calls.push(CollectedToolCall {
+                id,
+                name: call.name,
+                args,
+            });
         }
         Ok(CollectedTurn {
             assistant_text: self.assistant_text,
