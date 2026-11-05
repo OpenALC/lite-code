@@ -1,9 +1,10 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`1d68600`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`f2140d1`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
-> P1 发布线：tag `v0.1.1-preview.1` 已推送，release workflow 进行中。
+> P1 发布线：tag `v0.1.1-preview.1` 已推送，release workflow 构建中。
+> P2 准备：根 README、`docs/releases/0.2.1-preview.1.md` 已就绪。
 
 ## 当前位置一览
 
@@ -26,6 +27,7 @@
 | 10k 文件展开 | ✅ `lc-cli fs read-dir` 首层 1 万文件 87/96/97ms（目标 <200ms） |
 | headless CLI | ✅ `fs read-dir` 复用 UI 同一实现，输出契约 JSON |
 | P1 发布 | ⏳ `v0.1.1-preview.1` 已打 tag，Windows/Linux 构建与 draft 进行中 |
+| P2 准备 | ✅ 根 README（未签名提示/Node 降级）+ `docs/releases/0.2.1-preview.1.md` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
 
