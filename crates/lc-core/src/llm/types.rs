@@ -50,4 +50,6 @@ pub enum LlmError {
     MissingType,
     #[error("事件字段无效：{0}")]
     Invalid(String),
+    #[error("HTTP 传输失败：{0}")]
+    Http(String),
 }
