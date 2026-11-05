@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`2a6818b`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`ce62f52`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 
 ## 当前位置一览
@@ -18,8 +18,10 @@
 | per-tab model | ✅ 每标签独立 Monaco model，undo/光标/滚动保留；关闭即释放 |
 | dirty 基线 | ✅ `savedContent` 差异推导 dirty；撤销回已保存内容自动变干净 |
 | 布局 | ✅ 侧栏/Agent/底部可拖拽、可折叠，localStorage 持久化；dockview 留 P4 |
+| 打开工作区 | ✅ 契约 v0.2 `workspace_open`；根由 Rust 状态持有并持久化；当前为路径输入，原生选择器待 P2 |
+| 性能初测 | ⚠️ 冷启动 48ms / 热启动 55ms / 残留 0；托盘 RSS **373MB**（目标 <60MB），根因是关闭只隐藏窗口、WebView 未销毁 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `f2bf769` 全绿；最新提交 CI 进行中 |
+| main CI | ✅ `f707153` 全绿；最新提交 CI 进行中 |
 
 ## 本轮完成
 
@@ -46,17 +48,21 @@
 9. **布局**（`2a6818b`）
    - `LayoutPrefs`：侧栏/Agent/底部尺寸与折叠；clamp + localStorage 持久化。
    - 三个拖拽分隔条、Agent/底部折叠与恢复；dockview 留到 P4 工作台。
+10. **打开工作区**（`ce62f52`）
+   - 契约 v0.2 `workspace_open`；Tauri `WorkspaceState` 持有根并持久化到 config。
+   - 顶栏路径输入 → 校验目录 → 文件树切换根；fs 命令统一从状态取根。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
-1. 无外部修改冲突检测（savedContent 基线已有；mtime/hash 契约字段未做）。
-2. 托盘“退出”绕过 webview 脏检查，可能丢未保存缓冲。
-3. workspace 根仍取 CWD/环境变量，尚无“打开文件夹”流程；已校验必须是目录。
-4. `@lc-proto` 目前只有 tsconfig 别名，未来若生成运行时常量需补 Vite alias。
+1. **托盘 RSS 373MB**（初测，目标 <60MB）：关闭只 `hide()` 窗口，WebView 未销毁；需要窗口销毁/重建 + 状态留在 Rust（R4）。
+2. 无外部修改冲突检测（savedContent 基线已有；mtime/hash 契约字段未做）。
+3. 托盘“退出”绕过 webview 脏检查，可能丢未保存缓冲。
+4. 原生文件夹选择器未接；当前打开工作区为路径输入。
+5. `@lc-proto` 目前只有 tsconfig 别名，未来若生成运行时常量需补 Vite alias。
 
 ## 待办（按序）
 
-1. P1 性能四项实测（后台 subagent 进行中）：冷启动/托盘 RSS/窗口 RSS/残留进程。
+1. P1 性能 harness 最终报告（后台 subagent）；托盘 RSS 需 R4 窗口销毁/重建才能达标。
 2. P1 出口验收：干净 Win11 无 Node、20 次开关窗口、1 万文件目录。
 3. P2：五 lane 合流冒烟，发布 `v0.2.1-preview.1`。
 
@@ -85,5 +91,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 70 · lc-cli 15 · lc-proto 9 · lc-desktop 11 · web 93（9 文件）· 合计 **198**。
+lc-core 70 · lc-cli 15 · lc-proto 9 · lc-desktop 12 · web 95（9 文件）· 合计 **201**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
