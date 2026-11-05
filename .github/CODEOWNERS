@@ -1,0 +1,10 @@
+# 版本号相关文件只能由维护者改动：执行 agent 的 PR 必须经人工批准。
+# 与 scripts/check-version.mjs 配合：守卫拦机械违规，CODEOWNERS 拦"连门槛一起改"。
+/.milestone                          @BBXLang
+/Cargo.toml                          @BBXLang
+/package.json                        @BBXLang
+/apps/desktop/src-tauri/tauri.conf.json @BBXLang
+/scripts/check-version.mjs           @BBXLang
+/.github/workflows/release.yml       @BBXLang
+/docs/VERSIONING.md                  @BBXLang
+/docs/RELEASE-GATES.md               @BBXLang

@@ -5,6 +5,7 @@
 // 退出码：0 通过，1 违规。
 
 import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
@@ -60,6 +61,14 @@ if (!m) {
   if (major !== '0' && pre) fail.push("正式版不得带预发布后缀（收到 '" + v + "'）。");
 
   let milestone = opt('--milestone');
+  // 里程碑以「基线分支」为准：PR 里改 .milestone 无效，避免执行者把门槛一起改掉。
+  // 本地无 GITHUB_BASE_REF 时退回工作区文件。
+  if (!milestone && process.env.GITHUB_BASE_REF) {
+    try {
+      milestone = execFileSync('git', ['show', 'origin/' + process.env.GITHUB_BASE_REF + ':.milestone'],
+        { encoding: 'utf8' }).trim();
+    } catch { /* 基线没有该文件则退回本地 */ }
+  }
   if (!milestone && existsSync('.milestone')) milestone = readFileSync('.milestone', 'utf8').trim();
   if (milestone) {
     const want = Number(String(milestone).replace(/^P/i, ''));
