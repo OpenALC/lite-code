@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`d92fa8b`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`2c19d60`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -37,8 +37,12 @@
 | P3 契约 v0.3 | ✅ session_create/agent_send/agent_cancel/approval_resolve + thinking/tool_result/approval/session_state 事件 |
 | P3 事件聚合 | ✅ TurnCollector：文本/思考、工具参数拼装、usage、stop reason |
 | P3 Anthropic | ✅ Messages SSE 映射 + 状态化解码器；ureq loopback 传输测试 |
+| P3 AgentLoop | ✅ user → LLM 流 → TurnCollector → 授权 → 工具执行 → function_call_output 回填；审批 resume |
+| P3 shell | ✅ PowerShell 7 / bash、超时杀进程树、stdout/stderr 截断、Job/进程组回收 |
+| P3 Agent UI 状态 | ✅ agentStore reducer（文本/思考/工具/审批/usage/done/session_state）+ 23 个单测 |
+| P3 开工面 | ⏳ Tauri session registry/命令、provider 配置加载、CLI `agent run`、UI 视图接线 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
+| main CI | ✅ `ecf31e0` 及之前全绿；`2c19d60` 与 STATUS 提交推送后由后台 watcher 验证 |
 
 ## 本轮完成
 
@@ -108,6 +112,15 @@
    - `AnthropicDecoder`：message/content_block/message_delta/stop 关联，tool id 状态化。
    - `ProviderKind::AnthropicMessages`；ureq 本地 loopback（Content-Length + chunked）测试。
    - 14 个新增测试；真实 Anthropic 端点未做外网集成。
+23. **P3 shell 执行**（`64baaf8`，subagent 交付，合入 `2c19d60`）
+   - PowerShell 7 / bash 探测与执行；默认 30s、上限 120s，超时杀进程树。
+   - stdout/stderr 采集与截断；Windows Job Object / Unix 进程组回收。
+24. **P3 AgentLoop**（`ecf31e0`）
+   - LLM 流 → TurnCollector → 授权 → 工具执行 → `function_call_output` 回填。
+   - 审批 resume、取消、轮次上限；测试用 FakeLlm/FakeExecutor 覆盖工具轮与终止路径。
+25. **P3 Agent UI 状态层**（`8b53b75`，subagent 交付）
+   - agentStore reducer：文本/思考 delta、工具卡片、审批、usage、done、session_state。
+   - 23 个 reducer 单测；尚未接 React 组件。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -120,9 +133,11 @@
 ## 待办（按序）
 
 1. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-2. 并行 subagent 收口：shell 执行、Agent UI 状态层（各自 worktree 分支）。
-3. 主 agent 下一步：AgentLoop 串联（LLM 流 → 工具授权/执行 → 结果回填）+ Tauri/CLI 命令。
-4. 之后：Agent UI 视图接线（会话流/工具卡片/内联审批/composer）。
+2. P3 开工面：Tauri session registry + `session_create`/`agent_send`/`agent_cancel`/`approval_resolve` 命令与 `agent:*` 事件映射。
+3. provider 配置加载（配置文件 + 环境变量 API key 兜底）与 `lc-cli agent run --headless`。
+4. Agent UI 视图接线（会话流/工具卡片/内联审批/composer），基于 `agentStore`。
+5. P3 出口验收：真实多轮任务、审批三按钮、yolo 启动确认、编辑器↔Agent 无损切换、上下文压缩条、headless CLI。
+6. P3 发布准备：版本号升 `0.3.1-preview.1`，打 tag 发 draft。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -149,5 +164,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 128 · lc-cli 16 · lc-proto 10 · lc-desktop 12 · web 100（10 文件）· 合计 **266**。
+lc-core 145 · lc-cli 16 · lc-proto 10 · lc-desktop 12 · web 123（11 文件）· 合计 **306**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
