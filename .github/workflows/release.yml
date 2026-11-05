@@ -235,7 +235,19 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
-          find . -type f ! -name "SHA256SUMS" -exec sha256sum {} \; | sed 's#  \./#  #' > SHA256SUMS
+          shopt -s nullglob
+          : > SHA256SUMS
+          for f in \
+            win-x64/bundle/nsis/*.exe \
+            win-x64/*.msi \
+            win-x64/lc-cli.exe \
+            linux-x64/bundle/appimage/*.AppImage \
+            linux-x64/bundle/deb/*.deb \
+            linux-x64/lc-cli; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" | tr ' ' '.')
+            sha256sum "$f" | awk -v n="$name" '{print $1"  "n}' >> SHA256SUMS
+          done
           cat SHA256SUMS
       # 只发 draft：签名失败时发布页不出现，而不是发未签名包再撤回。
       # --prerelease 由版本后缀自动决定（0.x 必带 -preview.N），不靠人勾选。
@@ -252,8 +264,19 @@ jobs:
             args=(--draft --title "$GITHUB_REF_NAME" --notes-file docs/release-notes-template.md)
           fi
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
-          # 逐文件上传：gh release create 不接受目录；sbom 允许缺失（P0 可选）。
-          mapfile -t assets < <(find artifacts/win-x64 artifacts/linux-x64 -type f | sort)
+          # 只上传安装包，不递归 AppDir；sbom 允许缺失。
+          shopt -s nullglob
+          assets=()
+          for f in \
+            artifacts/win-x64/bundle/nsis/*.exe \
+            artifacts/win-x64/*.msi \
+            artifacts/win-x64/lc-cli.exe \
+            artifacts/linux-x64/bundle/appimage/*.AppImage \
+            artifacts/linux-x64/bundle/deb/*.deb \
+            artifacts/linux-x64/lc-cli; do
+            [ -f "$f" ] || continue
+            assets+=("$f")
+          done
           assets+=("artifacts/SHA256SUMS")
           if [ -d artifacts/sbom ]; then
             while IFS= read -r f; do assets+=("$f"); done < <(find artifacts/sbom -type f | sort)
