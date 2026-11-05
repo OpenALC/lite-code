@@ -10,14 +10,14 @@
 // 命令侧错误：Rust 命令返回 `Result<CommandResult, ErrorBody>`（契约信封），
 // invoke 的 reject 载荷即序列化的 `ErrorBody`，这里归一为 BridgeResult 的 error 分支。
 
-import type {
-  CommandResult,
-  DirListingResult,
-  ErrorCode,
-  ErrorBody,
-  FileContentResult,
-  NodeStatusResult,
-} from './contract'
+import type { CommandResult, ErrorBody, ErrorCode } from '@lc-proto'
+
+/** 按 `kind` 窄化的契约结果类型（直接从 codegen 产物派生，不复制定义）。 */
+export type DirListingResult = Extract<CommandResult, { kind: 'dir_listing' }>
+export type FileContentResult = Extract<CommandResult, { kind: 'file_content' }>
+export type NodeStatusResult = Extract<CommandResult, { kind: 'node_status' }>
+export type WorkspaceRootResult = Extract<CommandResult, { kind: 'workspace_root' }>
+export type AckResult = Extract<CommandResult, { kind: 'ack' }>
 
 /** Tauri webview 注入的 IPC 内部入口（@tauri-apps/api 的 invoke 底层）。 */
 interface TauriInternals {
@@ -68,16 +68,29 @@ async function invokeContract(command: string, args: Record<string, unknown>): P
   if (typeof raw === 'object' && raw !== null && 'kind' in raw) {
     return raw as CommandResult
   }
-  throw new Error(`fs 命令 ${command} 返回了非契约载荷`)
+  throw new Error(`命令 ${command} 返回了非契约载荷`)
 }
 
-// ==== 命令包装：签名与契约 CoreCommand 对应；root 由传输层注入（见 src-tauri fs_read_dir） ====
+// ==== 命令包装：签名与契约 CoreCommand 对应；root 由传输层注入（见 src-tauri workspace_root） ====
+
+/** 当前工作区根；浏览器 dev 无真实工作区，返回 null 由视图层回退。 */
+export async function workspaceRoot(): Promise<BridgeResult<WorkspaceRootResult>> {
+  if (!isTauri()) {
+    return { ok: true, data: { kind: 'workspace_root', root: null }, fallback: true }
+  }
+  const res = await call('workspace_root', {})
+  if (!res.ok) return res
+  if (res.data.kind !== 'workspace_root') {
+    return { ok: false, error: internalError(`workspace_root 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  return { ok: true, data: res.data, fallback: false }
+}
 
 export async function readDir(root: string, path: string): Promise<BridgeResult<DirListingResult>> {
   if (!isTauri()) {
     return { ok: true, data: placeholderListing(root, path), fallback: true }
   }
-  const res = await call('fs_read_dir', { root, path })
+  const res = await call('fs_read_dir', { path })
   if (!res.ok) return res
   if (res.data.kind !== 'dir_listing') {
     return { ok: false, error: internalError(`fs_read_dir 返回 kind=${String(res.data.kind)}`), fallback: false }
@@ -89,10 +102,29 @@ export async function readFile(root: string, path: string): Promise<BridgeResult
   if (!isTauri()) {
     return { ok: true, data: placeholderFile(root, path), fallback: true }
   }
-  const res = await call('fs_read_file', { root, path })
+  const res = await call('fs_read_file', { path })
   if (!res.ok) return res
   if (res.data.kind !== 'file_content') {
     return { ok: false, error: internalError(`fs_read_file 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  return { ok: true, data: res.data, fallback: false }
+}
+
+/** 保存文本文件；真实根由 Rust 传输层注入，浏览器 dev 只返回 fallback ack。 */
+export async function writeFile(
+  path: string,
+  content: string,
+): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    // 浏览器 dev 不写真实磁盘；fallback 标注让 UI 明确这是演示行为。
+    void path
+    void content
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  const res = await call('fs_write_file', { path, content })
+  if (!res.ok) return res
+  if (res.data.kind !== 'ack') {
+    return { ok: false, error: internalError(`fs_write_file 返回 kind=${String(res.data.kind)}`), fallback: false }
   }
   return { ok: true, data: res.data, fallback: false }
 }

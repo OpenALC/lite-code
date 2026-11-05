@@ -4,7 +4,7 @@
 use crate::runtime::{NodeStatus, ShellInfo};
 
 /// 当前契约版本。规则见 docs/VERSIONING.md §8。
-pub const CONTRACT_VERSION: &str = "0.0.1";
+pub const CONTRACT_VERSION: &str = "0.1.0";
 
 /// 全部命令名，与 [`CoreCommand`] 的 serde tag 一一对应。
 /// 单元测试保证与枚举同步（数量 + 命名）。
@@ -13,8 +13,10 @@ pub const CONTRACT_COMMANDS: &[&str] = &[
     "node_set_manual",
     "node_download_portable",
     "shell_detect",
+    "workspace_root",
     "fs_read_dir",
     "fs_read_file",
+    "fs_write_file",
     "contract_info",
 ];
 
@@ -59,7 +61,8 @@ pub struct CommandEnvelope {
     pub command: CoreCommand,
 }
 
-/// 核心命令集。v0 覆盖 runtime 探测与 fs 骨架；agent 命令在 P3 以 minor 版本加入。
+/// 核心命令集。v0.1 覆盖 runtime 探测、workspace 根与 fs 读写；
+/// agent 命令在 P3 以 minor 版本加入。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
@@ -72,10 +75,14 @@ pub enum CoreCommand {
     NodeDownloadPortable { version: Option<String> },
     /// 探测 shell（启动时执行，见 docs/RUNTIME.md §8）
     ShellDetect,
+    /// 当前工作区根（文件树与 fs 命令的安全边界，docs/PLAN.md R3）
+    WorkspaceRoot,
     /// 目录按层返回，不整树序列化（docs/ARCHITECTURE.md §5.2）
     FsReadDir { path: String },
     /// 读文件。v0 返回文本；P1 传输层改走原始字节（避免 base64 往返）
     FsReadFile { path: String },
+    /// 保存文本文件；目标必须落在 workspace 根内，允许新建
+    FsWriteFile { path: String, content: String },
     /// 契约元信息（lc-cli 与 UI 关于页共用）
     ContractInfo,
 }
@@ -90,6 +97,9 @@ pub enum CommandResult {
     },
     Shell {
         shell: Option<ShellInfo>,
+    },
+    WorkspaceRoot {
+        root: Option<String>,
     },
     DirListing {
         path: String,

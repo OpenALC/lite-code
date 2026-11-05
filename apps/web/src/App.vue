@@ -7,6 +7,7 @@ import CodeEditor from './components/CodeEditor.vue'
 import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import TabBar from './components/TabBar.vue'
+import { workspaceRoot } from './services/bridge'
 import { resolveProfile } from './services/layoutProfile'
 import { setMode, setWindowWidth, uiStore } from './services/uiStore'
 
@@ -20,10 +21,10 @@ const unsub = uiStore.subscribe(s => {
 
 const profile = computed(() => resolveProfile(ui.value.mode, ui.value.windowWidth))
 
-// 编辑器模式的左侧文件树面板（P1 bridge lane）。工作区根目前没有契约命令
-// 可取（见提交说明的契约请求），dev 手测经 URL query 注入：?root=<路径>。
+// 工作区根由 Rust 侧经 workspace_root 注入（传输层安全边界，docs/PLAN.md R3）；
+// 浏览器 dev 无 Tauri，可用 ?root=<路径> 作为占位数据前缀。
 const treeCollapsed = ref(false)
-const projectRoot = new URLSearchParams(window.location.search).get('root') ?? ''
+const projectRoot = ref(new URLSearchParams(window.location.search).get('root') ?? '')
 
 function onResize(): void {
   setWindowWidth(window.innerWidth)
@@ -40,6 +41,9 @@ onMounted(() => {
   setWindowWidth(window.innerWidth)
   window.addEventListener('resize', onResize)
   window.addEventListener('keydown', onKey)
+  void workspaceRoot().then(res => {
+    if (res.ok && res.data.root) projectRoot.value = res.data.root
+  })
 })
 
 onBeforeUnmount(() => {

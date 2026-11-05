@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { DirEntryDto } from './contract'
+import type { DirEntryDto } from '@lc-proto'
 import {
   createTreeState,
   layerFailed,

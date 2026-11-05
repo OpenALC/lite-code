@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { CommandResult } from '@lc-proto'
+
 import {
   detectNode,
   isTauri,
   readFile,
   readDir,
+  workspaceRoot,
+  writeFile,
   type BridgeResult,
+  type DirListingResult,
 } from './bridge'
-import type { CommandResult, DirListingResult } from './contract'
 
 // node 环境无 window：默认走 fallback 占位路径；Tauri 路径用注入的假
 // __TAURI_INTERNALS__ 驱动（invoke 的入参与 reject 载荷形状都在这里断言）。
@@ -73,6 +77,20 @@ describe('fallback 占位（浏览器 dev）', () => {
     }
   })
 
+  it('workspaceRoot 返回 null + fallback（无真实工作区）', async () => {
+    const res = await workspaceRoot()
+    expect(res.ok).toBe(true)
+    expect(res.fallback).toBe(true)
+    if (res.ok) expect(res.data).toEqual({ kind: 'workspace_root', root: null })
+  })
+
+  it('writeFile 返回 ack + fallback（不写真实磁盘）', async () => {
+    const res = await writeFile('README.md', 'demo')
+    expect(res.ok).toBe(true)
+    expect(res.fallback).toBe(true)
+    if (res.ok) expect(res.data.kind).toBe('ack')
+  })
+
   it('detectNode 返回 need_manual 占位（不伪造可用的 Node）', async () => {
     const res = await detectNode()
     expect(res.ok).toBe(true)
@@ -87,7 +105,7 @@ describe('fallback 占位（浏览器 dev）', () => {
 })
 
 describe('Tauri 路径', () => {
-  it('readDir 以 { root, path } 调 fs_read_dir，返回去掉 fallback 标注的契约结果', async () => {
+  it('readDir 只把 path 传给 fs_read_dir（root 由传输层注入）', async () => {
     const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
     const listing: DirListingResult = {
       kind: 'dir_listing',
@@ -102,7 +120,7 @@ describe('Tauri 路径', () => {
       },
     })
     const res: BridgeResult<DirListingResult> = await readDir('D:/proj', 'D:/proj')
-    expect(calls).toEqual([{ cmd: 'fs_read_dir', args: { root: 'D:/proj', path: 'D:/proj' } }])
+    expect(calls).toEqual([{ cmd: 'fs_read_dir', args: { path: 'D:/proj' } }])
     expect(res).toEqual({ ok: true, data: listing, fallback: false })
   })
 
@@ -133,6 +151,38 @@ describe('Tauri 路径', () => {
     const res = await readDir('D:/proj', 'D:/proj')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error.code).toBe('internal')
+  })
+
+  it('workspace_root 以空参数调用并返回根', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'workspace_root', root: 'D:/proj' }
+      },
+    })
+    const res = await workspaceRoot()
+    expect(calls).toEqual([{ cmd: 'workspace_root', args: {} }])
+    expect(res).toEqual({
+      ok: true,
+      data: { kind: 'workspace_root', root: 'D:/proj' },
+      fallback: false,
+    })
+  })
+
+  it('writeFile 以 { path, content } 调 fs_write_file', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'ack' }
+      },
+    })
+    const res = await writeFile('D:/proj/a.rs', 'fn main() {}')
+    expect(calls).toEqual([
+      { cmd: 'fs_write_file', args: { path: 'D:/proj/a.rs', content: 'fn main() {}' } },
+    ])
+    expect(res).toEqual({ ok: true, data: { kind: 'ack' }, fallback: false })
   })
 
   it('node_detect 以空参数调用', async () => {

@@ -16,6 +16,7 @@ pub mod listing;
 pub mod paths;
 pub mod walk;
 pub mod watch;
+pub mod write;
 
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ pub use listing::{DirLevel, read_dir_level};
 pub use paths::{PathResolver, RealPathResolver, display_path, ensure_within_root};
 pub use walk::walk_tree;
 pub use watch::{DEBOUNCE, FileWatcher, WatchEvent, WatchSink};
+pub use write::write_file_text;
 
 use std::path::Path;
 

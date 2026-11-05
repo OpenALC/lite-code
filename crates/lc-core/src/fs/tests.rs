@@ -304,6 +304,84 @@ fn walk_tree_respects_ignore_and_hidden() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// ==== 写文件：保存路径（P1 Editor UI lane）====
+
+#[test]
+fn write_file_creates_and_overwrites() {
+    let root = temp_root("write");
+    let target = root.join("note.txt");
+
+    let written =
+        super::write_file_text(&root, &target, "v1", &RealPathResolver).expect("create file");
+    assert!(written.ends_with("note.txt"), "{written}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "v1");
+
+    super::write_file_text(&root, &target, "v2", &RealPathResolver).expect("overwrite file");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "v2");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn write_file_rejects_outside_root() {
+    let root = temp_root("write-outside");
+    let outside = std::env::temp_dir().join("lc-fs-write-outside.txt");
+    let _ = fs::remove_file(&outside);
+
+    let err = super::write_file_text(&root, &outside, "x", &RealPathResolver)
+        .expect_err("outside path must be rejected");
+    assert_eq!(err.code(), ErrorCode::PathOutsideRoot);
+
+    let _ = fs::remove_file(&outside);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn write_file_rejects_dot_dot_escape() {
+    let root = temp_root("write-escape");
+    let target = root.join("..").join("lc-fs-write-escape.txt");
+
+    let err = super::write_file_text(&root, &target, "x", &RealPathResolver)
+        .expect_err("dot-dot escape must be rejected");
+    assert_eq!(err.code(), ErrorCode::PathOutsideRoot);
+
+    let _ = fs::remove_file(&target);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn write_file_missing_parent_is_not_found() {
+    let root = temp_root("write-missing");
+    let target = root.join("missing").join("a.txt");
+
+    let err = super::write_file_text(&root, &target, "x", &RealPathResolver)
+        .expect_err("missing parent must fail");
+    assert_eq!(err.code(), ErrorCode::NotFound);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn write_file_rejects_symlink_escape() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_root("write-symlink");
+    let outside_root = temp_root("write-symlink-outside");
+    let outside_file = outside_root.join("secret.txt");
+    fs::write(&outside_file, "old").unwrap();
+    let link = root.join("link.txt");
+    symlink(&outside_file, &link).unwrap();
+
+    let err = super::write_file_text(&root, &link, "new", &RealPathResolver)
+        .expect_err("symlink escape must be rejected");
+    assert_eq!(err.code(), ErrorCode::PathOutsideRoot);
+    assert_eq!(fs::read_to_string(&outside_file).unwrap(), "old");
+
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&outside_root);
+}
+
 // ==== FileWatcher：真实目录 + notify ====
 
 /// 监听超时上限：去抖 200ms + Windows/Linux CI 波动余量。

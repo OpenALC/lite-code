@@ -1,65 +1,65 @@
 // 由 lc-proto codegen 生成，请勿手改。
 // 重新生成：cargo run --locked -p lc-proto --features codegen --bin codegen
-// 契约版本：0.0.1
+// 契约版本：0.1.0
 
 // ---- lc_proto::ErrorCode ----
-type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch";
+export type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch";
 
 // ---- lc_proto::ErrorBody ----
-type ErrorBody = { code: ErrorCode, message: string, detail?: string | null, };
+export type ErrorBody = { code: ErrorCode, message: string, detail?: string | null, };
 
 // ---- lc_proto::SemVer ----
-type SemVer = { major: number, minor: number, patch: number, };
+export type SemVer = { major: number, minor: number, patch: number, };
 
 // ---- lc_proto::NodeSource ----
-type NodeSource = "official_installer" | "version_manager" | "package_manager" | "registry_path" | "manual" | "portable";
+export type NodeSource = "official_installer" | "version_manager" | "package_manager" | "registry_path" | "manual" | "portable";
 
 // ---- lc_proto::NodeHealth ----
-type NodeHealth = "supported" | "unverified" | "legacy";
+export type NodeHealth = "supported" | "unverified" | "legacy";
 
 // ---- lc_proto::NodeFailureReason ----
-type NodeFailureReason = "missing" | "not_a_file" | "store_alias" | "spawn_failed" | "unparsable" | "ghost_install" | "broken";
+export type NodeFailureReason = "missing" | "not_a_file" | "store_alias" | "spawn_failed" | "unparsable" | "ghost_install" | "broken";
 
 // ---- lc_proto::NodeProbeAttempt ----
-type NodeProbeAttempt = { path: string, source: NodeSource, reason: NodeFailureReason, detail?: string | null, };
+export type NodeProbeAttempt = { path: string, source: NodeSource, reason: NodeFailureReason, detail?: string | null, };
 
 // ---- lc_proto::NodeRuntimeInfo ----
-type NodeRuntimeInfo = { path: string, version: SemVer, source: NodeSource, health: NodeHealth, };
+export type NodeRuntimeInfo = { path: string, version: SemVer, source: NodeSource, health: NodeHealth, };
 
 // ---- lc_proto::NodeStatus ----
-type NodeStatus = { "kind": "ready", runtime: NodeRuntimeInfo, } | { "kind": "need_manual", attempts: Array<NodeProbeAttempt>, };
+export type NodeStatus = { "kind": "ready", runtime: NodeRuntimeInfo, } | { "kind": "need_manual", attempts: Array<NodeProbeAttempt>, };
 
 // ---- lc_proto::ShellKind ----
-type ShellKind = "pwsh" | "bash";
+export type ShellKind = "pwsh" | "bash";
 
 // ---- lc_proto::ShellInfo ----
-type ShellInfo = { path: string, kind: ShellKind, 
+export type ShellInfo = { path: string, kind: ShellKind, 
 /**
  * pwsh 要求 major ≥ 7
  */
 version_major: number, };
 
 // ---- lc_proto::EntryKind ----
-type EntryKind = "file" | "dir" | "symlink";
+export type EntryKind = "file" | "dir" | "symlink";
 
 // ---- lc_proto::DirEntryDto ----
-type DirEntryDto = { name: string, path: string, kind: EntryKind, size?: number | null, };
+export type DirEntryDto = { name: string, path: string, kind: EntryKind, size?: number | null, };
 
 // ---- lc_proto::ContractMeta ----
-type ContractMeta = { name: string, contract_version: string, commands: Array<string>, events: Array<string>, error_codes: Array<string>, };
+export type ContractMeta = { name: string, contract_version: string, commands: Array<string>, events: Array<string>, error_codes: Array<string>, };
 
 // ---- lc_proto::CoreCommand ----
-type CoreCommand = { "method": "node_detect" } | { "method": "node_set_manual", path: string, } | { "method": "node_download_portable", version: string | null, } | { "method": "shell_detect" } | { "method": "fs_read_dir", path: string, } | { "method": "fs_read_file", path: string, } | { "method": "contract_info" };
+export type CoreCommand = { "method": "node_detect" } | { "method": "node_set_manual", path: string, } | { "method": "node_download_portable", version: string | null, } | { "method": "shell_detect" } | { "method": "workspace_root" } | { "method": "fs_read_dir", path: string, } | { "method": "fs_read_file", path: string, } | { "method": "fs_write_file", path: string, content: string, } | { "method": "contract_info" };
 
 // ---- lc_proto::CommandEnvelope ----
-type CommandEnvelope = { id: number, command: CoreCommand, };
+export type CommandEnvelope = { id: number, command: CoreCommand, };
 
 // ---- lc_proto::CommandResult ----
-type CommandResult = { "kind": "node_status", status: NodeStatus, } | { "kind": "shell", shell: ShellInfo | null, } | { "kind": "dir_listing", path: string, entries: Array<DirEntryDto>, generation: number, } | { "kind": "file_content", path: string, text: string, } | { "kind": "contract", meta: ContractMeta, } | { "kind": "ack" };
+export type CommandResult = { "kind": "node_status", status: NodeStatus, } | { "kind": "shell", shell: ShellInfo | null, } | { "kind": "workspace_root", root: string | null, } | { "kind": "dir_listing", path: string, entries: Array<DirEntryDto>, generation: number, } | { "kind": "file_content", path: string, text: string, } | { "kind": "contract", meta: ContractMeta, } | { "kind": "ack" };
 
 // ---- lc_proto::CoreEvent ----
-type CoreEvent = { "type": "node:status", status: NodeStatus, } | { "type": "shell:status", shell: ShellInfo | null, } | { "type": "fs:tree", generation: number, } | { "type": "fs:entry", path: string, } | { "type": "task:created", task_id: string, title: string, } | { "type": "task:status", task_id: string, status: string, } | { "type": "task:needs_input", task_id: string, kind: string, } | { "type": "task:merged", task_id: string, commit_sha: string, } | { "type": "agent:text_delta", session_id: string, index: number, text: string, } | { "type": "agent:tool_start", session_id: string, call_id: string, name: string, } | { "type": "agent:usage", session_id: string, input: number, output: number, cached: number, } | { "type": "agent:done", session_id: string, stop_reason: string, } | { "type": "error", error: ErrorBody, };
+export type CoreEvent = { "type": "node:status", status: NodeStatus, } | { "type": "shell:status", shell: ShellInfo | null, } | { "type": "fs:tree", generation: number, } | { "type": "fs:entry", path: string, } | { "type": "task:created", task_id: string, title: string, } | { "type": "task:status", task_id: string, status: string, } | { "type": "task:needs_input", task_id: string, kind: string, } | { "type": "task:merged", task_id: string, commit_sha: string, } | { "type": "agent:text_delta", session_id: string, index: number, text: string, } | { "type": "agent:tool_start", session_id: string, call_id: string, name: string, } | { "type": "agent:usage", session_id: string, input: number, output: number, cached: number, } | { "type": "agent:done", session_id: string, stop_reason: string, } | { "type": "error", error: ErrorBody, };
 
 // ---- lc_proto::EventEnvelope ----
-type EventEnvelope = { seq: number, event: CoreEvent, };
+export type EventEnvelope = { seq: number, event: CoreEvent, };
 

@@ -1,13 +1,15 @@
 {
   "name": "lc-proto",
-  "contract_version": "0.0.1",
+  "contract_version": "0.1.0",
   "commands": [
     "node_detect",
     "node_set_manual",
     "node_download_portable",
     "shell_detect",
+    "workspace_root",
     "fs_read_dir",
     "fs_read_file",
+    "fs_write_file",
     "contract_info"
   ],
   "events": [

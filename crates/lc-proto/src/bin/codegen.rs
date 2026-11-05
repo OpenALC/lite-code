@@ -60,6 +60,8 @@ fn main() {
         out.push_str("// ---- ");
         out.push_str(name);
         out.push_str(" ----\n");
+        // 带 export：产物是 ES 模块，web 侧可直接 `import type`，无需全局声明跳板。
+        out.push_str("export ");
         out.push_str(&decl);
         if !decl.ends_with('\n') {
             out.push('\n');

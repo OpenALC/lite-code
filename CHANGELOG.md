@@ -10,6 +10,7 @@
 
 - Cargo workspace 骨架：`lc-proto` / `lc-core` / `lc-cli` / `lc-desktop`（Tauri 薄壳）
 - `lc-proto` 契约 v0：命令、DTO、`ErrorCode`、事件枚举；TS 绑定生成与漂移检查
+- `lc-proto` 契约 v0.1：新增 `workspace_root` / `fs_write_file`；TS 绑定改为带 `export` 的 ES 模块，web 直接 `import type`
 - `lc-core::runtime`：Node 探测状态机（Tier 1–4 候选、Store 别名桩识别、GhostInstall 自检）与 Shell 探测（PowerShell 7 / bash），纯函数设计可注入测试
 - `lc-cli`：`node detect` / `shell detect` / `contract info`，golden 输出测试
 - `apps/web`：Vue 3 + Vite 8 + TS 5.9 + Monaco 起壳，`LayoutProfile` 骨架与模式切换器

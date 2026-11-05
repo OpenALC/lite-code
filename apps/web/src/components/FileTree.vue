@@ -12,7 +12,7 @@ import {
   visibleRows,
   type TreeState,
 } from '../services/fileTree'
-import type { DirEntryDto } from '../services/contract'
+import type { DirEntryDto } from '@lc-proto'
 import { openTab } from '../services/tabs'
 
 // 一层树（docs/UI.md §3：按需加载，一次一层）。

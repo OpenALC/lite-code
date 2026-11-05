@@ -7,7 +7,7 @@
 // 错误以契约 ErrorBody 原样上抛给视图层：可读文案由 i18n 提供，
 // 错误码放 tooltip / 日志（UI.md §4）。
 
-import type { DirEntryDto } from './contract'
+import type { DirEntryDto } from '@lc-proto'
 
 /** 一层目录的加载状态。key = 该层目录路径（根层为 root 本身）。 */
 export interface TreeLayer {

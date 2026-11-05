@@ -8,14 +8,37 @@
 //! 生命周期（docs/ARCHITECTURE.md §6 起步版）：
 //! 二次启动 → 唤回主窗口；关闭请求 → 隐藏窗口（核心常驻）；托盘"退出"才真正退出。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use lc_core::fs::{FsError, RealPathResolver, ensure_within_root, read_dir_level};
-use lc_proto::{CommandResult, ContractMeta, ErrorBody, NodeStatus, ShellInfo};
+use lc_core::fs::{
+    DirLevel, FsError, RealPathResolver, ensure_within_root, read_dir_level, write_file_text,
+};
+use lc_proto::{CommandResult, ContractMeta, ErrorBody, ErrorCode, NodeStatus, ShellInfo};
 
 // get_webview_window 来自 Manager trait（仅桌面侧的托盘/单实例路径用到）
 #[cfg(desktop)]
 use tauri::Manager;
+
+/// workspace 根由传输层注入（docs/PLAN.md R3）：`LC_WORKSPACE_ROOT` 供
+/// dev/测试显式覆盖，否则用进程当前目录。fs 命令不接受前端传入的 root。
+fn current_workspace_root() -> Option<PathBuf> {
+    std::env::var_os("LC_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+}
+
+fn workspace_unavailable() -> ErrorBody {
+    ErrorBody::new(ErrorCode::NotFound, "workspace root unavailable")
+}
+
+/// 当前工作区根（文件树与 fs 命令的安全边界）。前端据此拿到文件树起点，
+/// 不再依赖 URL query 或手填路径。
+#[tauri::command]
+fn workspace_root() -> CommandResult {
+    CommandResult::WorkspaceRoot {
+        root: current_workspace_root().map(|p| lc_core::fs::display_path(&p)),
+    }
+}
 
 /// 转发 lc-core 的 Node 探测。惰性触发由前端控制，这里不做缓存。
 #[tauri::command]
@@ -36,11 +59,11 @@ fn contract_info() -> ContractMeta {
 }
 
 /// 目录按层返回（docs/ARCHITECTURE.md §5.2：不整树序列化）。
-/// `root` 是项目根（安全边界，docs/PLAN.md R3），`path` 是要列出的目录；
-/// 契约的 `CoreCommand::FsReadDir { path }` 只带 path，root 由传输层注入
-/// （Tauri 命令参数 ≠ 契约信封，lc-cli 侧以工作目录为 root，语义一致）。
+/// 契约的 `CoreCommand::FsReadDir { path }` 只带 path，root 由传输层注入；
+/// 前端传入的路径必须落在 workspace 根内（docs/PLAN.md R3）。
 #[tauri::command]
-fn fs_read_dir(root: String, path: String) -> Result<CommandResult, ErrorBody> {
+fn fs_read_dir(path: String) -> Result<CommandResult, ErrorBody> {
+    let root = current_workspace_root().ok_or_else(workspace_unavailable)?;
     let level = list_dir(&root, &path)?;
     Ok(CommandResult::DirListing {
         path: level.path,
@@ -54,7 +77,8 @@ fn fs_read_dir(root: String, path: String) -> Result<CommandResult, ErrorBody> {
 /// 读文件为文本（契约 v0 语义：`CommandResult::FileContent { path, text }`；
 /// 原始字节传输在后续里程碑改 `tauri::ipc::Response`，docs/ARCHITECTURE.md §5.2）。
 #[tauri::command]
-fn fs_read_file(root: String, path: String) -> Result<CommandResult, ErrorBody> {
+fn fs_read_file(path: String) -> Result<CommandResult, ErrorBody> {
+    let root = current_workspace_root().ok_or_else(workspace_unavailable)?;
     let (display, text) = read_file_text(&root, &path)?;
     Ok(CommandResult::FileContent {
         path: display,
@@ -62,22 +86,35 @@ fn fs_read_file(root: String, path: String) -> Result<CommandResult, ErrorBody> 
     })
 }
 
+/// 保存文本文件（P1 Editor UI lane）。目标必须落在 workspace 根内，允许新建。
+#[tauri::command]
+fn fs_write_file(path: String, content: String) -> Result<CommandResult, ErrorBody> {
+    let root = current_workspace_root().ok_or_else(workspace_unavailable)?;
+    write_text(&root, &path, &content)?;
+    Ok(CommandResult::Ack)
+}
+
 // ==== 纯逻辑层（无 Tauri 运行时依赖，单测直接覆盖） ====
 
 /// 列一层目录：lc-core 校验 + 列举，失败映射为契约 `ErrorBody`。
-fn list_dir(root: &str, path: &str) -> Result<lc_core::fs::DirLevel, ErrorBody> {
-    read_dir_level(Path::new(root), Path::new(path), &RealPathResolver)
-        .map_err(|e| fs_error_body(&e))
+fn list_dir(root: &Path, path: &str) -> Result<DirLevel, ErrorBody> {
+    read_dir_level(root, Path::new(path), &RealPathResolver).map_err(|e| fs_error_body(&e))
 }
 
 /// 根内校验后读文件，返回（展示路径, 文本）。非 UTF-8 归入 `Io` 码
 /// （契约 v0 只承诺文本；二进制走原始字节的方案见上）。
-fn read_file_text(root: &str, path: &str) -> Result<(String, String), ErrorBody> {
-    let canonical = ensure_within_root(Path::new(root), Path::new(path), &RealPathResolver)
+fn read_file_text(root: &Path, path: &str) -> Result<(String, String), ErrorBody> {
+    let canonical = ensure_within_root(root, Path::new(path), &RealPathResolver)
         .map_err(|e| fs_error_body(&e))?;
     let text =
         std::fs::read_to_string(&canonical).map_err(|e| fs_error_body(&io_to_fs(&canonical, e)))?;
     Ok((lc_core::fs::display_path(&canonical), text))
+}
+
+/// 根内校验后写入文本，返回展示路径。
+fn write_text(root: &Path, path: &str, content: &str) -> Result<String, ErrorBody> {
+    write_file_text(root, Path::new(path), content, &RealPathResolver)
+        .map_err(|e| fs_error_body(&e))
 }
 
 /// 错误映射：`FsError::code()`（契约错误码）→ `ErrorBody`。
@@ -157,8 +194,10 @@ pub fn run() {
             node_detect,
             shell_detect,
             contract_info,
+            workspace_root,
             fs_read_dir,
-            fs_read_file
+            fs_read_file,
+            fs_write_file
         ])
         .setup(|app| {
             #[cfg(desktop)]
@@ -187,7 +226,7 @@ mod tests {
 
     use lc_proto::{CommandResult, ErrorCode};
 
-    use super::{list_dir, read_file_text};
+    use super::{list_dir, read_file_text, write_text};
 
     /// 进程内唯一临时目录（lc-core 不引 tempfile，薄壳同样不引入新依赖）。
     fn temp_root(tag: &str) -> PathBuf {
@@ -216,7 +255,7 @@ mod tests {
         fs::create_dir_all(root.join("sub/inner")).unwrap();
         fs::write(root.join("sub/inner/deep.txt"), "d").unwrap();
 
-        let level = list_dir(root.to_str().unwrap(), root.to_str().unwrap()).expect("list ok");
+        let level = list_dir(&root, root.to_str().unwrap()).expect("list ok");
         let names: Vec<&str> = level.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["a.txt", "b.txt", "sub"]);
         assert_eq!(level.entries[2].kind, lc_proto::EntryKind::Dir);
@@ -226,14 +265,14 @@ mod tests {
     fn list_dir_maps_outside_root_to_contract_code() {
         let root = temp_root("outside");
         let outside = std::env::temp_dir();
-        let err = list_dir(root.to_str().unwrap(), outside.to_str().unwrap());
+        let err = list_dir(&root, outside.to_str().unwrap());
         assert_eq!(code_of(&err), ErrorCode::PathOutsideRoot);
     }
 
     #[test]
     fn list_dir_maps_missing_to_not_found() {
         let root = temp_root("missing");
-        let err = list_dir(root.to_str().unwrap(), root.join("nope").to_str().unwrap());
+        let err = list_dir(&root, root.join("nope").to_str().unwrap());
         assert_eq!(code_of(&err), ErrorCode::NotFound);
     }
 
@@ -244,7 +283,7 @@ mod tests {
         // （Win32 对组件尾部点号的剥离规则会让 `..\..` 形态不确定，这里用单层 `..`）
         let root = temp_root("escape");
         let escaped = format!(r"{}\..", root.display());
-        let err = list_dir(root.to_str().unwrap(), &escaped);
+        let err = list_dir(&root, &escaped);
         assert_eq!(code_of(&err), ErrorCode::PathOutsideRoot);
     }
 
@@ -252,11 +291,8 @@ mod tests {
     fn read_file_returns_text_and_display_path() {
         let root = temp_root("read");
         fs::write(root.join("hello.rs"), "fn main() {}\n").unwrap();
-        let (path, text) = read_file_text(
-            root.to_str().unwrap(),
-            root.join("hello.rs").to_str().unwrap(),
-        )
-        .expect("read ok");
+        let (path, text) =
+            read_file_text(&root, root.join("hello.rs").to_str().unwrap()).expect("read ok");
         assert_eq!(text, "fn main() {}\n");
         // Windows verbatim 前缀（\\?\）已剥掉，前端拿到的是展示路径
         assert!(!path.contains(r"\\?\"));
@@ -266,13 +302,10 @@ mod tests {
     #[test]
     fn read_file_maps_outside_root_and_missing() {
         let root = temp_root("read-guard");
-        let outside = read_file_text(
-            root.to_str().unwrap(),
-            std::env::temp_dir().to_str().unwrap(),
-        );
+        let outside = read_file_text(&root, std::env::temp_dir().to_str().unwrap());
         assert_eq!(code_of(&outside), ErrorCode::PathOutsideRoot);
 
-        let missing = read_file_text(root.to_str().unwrap(), root.join("no.rs").to_str().unwrap());
+        let missing = read_file_text(&root, root.join("no.rs").to_str().unwrap());
         assert_eq!(code_of(&missing), ErrorCode::NotFound);
     }
 
@@ -280,11 +313,25 @@ mod tests {
     fn read_file_non_utf8_maps_to_io() {
         let root = temp_root("binary");
         fs::write(root.join("bin.dat"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
-        let err = read_file_text(
-            root.to_str().unwrap(),
-            root.join("bin.dat").to_str().unwrap(),
-        );
+        let err = read_file_text(&root, root.join("bin.dat").to_str().unwrap());
         assert_eq!(code_of(&err), ErrorCode::Io);
+    }
+
+    #[test]
+    fn write_file_roundtrip_and_guard() {
+        let root = temp_root("write");
+        let target = root.join("saved.txt");
+        let path = write_text(&root, target.to_str().unwrap(), "saved").expect("write ok");
+        assert!(path.ends_with("saved.txt"));
+
+        let (_, text) = read_file_text(&root, target.to_str().unwrap()).expect("read back");
+        assert_eq!(text, "saved");
+
+        let outside = std::env::temp_dir().join("lc-desktop-write-outside.txt");
+        let _ = fs::remove_file(&outside);
+        let err = write_text(&root, outside.to_str().unwrap(), "x");
+        assert_eq!(code_of(&err), ErrorCode::PathOutsideRoot);
+        let _ = fs::remove_file(&outside);
     }
 
     #[test]
