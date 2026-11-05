@@ -16,18 +16,17 @@
                    Start-Process 之前；终点 = 主窗口（按标题 "Lite Code" 定位
                    HWND）首次可见。真正的"冷启动到可交互"仍须等应用内埋点
                    （启动耗时经 lc-proto 事件打到 stdout），当前为近似值。
-  - trayRssMb      启动应用 -> 主窗口关闭（Lifecycle 的 CloseRequested 走隐藏）
-                   -> 静置 TraySettleSeconds（默认 10s，对齐 PLAN §4）-> 采样
-                   "本应用进程 + 其全部子进程（WebView2）"的 WorkingSet 合计。
-                   注意：当前 Lifecycle 关闭只 hide、不销毁 WebView，进程树仍完整
-                   存活，因此该值不等于 PLAN 的"窗口已销毁"目标口径——指标如实
-                   反映实现，不用改 app 代码去凑数。
-  - warmStartMs    主窗口已隐藏时启动第二个实例；计时起点 = 二次 Start-Process
-                   之前，终点 = 主窗口重新可见（单实例插件回调 show_main_window）。
-                   取 WarmStartRuns 次的中位数；二次实例必须自行退出，否则 warn
-                   并强杀（计入开关失败）。
+  - trayRssMb      启动应用 -> 关闭主窗口（Lifecycle 在 CloseRequested 中
+                   destroy 窗口，WebView2 随窗口释放）-> 静置
+                   TraySettleSeconds（默认 10s，对齐 PLAN §4）-> 采样
+                   "本应用进程 + 其全部子进程"的 WorkingSet 合计；窗口销毁后
+                   子进程为 0，该值可与 PLAN 的"窗口已销毁"口径直接比较。
+  - warmStartMs    主窗口已销毁（无窗口）时启动第二个实例；计时起点 = 二次
+                   Start-Process 之前，终点 = 主窗口按配置重建后重新可见
+                   （单实例插件回调 show_main_window）。取 WarmStartRuns 次的
+                   中位数；二次实例必须自行退出，否则 warn 并强杀（计入开关失败）。
   - residualProcs  before = 生命周期测量实例的主 PID；执行 Toggles 次
-                   "关闭窗口（隐藏）-> 二次启动（唤回）" 循环后取进程快照 diff：
+                   "关闭窗口（销毁）-> 二次启动（重建唤回）" 循环后取进程快照 diff：
                    after 中出现且不属于主实例的 lc-desktop 进程数，加上循环中
                    "未自行退出" 的二次实例（它们会被立即强杀以免污染后续开关，
                    但计入残留，否则清理动作会把互斥失败掩盖成 0）。
@@ -81,7 +80,7 @@ $WindowTitle = 'Lite Code'   # 主窗口标题（tauri.conf.json 的 productName
 
 # 用户态窗口操作：PostMessage(WM_CLOSE) 等价用户点关闭；IsWindowVisible 判定
 # 主窗口可见性。
-# 注意：Process.MainWindowHandle 不能用来判断主窗口——窗口隐藏后 .NET 会指向
+# 注意：Process.MainWindowHandle 不能用来判断主窗口——窗口销毁后 .NET 会指向
 # 进程里另一个可见的顶层辅助窗口（如单实例插件的 "dev.litecode.desktop-siw"），
 # 造成"关闭后仍可见"的误判。这里按标题定位主窗口并缓存其 HWND。
 if (-not ('LiteCodePerf.Win32' -as [type])) {
@@ -179,7 +178,7 @@ function Wait-AppWindowHidden {
 
 function Close-AppWindow {
   param([int]$ProcessId, [IntPtr]$CachedHandle, [string]$ExpectedTitle, [int]$TimeoutMs = 3000)
-  # WM_CLOSE -> Lifecycle 的 CloseRequested -> 隐藏窗口（当前实现不销毁）
+  # WM_CLOSE -> Lifecycle 的 CloseRequested -> destroy 窗口（WebView 随窗口释放）
   $hwnd = Get-AppMainWindow -ProcessId $ProcessId -CachedHandle $CachedHandle -ExpectedTitle $ExpectedTitle
   if ($hwnd -eq [IntPtr]::Zero) { return $true }   # 已隐藏/已销毁
   if (-not [LiteCodePerf.Win32]::PostMessage($hwnd, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)) {
@@ -272,7 +271,7 @@ function Get-MedianMs {
 
 function Invoke-SecondInstanceWake {
   param([string]$ExePath, [int]$MainPid, [IntPtr]$CachedHandle, [string]$ExpectedTitle, [int]$TimeoutMs)
-  # 隐藏窗口状态下启动第二实例，测主窗口重新可见的耗时
+  # 窗口已销毁的状态下启动第二实例，测主窗口重建后重新可见的耗时
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $second = Start-Process -FilePath $ExePath -PassThru
   $hwnd = Wait-MainWindowShown -ProcessId $MainPid -CachedHandle $CachedHandle -ExpectedTitle $ExpectedTitle -TimeoutMs $TimeoutMs
@@ -322,7 +321,7 @@ for ($i = 1; $i -le $ColdStartRuns; $i++) {
   } else {
     Write-Warning ("coldStart 采样 {0}/{1} 失败（{2} ms 内窗口未出现或进程退出）" -f $i, $ColdStartRuns, $StabilityTimeoutMs)
   }
-  # 应用没有脚本化退出入口（关闭 = 隐藏），测量结束后强杀整棵进程树
+  # 应用没有脚本化退出入口（关闭 = 销毁窗口、应用常驻），测量结束后强杀整棵进程树
   $null = Stop-ProcessTree -RootId $p.Id
   Start-Sleep -Milliseconds 300
 }
@@ -347,7 +346,7 @@ Start-Sleep -Milliseconds 1500   # 让 WebView2 初始化与首屏渲染稳定
 # 托盘常驻：关闭主窗口 -> 静置 -> 采样进程树 RSS
 if (Test-ProcessAlive -ProcessId $mainPid) {
   if (-not (Close-AppWindow -ProcessId $mainPid -CachedHandle $mainHwnd -ExpectedTitle $WindowTitle)) {
-    Write-Warning 'WM_CLOSE 后主窗口仍可见（Lifecycle 隐藏路径可能未生效）'
+    Write-Warning 'WM_CLOSE 后主窗口仍可见（Lifecycle 的 destroy 路径可能未生效）'
   }
   Start-Sleep -Seconds $TraySettleSeconds
   if (Test-ProcessAlive -ProcessId $mainPid) {
@@ -371,11 +370,11 @@ if (Test-ProcessAlive -ProcessId $mainPid) {
   Write-Warning '常驻测量实例启动后立即退出，托盘 RSS 置 null'
 }
 
-# 热启动：窗口保持隐藏，二次启动 -> 主窗口重新可见
+# 热启动：窗口保持销毁（无窗口），二次启动 -> 主窗口重建并重新可见
 $warmSamples = @()
 if (Test-ProcessAlive -ProcessId $mainPid) {
   for ($i = 1; $i -le $WarmStartRuns; $i++) {
-    $null = Close-AppWindow -ProcessId $mainPid -CachedHandle $mainHwnd -ExpectedTitle $WindowTitle   # 上一轮唤回后窗口可见，先隐藏
+    $null = Close-AppWindow -ProcessId $mainPid -CachedHandle $mainHwnd -ExpectedTitle $WindowTitle   # 上一轮唤回后窗口可见，先销毁
     Start-Sleep -Milliseconds 300
     $wake = Invoke-SecondInstanceWake -ExePath $exePath -MainPid $mainPid -CachedHandle $mainHwnd -ExpectedTitle $WindowTitle -TimeoutMs $StabilityTimeoutMs
     if ($wake.Handle -ne [IntPtr]::Zero) { $mainHwnd = $wake.Handle }
@@ -399,7 +398,7 @@ if (Test-ProcessAlive -ProcessId $mainPid) {
   Write-Warning '主进程不可用，warmStartMs 置 null'
 }
 
-# 残留进程：Toggles 次"关闭窗口（隐藏）-> 二次启动（唤回）"
+# 残留进程：Toggles 次"关闭窗口（销毁）-> 二次启动（重建唤回）"
 if (Test-ProcessAlive -ProcessId $mainPid) {
   $toggleFailures = 0
   $leakedSecondInstances = [System.Collections.Generic.List[int]]::new()
