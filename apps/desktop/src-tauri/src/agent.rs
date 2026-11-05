@@ -28,6 +28,7 @@ use lc_proto::{
 };
 use tauri::Emitter;
 
+use crate::task::{self, TaskEvents, TaskState};
 use crate::{WorkspaceState, workspace_unavailable};
 
 /// UI 侧 `CORE_EVENT_CHANNEL` 必须与此一致（apps/web/src/services/bridge.ts）。
@@ -432,14 +433,29 @@ fn spawn_worker(
 // ==== Tauri 命令 ====
 
 /// 创建 P3 会话：解析 provider 配置、构建 AgentLoop 并启动 worker。
-#[tauri::command]
+///
+/// `task_id` 存在时以任务的 worktree 作为工作区根（MCP/记忆/工具边界一致），
+/// 非 git 任务回退 workspace 根；随后把会话绑定到任务并置 Running。
+/// provider/MCP/AgentLoop 构建期间不持有 `TaskState` 锁。
+#[tauri::command(rename_all = "snake_case")]
 pub(crate) fn session_create(
     mode: SessionMode,
+    task_id: Option<String>,
     app: tauri::AppHandle,
     workspace: tauri::State<'_, WorkspaceState>,
     sessions: tauri::State<'_, AgentSessions>,
+    tasks: tauri::State<'_, TaskState>,
+    task_events: tauri::State<'_, TaskEvents>,
 ) -> Result<CommandResult, ErrorBody> {
-    let root = workspace.get().ok_or_else(workspace_unavailable)?;
+    let workspace_root = workspace.get().ok_or_else(workspace_unavailable)?;
+    let target = match task_id.as_deref() {
+        Some(task_id) => Some(task::session_target(&tasks, &workspace_root, task_id)?),
+        None => None,
+    };
+    let root = target
+        .as_ref()
+        .map_or_else(|| workspace_root.clone(), |target| target.root.clone());
+
     let runtime = load_default().map_err(runtime_error_body)?;
     let client = runtime.openai_client().map_err(runtime_error_body)?;
 
@@ -482,19 +498,59 @@ pub(crate) fn session_create(
     .with_instructions(instructions)
     .with_tools(tools);
 
-    let sink = sessions.event_sink(app);
-    spawn_worker(
+    let sink = sessions.event_sink(app.clone());
+    let task_sink = task_events.sink(app);
+
+    let bound = match target {
+        Some(target) => match task::bind_session_to_task(
+            &tasks,
+            &workspace_root,
+            &target.task.task_id,
+            &info.session_id,
+        ) {
+            Ok(bound) => Some(bound),
+            Err(error) => {
+                mcp_shutdown.shutdown();
+                return Err(error);
+            }
+        },
+        None => None,
+    };
+
+    if let Err(error) = spawn_worker(
         &sessions,
         info.session_id.clone(),
         agent,
         sink.clone(),
         Arc::new(AtomicBool::new(false)),
         Some(mcp_shutdown),
-    )?;
+    ) {
+        if let Some(bound) = bound.as_ref()
+            && bound.started
+        {
+            match task::cancel_task_by_id(
+                &tasks,
+                &workspace_root,
+                &bound.task.task_id,
+                task_sink.as_ref(),
+            ) {
+                Ok(task) => {
+                    eprintln!("[task] 会话创建失败，任务 {} 已取消", task.task_id);
+                }
+                Err(rollback) => {
+                    eprintln!("[task] 会话创建失败且回滚失败：{}", rollback.message);
+                }
+            }
+        }
+        return Err(error);
+    }
     // 创建后立即下发一次会话状态；worker 在下一条命令前不会产生事件。
     sink.emit(CoreEvent::AgentSessionState {
         session: info.clone(),
     });
+    if let Some(bound) = bound {
+        task_sink.emit(CoreEvent::TaskUpdated { task: bound.task });
+    }
 
     Ok(CommandResult::Session { session: info })
 }

@@ -11,6 +11,7 @@
 //! 二次启动 → 唤回主窗口；关闭请求 → 隐藏窗口（核心常驻）；托盘"退出"才真正退出。
 
 mod agent;
+mod task;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -24,6 +25,10 @@ use lc_core::runtime::manual::{self, ManualError};
 use lc_core::runtime::portable::{self, VersionSpec};
 use lc_proto::{
     CommandResult, ContractMeta, ErrorBody, ErrorCode, NodeHealth, NodeRuntimeInfo, NodeStatus,
+};
+use task::{
+    TaskEvents, TaskState, task_apply, task_bind_session, task_cancel, task_create, task_diff,
+    task_discard, task_list, task_start,
 };
 
 // get_webview_window 来自 Manager trait（仅桌面侧的托盘/单实例路径用到）
@@ -88,14 +93,18 @@ fn workspace_root(state: tauri::State<'_, WorkspaceState>) -> CommandResult {
 }
 
 /// 打开目录作为工作区根并持久化；后续 fs 命令都使用该根。
+/// 切根后丢弃内存中的 task store（旧 `repo_root` 立即失效），
+/// 下次任务命令按新根重新加载。
 #[tauri::command]
 fn workspace_open(
     path: String,
     state: tauri::State<'_, WorkspaceState>,
+    tasks: tauri::State<'_, TaskState>,
 ) -> Result<CommandResult, ErrorBody> {
     let canonical = validate_workspace_dir(&path)?;
     let display = lc_core::fs::display_path(&canonical);
     state.set(canonical);
+    tasks.reset();
     if let Ok(store) = JsonConfigStore::at_default_path() {
         let _ = store_workspace_root(&store, Some(display.clone()));
     }
@@ -354,6 +363,8 @@ pub fn run() {
     builder
         .manage(WorkspaceState::new())
         .manage(AgentSessions::default())
+        .manage(TaskState::new())
+        .manage(TaskEvents::default())
         .invoke_handler(tauri::generate_handler![
             node_detect,
             node_set_manual,
@@ -368,7 +379,15 @@ pub fn run() {
             session_create,
             agent_send,
             agent_cancel,
-            approval_resolve
+            approval_resolve,
+            task_list,
+            task_create,
+            task_start,
+            task_cancel,
+            task_apply,
+            task_discard,
+            task_diff,
+            task_bind_session
         ])
         .setup(|app| {
             #[cfg(desktop)]
