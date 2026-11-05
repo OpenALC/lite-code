@@ -7,6 +7,7 @@ pub mod exec;
 pub mod r#loop;
 pub mod policy;
 pub mod session;
+pub mod shell;
 pub mod tools;
 
 pub use approval::{ApprovalCache, ApprovalDecision, ApprovalId, ApprovalQueue, ApprovalRequest};
@@ -17,4 +18,5 @@ pub use policy::{Policy, PolicyDecision, PolicyError, PolicyMode, PolicyRequest,
 pub use session::{
     ApprovalOutcome, AuthorizeOutcome, DEFAULT_MAX_TURNS, ModeChange, Session, SessionError,
 };
+pub use shell::{DEFAULT_TIMEOUT_MS, MAX_STREAM_BYTES, MAX_TIMEOUT_MS};
 pub use tools::{MAX_TOOLS, Risk, ToolRegistry, ToolRegistryError, ToolSpec};

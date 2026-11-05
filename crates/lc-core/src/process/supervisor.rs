@@ -9,9 +9,16 @@
 //!   `PR_SET_PDEATHSIG = SIGKILL`（父进程意外退出时内核直接杀，ARCHITECTURE
 //!   §3 的 PDEATHSIG），回收时对 `-pid` 进程组发 SIGKILL。libc 符号 FFI
 //!   直连——依赖白名单没有 libc crate，std 自身已链接 libc。
+//!
+//! 两种 spawn 形态：
+//! - [`spawn_tracked`](ProcessSupervisor::spawn_tracked)：stdio 全 null，供
+//!   长驻 / 探测类子进程；
+//! - [`spawn_captured`](ProcessSupervisor::spawn_captured)：stdout/stderr 走
+//!   管道、可指定 cwd，供 agent `shell` 工具一次性采集输出。每次执行使用独立
+//!   supervisor，超时 `kill_all` + drop 即整组回收。
 
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 
 use super::{ProcessError, ProcessSupervisor};
@@ -82,6 +89,44 @@ impl TrackedChild {
     }
 }
 
+/// [`spawn_captured`](ProcessSupervisor::spawn_captured) 返回的句柄：除生命周期
+/// 观察外，还接管子进程的 stdout/stderr 管道。
+///
+/// 调用方必须在子进程退出或被终止后读取管道到 EOF；supervisor drop 会关闭
+/// 整组，确保继承管道的孙进程一并消失，读取线程不会永久阻塞。
+pub struct CapturedChild {
+    tracked: TrackedChild,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+}
+
+impl CapturedChild {
+    /// 子进程 pid。
+    pub fn id(&self) -> u32 {
+        self.tracked.id()
+    }
+
+    /// 取出 stdout 管道（只能取一次）。
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.stdout.take()
+    }
+
+    /// 取出 stderr 管道（只能取一次）。
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.stderr.take()
+    }
+
+    /// 非阻塞收集 exit 状态，语义同 [`TrackedChild::try_wait`]。
+    pub fn try_wait(&self) -> Result<Option<ExitStatus>, ProcessError> {
+        self.tracked.try_wait()
+    }
+
+    /// 阻塞等待退出，语义同 [`TrackedChild::wait`]。
+    pub fn wait(&self) -> Result<ExitStatus, ProcessError> {
+        self.tracked.wait()
+    }
+}
+
 /// 真实实现（lc-cli / Tauri 壳共用）。
 pub struct RealProcessSupervisor {
     children: Vec<TrackedChild>,
@@ -94,6 +139,74 @@ impl RealProcessSupervisor {
     /// 关闭即终止全组——supervisor drop 的回收机制）。
     pub fn new() -> Result<Self, ProcessError> {
         new_impl()
+    }
+
+    /// 共享 spawn 路径。`capture` 决定 stdout/stderr 是管道还是 null；
+    /// `cwd` 只影响子进程工作目录，不影响组回收。
+    fn spawn_inner(
+        &mut self,
+        program: &Path,
+        args: &[&str],
+        cwd: Option<&Path>,
+        capture: bool,
+    ) -> Result<(TrackedChild, Option<ChildStdout>, Option<ChildStderr>), ProcessError> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            // stdin 恒 null：非交互执行不允许等待输入
+            .stdin(Stdio::null());
+        if capture {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        } else {
+            // 全 null：管道不读会撑爆阻塞长驻子进程；流式 IO 属后续 PTY lane
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(win::CREATE_NO_WINDOW);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // setsid：子进程自成会话与进程组（pgid == pid），回收按组发信号；
+            // PR_SET_PDEATHSIG：父进程退出时内核直接 SIGKILL。
+            // 闭包失败经 std 由 spawn 返回，不会留下"已 spawn 未设防"的进程。
+            unsafe {
+                cmd.pre_exec(|| {
+                    if unix_ffi::prctl(unix_ffi::PR_SET_PDEATHSIG, unix_ffi::SIGKILL) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if unix_ffi::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = spawn_command(program, cmd)?;
+        let pid = child.id();
+        // 管道句柄先取出，随后 Child 进入共享状态；spawn 失败时随 Child drop
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        // spawn 后第一件事入组；失败就地回收，绝不留孤儿（R5）
+        #[cfg(windows)]
+        let child = assign_to_job(&self.job, child)?;
+
+        let tracked = TrackedChild {
+            inner: Arc::new(ChildInner {
+                pid,
+                child: Mutex::new(child),
+            }),
+        };
+        self.children.push(tracked.clone());
+        Ok((tracked, stdout, stderr))
     }
 }
 
@@ -125,53 +238,22 @@ impl ProcessSupervisor for RealProcessSupervisor {
         program: &Path,
         args: &[&str],
     ) -> Result<TrackedChild, ProcessError> {
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            // 全 null：管道不读会撑爆阻塞长驻子进程；流式 IO 属后续 PTY lane
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        self.spawn_inner(program, args, None, false)
+            .map(|(tracked, _, _)| tracked)
+    }
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(win::CREATE_NO_WINDOW);
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // setsid：子进程自成会话与进程组（pgid == pid），回收按组发信号；
-            // PR_SET_PDEATHSIG：父进程退出时内核直接 SIGKILL。
-            // 闭包失败经 std 由 spawn 返回，不会留下"已 spawn 未设防"的进程。
-            unsafe {
-                cmd.pre_exec(|| {
-                    if unix_ffi::prctl(unix_ffi::PR_SET_PDEATHSIG, unix_ffi::SIGKILL) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if unix_ffi::setsid() < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-
-        let child = spawn_command(program, cmd)?;
-        let pid = child.id();
-
-        // spawn 后第一件事入组；失败就地回收，绝不留孤儿（R5）
-        #[cfg(windows)]
-        let child = assign_to_job(&self.job, child)?;
-
-        let tracked = TrackedChild {
-            inner: Arc::new(ChildInner {
-                pid,
-                child: Mutex::new(child),
-            }),
-        };
-        self.children.push(tracked.clone());
-        Ok(tracked)
+    fn spawn_captured(
+        &mut self,
+        program: &Path,
+        args: &[&str],
+        cwd: Option<&Path>,
+    ) -> Result<CapturedChild, ProcessError> {
+        let (tracked, stdout, stderr) = self.spawn_inner(program, args, cwd, true)?;
+        Ok(CapturedChild {
+            tracked,
+            stdout,
+            stderr,
+        })
     }
 
     fn kill_all(&mut self) -> Result<(), ProcessError> {

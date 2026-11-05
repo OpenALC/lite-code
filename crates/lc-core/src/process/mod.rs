@@ -12,9 +12,10 @@
 //!   内部状态），drop 句柄不影响跟踪，整组回收走 kill_all / supervisor drop；
 //! - **入组先于一切**：spawn 后第一件事纳入整组机制，任何一步失败就地 kill
 //!   已启动的子进程，绝不留孤儿；
-//! - 子进程 stdin/stdout/stderr 全部 `Stdio::null()`：管道不读会撑爆阻塞
-//!   长驻子进程，而流式 IO 是后续 PTY lane 的事（docs/AGENT.md §9：本 trait
-//!   只需"支持长驻会话"）；
+//! - 长驻子进程默认 stdin/stdout/stderr 全部 `Stdio::null()`：管道不读会撑爆
+//!   阻塞子进程，而流式 IO 是后续 PTY lane 的事（docs/AGENT.md §9：本 trait
+//!   只需"支持长驻会话"）；需要采集一次性输出的调用方走
+//!   [`ProcessSupervisor::spawn_captured`]；
 //! - 错误映射 [`lc_proto::ErrorCode`]，风格对齐 fs lane 的 `FsError`。
 //!
 //! 测试策略：生命周期语义只能靠真实进程验证（docs/PLAN.md §5：R4/R5 这类
@@ -31,7 +32,7 @@ pub mod supervisor;
 #[cfg(test)]
 mod tests;
 
-pub use supervisor::{RealProcessSupervisor, TrackedChild};
+pub use supervisor::{CapturedChild, RealProcessSupervisor, TrackedChild};
 
 use std::path::Path;
 use std::process::ExitStatus;
@@ -89,6 +90,17 @@ pub trait ProcessSupervisor: Send + Sync {
         program: &Path,
         args: &[&str],
     ) -> Result<TrackedChild, ProcessError>;
+
+    /// 带 stdout/stderr 管道地 spawn `<program> args...`，可指定工作目录。
+    /// stdin 恒为 null。调用方负责读尽两个管道；整组回收仍走
+    /// [`kill_all`](Self::kill_all) / supervisor drop（shell 工具每次执行
+    /// 使用独立 supervisor，超时即整组终止）。
+    fn spawn_captured(
+        &mut self,
+        program: &Path,
+        args: &[&str],
+        cwd: Option<&Path>,
+    ) -> Result<CapturedChild, ProcessError>;
 
     /// 立即终止并回收全部被跟踪子进程（整组，含孙进程）；成功后注册表清空，
     /// 本 supervisor 可继续使用。尽力而为：即使部分失败也终止其余进程，

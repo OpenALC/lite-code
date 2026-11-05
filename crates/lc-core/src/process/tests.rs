@@ -4,6 +4,7 @@
 //! 平台分支：windows 用 `cmd /c`，unix 用 `sh -c`。不依赖网络——
 //! `ping` 只打 127.0.0.1 回环，仅用作可控时长的存活命令。
 
+use std::io::Read;
 use std::path::Path;
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
@@ -229,4 +230,64 @@ fn tracked_child_kill_is_effective_and_idempotent() {
     let status = wait_exited(&child, Duration::from_secs(10)).expect("killed in time");
     assert!(!status.success(), "{status:?}");
     child.kill().expect("kill on already-exited must be Ok");
+}
+
+/// captured spawn：stdout/stderr 分离、exit code 与 cwd 均正确传递。
+#[test]
+fn captured_spawn_collects_streams_and_uses_cwd() {
+    let mut sup = supervisor();
+    let dir = std::env::temp_dir().join(format!(
+        "lc-process-captured-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+
+    let (program, args) = if cfg!(windows) {
+        (
+            "cmd".to_string(),
+            vec!["/c".into(), "echo out& echo err 1>&2& exit /b 3".into()],
+        )
+    } else {
+        (
+            "sh".to_string(),
+            vec!["-c".into(), "printf out; printf err >&2; exit 3".into()],
+        )
+    };
+    let mut child = sup
+        .spawn_captured(Path::new(&program), &str_args(&args), Some(&dir))
+        .expect("spawn captured");
+    let mut stdout = child.take_stdout().expect("stdout pipe");
+    let mut stderr = child.take_stderr().expect("stderr pipe");
+    let status = child.wait().expect("wait");
+
+    let mut out = String::new();
+    stdout.read_to_string(&mut out).expect("read stdout");
+    let mut err = String::new();
+    stderr.read_to_string(&mut err).expect("read stderr");
+    assert_eq!(status.code(), Some(3), "{status:?}");
+    assert!(out.contains("out"), "{out}");
+    assert!(err.contains("err"), "{err}");
+
+    let (program, args) = if cfg!(windows) {
+        ("cmd".to_string(), vec!["/c".into(), "cd".into()])
+    } else {
+        ("sh".to_string(), vec!["-c".into(), "pwd".into()])
+    };
+    let mut cwd_child = sup
+        .spawn_captured(Path::new(&program), &str_args(&args), Some(&dir))
+        .expect("spawn cwd probe");
+    let mut cwd_stdout = cwd_child.take_stdout().expect("stdout pipe");
+    assert!(cwd_child.take_stderr().is_some());
+    assert_eq!(cwd_child.wait().expect("wait").code(), Some(0));
+    let mut cwd = String::new();
+    cwd_stdout.read_to_string(&mut cwd).expect("read cwd");
+    let reported = Path::new(cwd.trim());
+    assert!(reported.is_absolute(), "{cwd}");
+    assert_eq!(reported.file_name(), dir.file_name(), "{cwd}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

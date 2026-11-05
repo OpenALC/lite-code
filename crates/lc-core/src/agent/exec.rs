@@ -1,6 +1,7 @@
 //! 内置工具执行（docs/AGENT.md §4）：read_file / write_file / edit_file /
-//! glob / grep。所有路径先经 `ensure_within_root`；shell 等执行类工具留给
-//! PTY/ProcessSupervisor lane，当前明确返回 Unsupported。
+//! glob / grep / shell。文件路径先经 `ensure_within_root`；`shell` 由
+//! [`super::shell`] 实现（ProcessSupervisor 整组回收 + 输出裁剪），其余执行类
+//! 工具仍明确返回 Unsupported。
 
 use std::path::{Path, PathBuf};
 
@@ -52,6 +53,10 @@ pub enum ToolError {
     AmbiguousMatch(usize),
     #[error("正则无效：{0}")]
     Regex(String),
+    #[error("命令执行超时（{timeout_ms} ms），已终止进程树")]
+    Timeout { timeout_ms: u64 },
+    #[error("shell 不可用：{0}")]
+    ShellUnavailable(String),
     #[error("工具暂未支持：{0}")]
     Unsupported(String),
 }
@@ -253,8 +258,9 @@ impl ToolExecutor for LocalToolExecutor {
             "edit_file" => self.edit_file(&call.args),
             "glob" => self.glob(&call.args),
             "grep" => self.grep(&call.args),
+            "shell" => super::shell::execute_shell(&self.root, &call.args),
             other => Err(ToolError::Unsupported(format!(
-                "{other}（执行类工具待 PTY/ProcessSupervisor lane）"
+                "{other}（该执行类工具尚未接入）"
             ))),
         }
     }
@@ -376,11 +382,11 @@ mod tests {
     }
 
     #[test]
-    fn shell_is_explicitly_unsupported_for_now() {
+    fn other_execution_tools_remain_unsupported() {
         let root = temp_root("shell");
         let executor = LocalToolExecutor::new(&root);
         let err = executor
-            .execute(&ToolCall::new("shell", json!({"command": "echo hi"})))
+            .execute(&ToolCall::new("ssh_exec", json!({"command": "echo hi"})))
             .unwrap_err();
         assert!(matches!(err, ToolError::Unsupported(_)));
         let _ = fs::remove_dir_all(&root);
