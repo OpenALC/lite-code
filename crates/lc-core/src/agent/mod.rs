@@ -1,5 +1,5 @@
-//! Agent harness（docs/AGENT.md）：工具注册表与权限策略先行，
-//! 会话循环 / LLM 网关 / 压缩 / MCP 由后续 lane 接入。
+//! Agent harness（docs/AGENT.md）：工具注册表、会话循环 / LLM 网关 / 压缩。
+//! MCP 是独立的 `crate::mcp` lane，通过 [`ToolRegistry::with_mcp_tools`] 接入。
 
 pub mod approval;
 pub mod collector;

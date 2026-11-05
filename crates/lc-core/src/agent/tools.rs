@@ -75,7 +75,8 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 默认工具集，恰好 12 个；MCP 工具后续替换 `mcp_tool` 占位。
+    /// 默认工具集，恰好 12 个；`mcp_tool` 是动态 MCP 工具的占位，
+    /// 由 [`ToolRegistry::with_mcp_tools`] 替换。
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
         for (name, risk) in [
@@ -97,6 +98,20 @@ impl ToolRegistry {
                 .expect("内置工具清单必须合法");
         }
         registry
+    }
+
+    /// 移除占位 `mcp_tool` 后注册动态 MCP 工具；只注册到上限，多余的静默
+    /// 截断（保持 harness 的 12 工具预算）。`task` / `db_query` 占位保留。
+    pub fn with_mcp_tools(mut self, specs: impl IntoIterator<Item = ToolSpec>) -> Self {
+        self.specs.retain(|spec| spec.name != "mcp_tool");
+        for spec in specs {
+            match self.register(spec) {
+                Ok(()) => {}
+                Err(ToolRegistryError::Duplicate(_)) => continue,
+                Err(ToolRegistryError::TooMany { .. }) => break,
+            }
+        }
+        self
     }
 
     pub fn register(&mut self, spec: ToolSpec) -> Result<(), ToolRegistryError> {
@@ -285,5 +300,49 @@ mod tests {
         let tools = registry.llm_tools();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "read_file");
+    }
+
+    #[test]
+    fn with_mcp_tools_replaces_placeholder_without_exceeding_budget() {
+        let registry = ToolRegistry::with_builtins().with_mcp_tools([]);
+        assert_eq!(registry.len(), MAX_TOOLS - 1);
+        assert!(registry.get("mcp_tool").is_none());
+        assert!(registry.get("task").is_some());
+        assert!(registry.get("db_query").is_some());
+    }
+
+    #[test]
+    fn with_mcp_tools_caps_dynamic_tools_at_max() {
+        let specs =
+            (0..5).map(|index| ToolSpec::new(format!("mcp_server_tool_{index}"), Risk::Network));
+        let registry = ToolRegistry::with_builtins().with_mcp_tools(specs);
+
+        assert_eq!(registry.len(), MAX_TOOLS);
+        assert!(registry.get("mcp_tool").is_none());
+        let dynamic: Vec<&str> = registry
+            .iter()
+            .filter(|spec| spec.name.starts_with("mcp_server_"))
+            .map(|spec| spec.name.as_str())
+            .collect();
+        assert_eq!(dynamic, ["mcp_server_tool_0"]);
+        assert_eq!(
+            registry.get("mcp_server_tool_0").map(|spec| spec.risk),
+            Some(Risk::Network)
+        );
+    }
+
+    #[test]
+    fn with_mcp_tools_skips_duplicates() {
+        let existing = ToolRegistry::with_builtins();
+        let registry = existing.with_mcp_tools([
+            ToolSpec::new("read_file", Risk::Network),
+            ToolSpec::new("mcp_ok", Risk::Network),
+        ]);
+        assert_eq!(
+            registry.get("read_file").map(|spec| spec.risk),
+            Some(Risk::Read)
+        );
+        assert!(registry.get("mcp_ok").is_some());
+        assert_eq!(registry.len(), MAX_TOOLS);
     }
 }

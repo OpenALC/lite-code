@@ -57,6 +57,8 @@ pub enum ToolError {
     Timeout { timeout_ms: u64 },
     #[error("shell 不可用：{0}")]
     ShellUnavailable(String),
+    #[error("MCP 工具错误：{0}")]
+    Mcp(String),
     #[error("工具暂未支持：{0}")]
     Unsupported(String),
 }
