@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use lc_core::agent::{
-    ApprovalDecision, ApprovalRequest, LoopError, LoopOutcome, PolicyMode, Session, ToolError,
-    ToolOutput,
+    ApprovalDecision, ApprovalRequest, CompactionRecord, LoopError, LoopOutcome, PolicyMode,
+    Session, ToolError, ToolOutput,
 };
 use lc_proto::{CoreEvent, ErrorBody, ErrorCode, EventEnvelope};
 
@@ -80,6 +80,14 @@ pub fn human_output(event: &CoreEvent, show_thinking: bool) -> HumanOutput {
         } => HumanOutput::Stderr(format!(
             "[usage] input={input} output={output} cached={cached}\n"
         )),
+        CoreEvent::AgentCompacted {
+            before_tokens,
+            after_tokens,
+            removed_messages,
+            ..
+        } => HumanOutput::Stderr(format!(
+            "[compact] {removed_messages} messages, {before_tokens} -> {after_tokens} tokens\n"
+        )),
         CoreEvent::Error { error } => HumanOutput::Stderr(format!("[error] {}\n", error.message)),
         // 审批由调用方打印完整字段；done/session 等事件只占 JSON 流。
         CoreEvent::AgentApprovalRequired { .. }
@@ -109,6 +117,18 @@ pub fn tool_result_event(
             ok: false,
             text: error.to_string(),
         },
+    }
+}
+
+/// 压缩记录 → 契约事件。
+pub fn compaction_event(session_id: &str, record: &CompactionRecord) -> CoreEvent {
+    CoreEvent::AgentCompacted {
+        session_id: session_id.into(),
+        record_id: record.id,
+        before_tokens: record.before_tokens,
+        after_tokens: record.after_tokens,
+        removed_messages: record.removed_messages,
+        summary: record.summary.clone(),
     }
 }
 
@@ -175,6 +195,9 @@ pub fn loop_error_event(error: &LoopError) -> CoreEvent {
         LoopError::Provider { code, message } => ErrorBody::new(*code, message.clone()),
         LoopError::UnknownTool(name) => {
             ErrorBody::new(ErrorCode::InvalidArgument, format!("未知工具：{name}"))
+        }
+        LoopError::ContextOverflow { .. } => {
+            ErrorBody::new(ErrorCode::InvalidArgument, error.to_string())
         }
         other => ErrorBody::new(ErrorCode::Internal, other.to_string()),
     };
@@ -421,6 +444,46 @@ mod tests {
         };
         assert_eq!(error.code, ErrorCode::InvalidArgument);
         assert!(error.message.contains("nope"));
+    }
+
+    #[test]
+    fn context_overflow_maps_to_invalid_argument() {
+        let CoreEvent::Error { error } = loop_error_event(&LoopError::ContextOverflow {
+            used_tokens: 500_000,
+            context_k: 400,
+        }) else {
+            panic!("必须映射为 error 事件");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("500000"), "{}", error.message);
+        assert!(error.message.contains("400k"), "{}", error.message);
+    }
+
+    #[test]
+    fn compaction_maps_to_event_and_human_line() {
+        let record = CompactionRecord {
+            id: 2,
+            before_tokens: 12_300,
+            after_tokens: 4_100,
+            removed_messages: 6,
+            summary: "已压缩 6 条早期消息".into(),
+        };
+        let event = compaction_event("cli-1", &record);
+        assert_eq!(
+            event,
+            CoreEvent::AgentCompacted {
+                session_id: "cli-1".into(),
+                record_id: 2,
+                before_tokens: 12_300,
+                after_tokens: 4_100,
+                removed_messages: 6,
+                summary: "已压缩 6 条早期消息".into(),
+            }
+        );
+        assert_eq!(
+            human_output(&event, false),
+            HumanOutput::Stderr("[compact] 6 messages, 12300 -> 4100 tokens\n".into())
+        );
     }
 
     #[test]

@@ -719,8 +719,13 @@ mod tests {
         assert_eq!(requests.len(), 2);
         // 第一条请求只有用户消息，未触发压缩。
         assert_eq!(requests[0].input.len(), 1);
-        // 第二条请求的 input 已从 8 条压缩为 1 条摘要 + 最近 4 条。
-        assert_eq!(requests[1].input.len(), 1 + KEEP_RECENT_MESSAGES);
+        // 第二条请求已压缩：首条是摘要，保留段从完整工具序列开始
+        // （切点可能为保持 call/output 配对而比 KEEP_RECENT_MESSAGES 多保留 1 条）。
+        assert!(
+            requests[1].input.len() <= 1 + KEEP_RECENT_MESSAGES + 1,
+            "压缩后消息数：{}",
+            requests[1].input.len()
+        );
         let LlmInput::Message { role, content } = &requests[1].input[0] else {
             panic!("expected summary message first");
         };

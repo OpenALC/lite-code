@@ -17,9 +17,9 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lc_core::agent::{
-    AgentLoop, ApprovalDecision as CoreApprovalDecision, LocalToolExecutor, LoopError, LoopOutcome,
-    Session, SessionError, ToolError, ToolOutput, ToolRegistry, llm_event, loop_outcome,
-    mode_from_contract, session_info,
+    AgentLoop, ApprovalDecision as CoreApprovalDecision, CompactionRecord, LocalToolExecutor,
+    LoopError, LoopOutcome, Session, SessionError, ToolError, ToolOutput, ToolRegistry, llm_event,
+    loop_outcome, mode_from_contract, session_info,
 };
 use lc_core::llm::{LlmEvent, RuntimeError, load_default};
 use lc_proto::{
@@ -211,6 +211,14 @@ impl WorkerEmitter {
         self.emit(tool_result_event(&self.session_id, call_id, result));
     }
 
+    /// 上下文压缩记录（docs/AGENT.md §6：不静默截断）。
+    fn forward_compaction(&self, record: &CompactionRecord) {
+        if self.cancel.load(Ordering::Acquire) {
+            return;
+        }
+        self.emit(compaction_event(&self.session_id, record));
+    }
+
     /// 取消终态。`Session::cancel` 是永久状态且会清空审批队列，直接调用会让
     /// 同一会话无法继续；这里用快照把本轮标记为 cancelled，latch 由 worker
     /// 在完成后复位，保证下一条消息仍可运行。
@@ -239,6 +247,17 @@ fn tool_result_event(
         call_id: call_id.into(),
         ok,
         text,
+    }
+}
+
+fn compaction_event(session_id: &str, record: &CompactionRecord) -> CoreEvent {
+    CoreEvent::AgentCompacted {
+        session_id: session_id.into(),
+        record_id: record.id,
+        before_tokens: record.before_tokens,
+        after_tokens: record.after_tokens,
+        removed_messages: record.removed_messages,
+        summary: record.summary.clone(),
     }
 }
 
@@ -372,9 +391,14 @@ fn spawn_worker(
     };
     // 工具结果只在循环内部可见 call id：用观察者补发 agent:tool_result。
     let observer = emitter.clone();
-    let agent = agent.with_tool_observer(Box::new(move |call_id, result| {
-        observer.forward_tool_result(call_id, result)
-    }));
+    let compaction_observer = emitter.clone();
+    let agent = agent
+        .with_tool_observer(Box::new(move |call_id, result| {
+            observer.forward_tool_result(call_id, result)
+        }))
+        .with_compaction_observer(Box::new(move |record| {
+            compaction_observer.forward_compaction(record)
+        }));
 
     let worker = Worker {
         id: id.clone(),
@@ -411,7 +435,8 @@ pub(crate) fn session_create(
     let runtime = load_default().map_err(runtime_error_body)?;
     let client = runtime.openai_client().map_err(runtime_error_body)?;
 
-    let session = new_session(sessions.allocate_id(), mode);
+    let session = new_session(sessions.allocate_id(), mode)
+        .with_context(runtime.context_k, runtime.compress_at_k);
     let info = session_info(&session);
 
     let registry = ToolRegistry::with_builtins();
@@ -576,6 +601,9 @@ fn loop_error_body(error: &LoopError) -> ErrorBody {
         }
         LoopError::Tool(error) => tool_error_body(error),
         LoopError::Provider { code, message } => ErrorBody::new(*code, message.clone()),
+        LoopError::ContextOverflow { .. } => {
+            ErrorBody::new(ErrorCode::InvalidArgument, error.to_string())
+        }
     }
 }
 
@@ -827,6 +855,36 @@ mod tests {
         assert_eq!(
             loop_error_body(&LoopError::Tool(ToolError::ShellUnavailable("pwsh".into()))).code,
             ErrorCode::ShellUnavailable
+        );
+
+        let overflow = loop_error_body(&LoopError::ContextOverflow {
+            used_tokens: 500_000,
+            context_k: 400,
+        });
+        assert_eq!(overflow.code, ErrorCode::InvalidArgument);
+        assert!(overflow.message.contains("500000"), "{}", overflow.message);
+        assert!(overflow.message.contains("400k"), "{}", overflow.message);
+    }
+
+    #[test]
+    fn compaction_record_maps_to_contract_event() {
+        let record = CompactionRecord {
+            id: 3,
+            before_tokens: 12_300,
+            after_tokens: 4_100,
+            removed_messages: 7,
+            summary: "已压缩 7 条早期消息".into(),
+        };
+        assert_eq!(
+            compaction_event("s1", &record),
+            CoreEvent::AgentCompacted {
+                session_id: "s1".into(),
+                record_id: 3,
+                before_tokens: 12_300,
+                after_tokens: 4_100,
+                removed_messages: 7,
+                summary: "已压缩 7 条早期消息".into(),
+            }
         );
     }
 
@@ -1241,11 +1299,15 @@ mod tests {
             mode: SessionMode::Auto,
             turn: 1,
             max_turns: 25,
+            context_k: 400,
+            compress_at_k: 300,
             cancelled: false,
         };
         let json = serde_json::to_value(&info).expect("serialize");
         assert_eq!(json["session_id"], "s1");
         assert_eq!(json["max_turns"], 25);
+        assert_eq!(json["context_k"], 400);
+        assert_eq!(json["compress_at_k"], 300);
 
         let prompt = lc_proto::ApprovalPrompt {
             approval_id: 3,

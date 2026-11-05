@@ -13,16 +13,17 @@ use clap::{Parser, Subcommand};
 
 use lc_cli::agent_run::{
     ApprovalAction, EXIT_ERROR, HumanOutput, JsonEventLines, approval_action, approval_auto_line,
-    approval_details, build_session, error_exit_code, human_output, loop_error_event,
-    mode_from_str, outcome_exit_code, resolve_instructions, resolve_workspace, tool_result_event,
+    approval_details, build_session, compaction_event, error_exit_code, human_output,
+    loop_error_event, mode_from_str, outcome_exit_code, resolve_instructions, resolve_workspace,
+    tool_result_event,
 };
 use lc_cli::{
     command_result_json, contract_meta_json, node_info_human, node_info_json, node_status_human,
     node_status_json, set_manual_report_json, shell_report_json,
 };
 use lc_core::agent::{
-    AgentLoop, DEFAULT_MAX_TURNS, LocalToolExecutor, LoopOutcome, ToolError, ToolOutput,
-    ToolRegistry, ToolResultObserver, llm_event, loop_outcome,
+    AgentLoop, CompactionObserver, DEFAULT_MAX_TURNS, LocalToolExecutor, LoopOutcome, ToolError,
+    ToolOutput, ToolRegistry, ToolResultObserver, llm_event, loop_outcome,
 };
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_node_runtime};
 use lc_core::fs::{RealPathResolver, read_dir_level};
@@ -438,8 +439,10 @@ fn run_agent(
     let session_id = format!("cli-{}", std::process::id());
     let registry = ToolRegistry::with_builtins();
     let tools = registry.llm_tools();
+    let session = build_session(session_id.clone(), mode, max_turns)
+        .with_context(runtime.context_k, runtime.compress_at_k);
     let mut agent_loop = AgentLoop::new(
-        build_session(session_id.clone(), mode, max_turns),
+        session,
         Box::new(client),
         Box::new(LocalToolExecutor::new(workspace.clone())),
         registry,
@@ -448,6 +451,16 @@ fn run_agent(
     )
     .with_instructions(resolve_instructions(instructions.as_deref()))
     .with_tools(tools);
+
+    let compaction_emitter = Arc::clone(&emitter);
+    let compaction_session = session_id.clone();
+    let compaction_observer: CompactionObserver = Box::new(move |record| {
+        emit(
+            &compaction_emitter,
+            &compaction_event(&compaction_session, record),
+        );
+    });
+    agent_loop = agent_loop.with_compaction_observer(compaction_observer);
 
     let observer_emitter = Arc::clone(&emitter);
     let observer_session = session_id.clone();

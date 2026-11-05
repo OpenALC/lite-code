@@ -92,35 +92,33 @@ pub fn compact(
 
     // 2. 早期对话摘要：前缀替换为一条自描述 summary，最近 4 条原样保留。
     if u64::from(tokens) > token_limit(compress_at_k) {
-        let prefix = messages.len() - KEEP_RECENT_MESSAGES;
-        let removed = u32::try_from(prefix).unwrap_or(u32::MAX);
-        summary = conversation_summary(
-            removed,
-            &first_user,
-            &tool_names,
-            KEEP_RECENT_MESSAGES,
-            slimmed,
-            false,
-        );
-        messages.splice(0..prefix, [LlmInput::new("user", summary.clone())]);
-        removed_messages = removed_messages.saturating_add(removed);
-        tokens = estimate_tokens(instructions, tools, messages);
+        let prefix = safe_cut(messages, messages.len() - KEEP_RECENT_MESSAGES);
+        if prefix > 0 {
+            let removed = u32::try_from(prefix).unwrap_or(u32::MAX);
+            let kept = messages.len() - prefix;
+            summary = conversation_summary(removed, &first_user, &tool_names, kept, slimmed, false);
+            messages.splice(0..prefix, [LlmInput::new("user", summary.clone())]);
+            removed_messages = removed_messages.saturating_add(removed);
+            tokens = estimate_tokens(instructions, tools, messages);
+        }
     }
 
     // 3. 仍超 context 上限：保留最后 2 条 + 一条摘要；没有可删内容则保持原样。
     if u64::from(tokens) > token_limit(context_k) && messages.len() > AGGRESSIVE_KEEP_MESSAGES {
-        let prefix = messages.len() - AGGRESSIVE_KEEP_MESSAGES;
-        let removed = u32::try_from(prefix).unwrap_or(u32::MAX);
-        removed_messages = removed_messages.saturating_add(removed);
-        summary = conversation_summary(
-            removed_messages,
-            &first_user,
-            &tool_names,
-            AGGRESSIVE_KEEP_MESSAGES,
-            slimmed,
-            true,
-        );
-        messages.splice(0..prefix, [LlmInput::new("user", summary.clone())]);
+        let prefix = safe_cut(messages, messages.len() - AGGRESSIVE_KEEP_MESSAGES);
+        if prefix > 0 {
+            let removed = u32::try_from(prefix).unwrap_or(u32::MAX);
+            removed_messages = removed_messages.saturating_add(removed);
+            summary = conversation_summary(
+                removed_messages,
+                &first_user,
+                &tool_names,
+                messages.len() - prefix,
+                slimmed,
+                true,
+            );
+            messages.splice(0..prefix, [LlmInput::new("user", summary.clone())]);
+        }
     }
 
     if slimmed == 0 && removed_messages == 0 {
@@ -137,6 +135,21 @@ pub fn compact(
         removed_messages,
         summary,
     })
+}
+
+/// 把前缀切点回退到安全的工具序列边界：OpenAI Responses 要求
+/// `function_call_output` 紧跟对应的 `function_call`，因此切点不能落在
+/// output 上；落在 `Message` 或 `FunctionCall` 上都可以（后者连同其 output
+/// 一起保留，前面补摘要消息）。
+fn safe_cut(messages: &[LlmInput], keep_from: usize) -> usize {
+    let mut cut = keep_from.min(messages.len());
+    while cut > 0
+        && cut < messages.len()
+        && matches!(messages[cut], LlmInput::FunctionCallOutput { .. })
+    {
+        cut -= 1;
+    }
+    cut
 }
 
 fn token_limit(k: u32) -> u64 {
@@ -372,6 +385,36 @@ mod tests {
         assert!(content.contains("read_file、shell"), "{content}");
         assert!(content.contains("最近 4 条消息保持原样"), "{content}");
         assert!(content.chars().count() < 500, "摘要必须保持短小：{content}");
+    }
+
+    #[test]
+    fn cut_never_orphans_function_call_output() {
+        let mut messages = vec![
+            LlmInput::new("user", big_text('u', 5000)),
+            LlmInput::function_call("c1", "read_file", "{}"),
+            LlmInput::function_call_output("c1", "short"),
+            LlmInput::function_call("c2", "read_file", "{}"),
+            LlmInput::function_call_output("c2", "short"),
+            LlmInput::function_call("c3", "read_file", "{}"),
+            LlmInput::function_call_output("c3", big_text('x', 8000)),
+            LlmInput::new("assistant", "ok"),
+        ];
+        let mut next_id = 0;
+        compact(&mut messages, None, &[], 400, 1, &mut next_id).expect("compaction");
+
+        // 首条是摘要；之后每个 output 前面必须有同 call id 的 function_call。
+        assert!(matches!(&messages[0], LlmInput::Message { .. }));
+        let mut pending: Option<&str> = None;
+        for message in &messages[1..] {
+            match message {
+                LlmInput::FunctionCall { call_id, .. } => pending = Some(call_id),
+                LlmInput::FunctionCallOutput { call_id, .. } => {
+                    assert_eq!(pending, Some(call_id.as_str()), "孤儿工具输出：{call_id}");
+                    pending = None;
+                }
+                LlmInput::Message { .. } => {}
+            }
+        }
     }
 
     #[test]
