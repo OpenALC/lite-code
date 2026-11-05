@@ -1,10 +1,10 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`f2140d1`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`55b80a4`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
-> P1 发布线：tag `v0.1.1-preview.1` 已推送，release workflow 构建中。
-> P2 准备：根 README、`docs/releases/0.2.1-preview.1.md` 已就绪。
+> P1 发布线：`v0.1.1-preview.1` 构建成功，publish 因 AppDir 重名失败；draft 已按正确资产清单手动重建。
+> P2 发布线：`v0.2.1-preview.1` 已打 tag，release workflow（已修复 publish）构建中。
 
 ## 当前位置一览
 
@@ -26,8 +26,9 @@
 | 性能 | ✅ 托盘 RSS 29.5MB / 冷启动 48ms / 热启动 47ms / 20 次开关残留 0；activeRss 无脚本入口未测 |
 | 10k 文件展开 | ✅ `lc-cli fs read-dir` 首层 1 万文件 87/96/97ms（目标 <200ms） |
 | headless CLI | ✅ `fs read-dir` 复用 UI 同一实现，输出契约 JSON |
-| P1 发布 | ⏳ `v0.1.1-preview.1` 已打 tag，Windows/Linux 构建与 draft 进行中 |
-| P2 准备 | ✅ 根 README（未签名提示/Node 降级）+ `docs/releases/0.2.1-preview.1.md` |
+| P1 发布 | ✅ `v0.1.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 个资产） |
+| P2 发布 | ⏳ `v0.2.1-preview.1` tag 已推送；publish 已改为只上传安装包，构建中 |
+| 发布流程 | ✅ 修复 AppDir 递归上传与重名；checksums/资产名统一 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
 
@@ -82,9 +83,9 @@
 
 ## 待办（按序）
 
-1. 确认 `v0.1.1-preview.1` release draft 产出（Windows NSIS / Linux AppImage+deb / SHA256SUMS）。
+1. 确认 `v0.2.1-preview.1` release draft（发布流程修复后首个自动 draft）。
 2. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-3. P2：五 lane 合流冒烟，版本 `0.2.1-preview.1`。
+3. 下一个里程碑 P3：Agent Loop / Tools+Policy / Integrations / Agent UI。
 
 ## 本地验证命令（与 CI 等价）
 
