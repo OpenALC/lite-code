@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Value, json};
 
-use crate::agent::exec::{ToolCall, ToolError, ToolExecutor, ToolOutput};
-use crate::agent::tools::{Risk, ToolSpec};
+use crate::agent::{Risk, ToolCall, ToolError, ToolExecutor, ToolOutput, ToolSpec};
 
 use super::McpError;
 use super::client::{McpClient, StdioTransport};

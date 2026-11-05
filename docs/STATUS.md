@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`28e86b6`；契约 v0.4。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`774e7dd`；契约 v0.4。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -44,8 +44,10 @@
 | P3 CLI | ✅ `lc-cli agent run --prompt ... --json/--yes`，headless 审批与退出码 |
 | P3 Agent UI 视图 | ✅ 会话流、工具卡、内联审批三按钮、composer、yolo 确认、上下文刻度条 |
 | P3 上下文压缩 | ✅ 预算/阈值、工具输出瘦身、早期摘要、激进压缩、`agent:compacted` 记录；工具配对安全 |
+| P3 MCP | ✅ `.mcp.json`/用户配置、stdio JSON-RPC、握手/工具列表/调用、动态工具注册与执行 |
+| P3 环境契约/记忆 | ✅ 平台/shell/工作区 XML 注入；全局+项目 memory.md、AGENTS.md/CLAUDE.md 读取 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `e83e1d7` 已绿；`28e86b6` 与后续 docs 提交由后台 watcher 验证 |
+| main CI | ✅ `958d4fe` 全绿；`774e7dd` 由后台 watcher 验证 |
 
 ## 本轮完成
 
@@ -139,6 +141,13 @@
    - 压缩顺序：旧工具输出瘦身 → 早期摘要 → 激进压缩；切点保证 call/output 配对。
    - UI 阈值刻度、超阈值变黄、压缩后闪烁与可展开记录；CLI/Tauri 均发射压缩事件。
    - 本地 mock Responses 二轮闭环：读两个 12KB 文件 → 压缩 6572→3583 tokens → 继续并 done。
+30. **MCP Host**（`d2951f6`，subagent 交付）
+   - `.mcp.json` + `~/.lite-code/mcp.json` 合并；stdio JSON-RPC 握手、`tools/list`、`tools/call`、超时与进程树回收。
+   - `mcp_<server>_<tool>` 动态注册（`ToolRegistry::with_mcp_tools` 替换 `mcp_tool` 占位）；`McpExecutor` 路由 + 内置执行器 fallback。
+   - Python stdio 假 server 集成测试；CLI 闭环：模型请求 `mcp_echo_echo` → `echo:hi` → `done`。
+31. **环境契约与记忆**（`774e7dd`）
+   - system prompt 注入 `<environment>`（平台/架构/shell 方言/路径分隔符/工作区/PATH 工具）。
+   - 全局 `~/.lite-code/memory.md`、项目 `.lite-code/memory.md`、`AGENTS.md`/`CLAUDE.md` 读取并注入；追加写入走 `.bak` + 原子替换。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -153,7 +162,7 @@
 1. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
 2. P3 出口验收：用真实 provider key 完成一次「读文件 → 改文件 → 跑测试 → 汇报」多轮任务；验证审批三按钮、yolo 每次启动确认、编辑器↔Agent 切换无损。
 3. P3 发布准备：版本号升 `0.3.1-preview.1`，打 tag 发 draft（真实任务验收通过后再打）。
-4. 已知限制：取消不强制中断已发出的 HTTP 流；审批挂起期间取消会留下 pending 审批（UI 正常路径不触发）。
+4. 已知限制：取消不强制中断已发出的 HTTP 流；审批挂起期间取消会留下 pending 审批（UI 正常路径不触发）；MCP 仅支持 stdio 与单工具槽位（保留 task/db_query 占位）。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -180,5 +189,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 175 · lc-cli 33 · lc-proto 10 · lc-desktop 28 · web 166（12 文件）· 合计 **412**。
+lc-core 204 · lc-cli 33 · lc-proto 10 · lc-desktop 28 · web 166（12 文件）· 合计 **441**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。

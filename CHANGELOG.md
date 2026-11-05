@@ -25,3 +25,5 @@
 - `lc-cli agent run`：headless 多轮任务、JSON 事件流、`--yes` 自动审批、退出码 0/1/2
 - Agent UI：会话流、工具卡、内联审批三按钮、composer、yolo 二次确认、上下文刻度条与可展开压缩记录
 - 上下文压缩：工具输出瘦身 → 早期摘要 → 激进压缩；切点保证 `function_call`/`output` 配对，压缩后继续当前任务
+- MCP Host：stdio JSON-RPC、`.mcp.json`/用户配置合并、动态工具注册与执行、超时/进程树回收
+- 会话 instructions：注入平台/shell/工作区环境契约，以及全局/项目 memory.md、AGENTS.md/CLAUDE.md 记忆

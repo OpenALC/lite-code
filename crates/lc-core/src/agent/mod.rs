@@ -31,6 +31,9 @@ pub use session::{
     ApprovalOutcome, AuthorizeOutcome, DEFAULT_MAX_TURNS, ModeChange, Session, SessionError,
 };
 pub use shell::{DEFAULT_TIMEOUT_MS, MAX_STREAM_BYTES, MAX_TIMEOUT_MS};
-pub use tools::{
-    MAX_TOOLS, Risk, ToolRegistry, ToolRegistryError, ToolSpec, builtin_tool_definitions,
-};
+pub use tools::MAX_TOOLS;
+pub use tools::Risk;
+pub use tools::ToolRegistry;
+pub use tools::ToolRegistryError;
+pub use tools::ToolSpec;
+pub use tools::builtin_tool_definitions;
