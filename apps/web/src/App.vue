@@ -8,6 +8,9 @@ import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import RuntimeSettings from './components/RuntimeSettings.vue'
 import TabBar from './components/TabBar.vue'
+import TaskList from './components/TaskList.vue'
+import TaskStatusBar from './components/TaskStatusBar.vue'
+import TaskWorkbench from './components/TaskWorkbench.vue'
 import { createAgentSession } from './services/agentSession'
 import {
   agentCancel,
@@ -17,6 +20,14 @@ import {
   openWorkspace,
   resolveApproval,
   sessionCreate,
+  taskApply,
+  taskBindSession,
+  taskCancel,
+  taskCreate,
+  taskDiff,
+  taskDiscard,
+  taskList,
+  taskStart,
   workspaceRoot,
 } from './services/bridge'
 import {
@@ -27,6 +38,7 @@ import {
   type LayoutPrefs,
 } from './services/layoutProfile'
 import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
+import { createTaskController } from './services/taskStore'
 import { setMode, setWindowWidth, uiStore } from './services/uiStore'
 
 const { t } = useI18n()
@@ -46,11 +58,38 @@ const agentSession = createAgentSession({
   onCoreEvent,
 })
 
+// P4 任务控制器：左栏任务列表、右侧工作台与状态栏共享同一事件流与选中态。
+const taskSession = createTaskController({
+  taskList,
+  taskCreate,
+  taskStart,
+  taskCancel,
+  taskApply,
+  taskDiscard,
+  taskDiff,
+  taskBindSession,
+  onCoreEvent,
+})
+
 const layout = ref<LayoutPrefs>(loadLayoutPrefs())
 const profile = computed(() =>
   resolveProfile(ui.value.mode, ui.value.windowWidth, layout.value),
 )
 watch(layout, prefs => saveLayoutPrefs(prefs), { deep: true })
+
+// 工作台折叠：编辑器模式默认收起以保住 P3 的 Agent 面板；切到 Agent 模式
+// 且窗口够宽时自动展开，形成「左项目+任务 / 中对话 / 右工作台」三栏。
+const workbenchCollapsed = ref(
+  profile.value.mode === 'editor' || ui.value.windowWidth < NARROW_WIDTH_PX,
+)
+watch(
+  () => profile.value.mode,
+  mode => {
+    if (mode === 'agent' && ui.value.windowWidth >= NARROW_WIDTH_PX) {
+      workbenchCollapsed.value = false
+    }
+  },
+)
 
 type ResizeTarget = 'sidebar' | 'agent' | 'bottom'
 
@@ -106,6 +145,14 @@ function toggleBottom(): void {
   layout.value = { ...layout.value, bottomCollapsed: !layout.value.bottomCollapsed }
 }
 
+/** 状态栏/新建任务入口：展开工作台，并恢复停靠的 Agent 面板（窄窗口仍收图标）。 */
+function revealTaskWorkbench(): void {
+  workbenchCollapsed.value = false
+  if (layout.value.agentCollapsed) {
+    layout.value = { ...layout.value, agentCollapsed: false }
+  }
+}
+
 // 工作区根由 Rust 侧经 workspace_root 注入（传输层安全边界，docs/PLAN.md R3）；
 // 浏览器 dev 无 Tauri，可用 ?root=<路径> 作为占位数据前缀。
 const treeCollapsed = ref(false)
@@ -149,6 +196,7 @@ onMounted(() => {
   setWindowWidth(window.innerWidth)
   window.addEventListener('resize', onResize)
   window.addEventListener('keydown', onKey)
+  void taskSession.refresh()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
@@ -162,6 +210,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   unsub()
   agentSession.dispose()
+  taskSession.dispose()
   window.removeEventListener('resize', onResize)
   window.removeEventListener('keydown', onKey)
 })
@@ -229,7 +278,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="main">
-      <!-- 编辑器模式：可折叠、可拖宽的文件树面板（docs/UI.md §3） -->
+      <!-- P4 三栏：左栏 = 项目文件树 + 任务列表；中栏对话/编辑器；右栏工作台。 -->
       <aside
         v-if="profile.sidebarVisible"
         class="side"
@@ -250,10 +299,21 @@ onBeforeUnmount(() => {
             class="side-title"
           >{{ t('tree.title') }}</span>
         </div>
-        <FileTree
+        <div
           v-if="!treeCollapsed"
-          :root="projectRoot"
-        />
+          class="tree-slot"
+        >
+          <FileTree :root="projectRoot" />
+        </div>
+        <div
+          class="task-slot"
+          :class="{ expanded: treeCollapsed }"
+        >
+          <TaskList
+            :controller="taskSession"
+            @created="revealTaskWorkbench"
+          />
+        </div>
       </aside>
       <div
         v-if="profile.sidebarVisible"
@@ -262,13 +322,6 @@ onBeforeUnmount(() => {
         aria-orientation="vertical"
         @pointerdown="startResize('sidebar', $event)"
       />
-      <aside
-        v-else
-        class="rail"
-        aria-hidden="true"
-      >
-        LC
-      </aside>
 
       <section class="center">
         <TabBar v-if="profile.tabsVisible" />
@@ -316,11 +369,30 @@ onBeforeUnmount(() => {
         @pointerdown="startResize('agent', $event)"
       />
       <aside
-        class="agent-panel"
-        :class="profile.agentPanel"
-        :style="profile.agentPanel === 'docked' ? { width: `${profile.agentWidth}px` } : undefined"
+        v-if="profile.agentPanel === 'docked'"
+        class="right-column"
+        :style="{ width: `${profile.agentWidth}px` }"
       >
-        <template v-if="profile.agentPanel === 'docked'">
+        <div
+          v-if="!workbenchCollapsed"
+          class="workbench-slot"
+        >
+          <TaskWorkbench
+            :controller="taskSession"
+            @collapse="workbenchCollapsed = true"
+          />
+        </div>
+        <button
+          v-else
+          type="button"
+          class="workbench-strip"
+          :title="t('task.expand')"
+          @click="workbenchCollapsed = false"
+        >
+          <span>{{ t('task.workbenchTitle') }}</span>
+          <span class="strip-chev">▸</span>
+        </button>
+        <div class="agent-dock">
           <div class="agent-head">
             <span>{{ t('agent.panelTitle') }}</span>
             <button
@@ -333,19 +405,40 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <AgentPanel :controller="agentSession" />
-        </template>
-        <template v-else>
-          <button
-            type="button"
-            class="agent-icon"
-            :title="t('agent.expand')"
-            :disabled="ui.windowWidth < NARROW_WIDTH_PX"
-            @click="toggleAgent"
-          >
-            A
-          </button>
-        </template>
+        </div>
       </aside>
+      <aside
+        v-else
+        class="right-rail"
+      >
+        <button
+          type="button"
+          class="agent-icon"
+          :title="t('agent.expand')"
+          :disabled="ui.windowWidth < NARROW_WIDTH_PX"
+          @click="toggleAgent"
+        >
+          A
+        </button>
+        <button
+          type="button"
+          class="workbench-icon"
+          :title="workbenchCollapsed ? t('task.expand') : t('task.collapse')"
+          @click="workbenchCollapsed = !workbenchCollapsed"
+        >
+          T
+        </button>
+      </aside>
+      <div
+        v-if="profile.agentPanel === 'icon' && !workbenchCollapsed"
+        class="workbench-overlay"
+        :style="{ width: `${profile.agentWidth}px` }"
+      >
+        <TaskWorkbench
+          :controller="taskSession"
+          @collapse="workbenchCollapsed = true"
+        />
+      </div>
     </div>
 
     <RuntimeSettings
@@ -358,6 +451,10 @@ onBeforeUnmount(() => {
       <span class="item dim">Node —</span>
       <span class="item dim">MCP 0</span>
       <span class="item dim">{{ t('status.sessions') }}</span>
+      <TaskStatusBar
+        :controller="taskSession"
+        @reveal="revealTaskWorkbench"
+      />
       <button
         v-if="profile.mode === 'editor' && !profile.bottomPanelVisible"
         type="button"
@@ -483,25 +580,37 @@ onBeforeUnmount(() => {
   display: flex;
 }
 
-.rail {
-  width: 40px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 10px;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
-  color: var(--fg-faint);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
 .side {
   min-width: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border-right: 1px solid var(--border);
+}
+
+.tree-slot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.tree-slot :deep(.tree) {
+  flex: 1;
+}
+
+.task-slot {
+  flex: 0 0 42%;
+  min-height: 140px;
+  max-height: 58%;
+  display: flex;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+
+.task-slot.expanded {
+  flex: 1;
+  max-height: none;
 }
 
 .resizer {
@@ -605,18 +714,89 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.agent-panel {
-  background: var(--panel);
-  border-left: 1px solid var(--border);
+.right-column {
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
 }
 
-.agent-panel.icon {
-  width: 40px;
+.workbench-slot {
+  flex: 1 1 55%;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.workbench-strip {
+  flex: none;
+  display: flex;
   align-items: center;
-  justify-content: center;
+  height: 28px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-align: left;
+}
+
+.workbench-strip:hover {
+  color: var(--fg);
+  background: var(--panel-2);
+}
+
+.strip-chev {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+
+.agent-dock {
+  flex: 1 1 45%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+.right-rail {
+  width: 40px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+
+.workbench-icon {
+  color: var(--fg-dim);
+  font-weight: 600;
+  font-size: 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.workbench-icon:hover {
+  color: var(--accent);
+}
+
+.workbench-overlay {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  bottom: 24px;
+  z-index: 25;
+  display: flex;
+  min-width: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
 }
 
 .agent-head {

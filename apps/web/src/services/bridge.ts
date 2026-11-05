@@ -20,6 +20,16 @@ import type {
   SessionMode,
 } from '@lc-proto'
 
+import {
+  isFileChangeDto,
+  isTaskCheck,
+  isTaskInfo,
+  isTaskStatus,
+  isTaskStepState,
+  type FileChangeDto,
+  type TaskInfo,
+} from './taskTypes'
+
 /** 按 `kind` 窄化的契约结果类型（直接从 codegen 产物派生，不复制定义）。 */
 export type DirListingResult = Extract<CommandResult, { kind: 'dir_listing' }>
 export type FileContentResult = Extract<CommandResult, { kind: 'file_content' }>
@@ -27,6 +37,23 @@ export type NodeStatusResult = Extract<CommandResult, { kind: 'node_status' }>
 export type WorkspaceRootResult = Extract<CommandResult, { kind: 'workspace_root' }>
 export type SessionResult = Extract<CommandResult, { kind: 'session' }>
 export type AckResult = Extract<CommandResult, { kind: 'ack' }>
+
+// Task 结果类型用 taskTypes 的镜像 DTO 表达：契约 d.ts 的 CommandResult
+// 引用了尚未导出的 TaskInfo，直接 Extract 会退化为 any（见 taskTypes.ts 头注释）。
+export interface TaskListResult {
+  kind: 'tasks'
+  tasks: TaskInfo[]
+}
+export interface TaskResult {
+  kind: 'task'
+  task: TaskInfo
+}
+export interface TaskDiffResult {
+  kind: 'task_diff'
+  task_id: string
+  patch: string
+  files: FileChangeDto[]
+}
 
 /** Tauri webview 注入的 IPC 内部入口（@tauri-apps/api 的 invoke 底层）。 */
 interface TauriInternals {
@@ -162,10 +189,14 @@ export async function writeFile(
 const BROWSER_SESSION_ID = 'browser-demo'
 
 /**
- * 创建会话。浏览器 dev 返回带 `fallback: true` 的占位会话；
+ * 创建会话。`taskId` 让会话绑定到 worktree 任务（契约 session_create.task_id）；
+ * 浏览器 dev 返回带 `fallback: true` 的占位会话。
  * 真实 provider 配置与轮次由 Rust 侧决定（docs/AGENT.md §5）。
  */
-export async function sessionCreate(mode: SessionMode): Promise<BridgeResult<SessionResult>> {
+export async function sessionCreate(
+  mode: SessionMode,
+  taskId: string | null = null,
+): Promise<BridgeResult<SessionResult>> {
   if (!isTauri()) {
     return {
       ok: true,
@@ -184,7 +215,7 @@ export async function sessionCreate(mode: SessionMode): Promise<BridgeResult<Ses
       fallback: true,
     }
   }
-  const res = await call('session_create', { mode })
+  const res = await call('session_create', { mode, task_id: taskId })
   if (!res.ok) return res
   if (res.data.kind !== 'session') {
     return { ok: false, error: internalError(`session_create 返回 kind=${String(res.data.kind)}`), fallback: false }
@@ -255,13 +286,244 @@ function asAck(
   return { ok: true, data: res.data, fallback: false }
 }
 
+// ==== Task 工作台命令（契约 v0.5） ====
+
+/**
+ * 浏览器 dev 的最小演示闭环：首次 taskList 为空；create/start/cancel/apply
+ * 在内存里更新占位 Task，让三栏布局无需 Tauri 也能走通。真实任务数据只在
+ * Tauri 环境经 task_* 命令获得。
+ */
+const browserTasks = new Map<string, TaskInfo>()
+let browserTaskSeq = 0
+
+function browserTask(
+  taskId: string,
+  title: string,
+  status: TaskInfo['status'],
+): TaskInfo {
+  return {
+    task_id: taskId,
+    title,
+    session_id: null,
+    status,
+    worktree_path: null,
+    branch: null,
+    port: null,
+    base_sha: null,
+    steps: [],
+    changes: [],
+    checks: [],
+    created_at: Date.now(),
+  }
+}
+
+function updateBrowserTask(
+  taskId: string,
+  patch: Partial<TaskInfo>,
+): TaskInfo {
+  const current = browserTasks.get(taskId) ?? browserTask(taskId, taskId, 'planning')
+  const next = { ...current, ...patch }
+  browserTasks.set(taskId, next)
+  return next
+}
+
+export async function taskList(): Promise<BridgeResult<TaskListResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { kind: 'tasks', tasks: [...browserTasks.values()] },
+      fallback: true,
+    }
+  }
+  return asTaskList(await call('task_list', {}), 'task_list')
+}
+
+export async function taskCreate(
+  title: string,
+  sessionId: string | null = null,
+): Promise<BridgeResult<TaskResult>> {
+  if (!isTauri()) {
+    browserTaskSeq += 1
+    const task = browserTask(`browser-task-${browserTaskSeq}`, title, 'planning')
+    task.session_id = sessionId
+    browserTasks.set(task.task_id, task)
+    return { ok: true, data: { kind: 'task', task }, fallback: true }
+  }
+  return asTaskResult(
+    await call('task_create', { title, session_id: sessionId }),
+    'task_create',
+  )
+}
+
+export async function taskStart(taskId: string): Promise<BridgeResult<TaskResult>> {
+  if (!isTauri()) {
+    const task = updateBrowserTask(taskId, { status: 'running', port: 4300 })
+    return { ok: true, data: { kind: 'task', task }, fallback: true }
+  }
+  return asTaskResult(await call('task_start', { task_id: taskId }), 'task_start')
+}
+
+export async function taskCancel(taskId: string): Promise<BridgeResult<TaskResult>> {
+  if (!isTauri()) {
+    const task = updateBrowserTask(taskId, { status: 'failed', port: null })
+    return { ok: true, data: { kind: 'task', task }, fallback: true }
+  }
+  return asTaskResult(await call('task_cancel', { task_id: taskId }), 'task_cancel')
+}
+
+export async function taskApply(taskId: string): Promise<BridgeResult<TaskResult>> {
+  if (!isTauri()) {
+    const current = updateBrowserTask(taskId, { status: 'done' })
+    const task = updateBrowserTask(taskId, {
+      port: null,
+      worktree_path: null,
+      branch: null,
+      changes: current.changes.map(change => ({ ...change, applied: true })),
+    })
+    return { ok: true, data: { kind: 'task', task }, fallback: true }
+  }
+  return asTaskResult(await call('task_apply', { task_id: taskId }), 'task_apply')
+}
+
+export async function taskDiscard(taskId: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    browserTasks.delete(taskId)
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('task_discard', { task_id: taskId }), 'task_discard')
+}
+
+export async function taskDiff(taskId: string): Promise<BridgeResult<TaskDiffResult>> {
+  if (!isTauri()) {
+    const task = browserTasks.get(taskId)
+    const files = task?.changes ?? []
+    const body = files
+      .map(change => `${change.status} ${change.path} (+${change.added}/-${change.removed})`)
+      .join('\n')
+    return {
+      ok: true,
+      data: {
+        kind: 'task_diff',
+        task_id: taskId,
+        patch: body.length > 0
+          ? `# browser dev placeholder diff\n${body}\n`
+          : `# browser dev placeholder diff\ntask ${taskId} has no files\n`,
+        files,
+      },
+      fallback: true,
+    }
+  }
+  return asTaskDiff(await call('task_diff', { task_id: taskId }), 'task_diff')
+}
+
+export async function taskBindSession(
+  taskId: string,
+  sessionId: string | null,
+): Promise<BridgeResult<TaskResult>> {
+  if (!isTauri()) {
+    const task = updateBrowserTask(taskId, { session_id: sessionId })
+    return { ok: true, data: { kind: 'task', task }, fallback: true }
+  }
+  return asTaskResult(
+    await call('task_bind_session', { task_id: taskId, session_id: sessionId }),
+    'task_bind_session',
+  )
+}
+
+function asTaskList(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<TaskListResult> {
+  if (!res.ok) return res
+  if (res.data.kind !== 'tasks') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(res.data.kind)}`),
+      fallback: false,
+    }
+  }
+  const tasks: unknown = res.data.tasks
+  if (!Array.isArray(tasks) || !tasks.every(isTaskInfo)) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 TaskInfo 列表`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: { kind: 'tasks', tasks: tasks as TaskInfo[] },
+    fallback: false,
+  }
+}
+
+function asTaskResult(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<TaskResult> {
+  if (!res.ok) return res
+  if (res.data.kind !== 'task') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(res.data.kind)}`),
+      fallback: false,
+    }
+  }
+  const task: unknown = res.data.task
+  if (!isTaskInfo(task)) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 TaskInfo`),
+      fallback: false,
+    }
+  }
+  return { ok: true, data: { kind: 'task', task }, fallback: false }
+}
+
+function asTaskDiff(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<TaskDiffResult> {
+  if (!res.ok) return res
+  if (res.data.kind !== 'task_diff') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(res.data.kind)}`),
+      fallback: false,
+    }
+  }
+  const files: unknown = res.data.files
+  if (
+    !isString(res.data.task_id) ||
+    !isString(res.data.patch) ||
+    !Array.isArray(files) ||
+    !files.every(isFileChangeDto)
+  ) {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回了非法 task_diff 载荷`),
+      fallback: false,
+    }
+  }
+  return {
+    ok: true,
+    data: {
+      kind: 'task_diff',
+      task_id: res.data.task_id,
+      patch: res.data.patch,
+      files: files as FileChangeDto[],
+    },
+    fallback: false,
+  }
+}
+
 // ==== 核心事件订阅（Tauri v2 event plugin 的低层入口） ====
 
 /**
  * Rust 侧 `app.emit` 使用的事件名（主 agent 的 Tauri 命令层须与此一致）。
  *
  * docs/ARCHITECTURE.md §4 的 `core://event` 是早期示意名；契约 v0.3 的
- * Agent 视图接线按任务约定统一为 `core:event`。所有 agent:* 与 error
+ * Agent 视图接线按任务约定统一为 `core:event`。所有 agent:*、task:* 与 error
  * 事件都作为同一个 CoreEvent 载荷下发（也接受 EventEnvelope 包装）。
  */
 export const CORE_EVENT_CHANNEL = 'core:event'
@@ -273,7 +535,7 @@ export const CORE_EVENT_CHANNEL = 'core:event'
  * `transformCallback` 注册回调 → `plugin:event|listen` 拿到 eventId →
  * 取消订阅时 `plugin:event|unlisten`。不引入 @tauri-apps/api 依赖。
  *
- * 只转发 agent:* 与 error 事件；载荷形状不符（非契约数据）直接丢弃。
+ * 只转发 agent:*、task:* 与 error 事件；载荷形状不符（非契约数据）直接丢弃。
  */
 export function onCoreEvent(handler: (event: CoreEvent) => void): () => void {
   const tauri = internals()
@@ -285,7 +547,7 @@ export function onCoreEvent(handler: (event: CoreEvent) => void): () => void {
 
   const callbackId = transform((raw: unknown) => {
     if (!active) return
-    const event = asAgentEvent(raw)
+    const event = asCoreEvent(raw)
     if (event) handler(event)
   })
 
@@ -373,13 +635,37 @@ function isErrorBodyLike(value: unknown): boolean {
 }
 
 /**
- * 事件载荷校验：只放行本 UI 消费的 agent:* 与 error。
+ * 事件载荷校验：只放行本 UI 消费的 agent:*、task:* 与 error。
  * 校验字段是 reducer 会直接读取的那些（如 approval.approval_id），
  * 防止跨 IPC 的畸形数据在 reducer 里抛错。
  */
-function isAgentEvent(value: unknown): value is CoreEvent {
+function isCoreEvent(value: unknown): value is CoreEvent {
   if (!isRecord(value) || !isString(value.type)) return false
   switch (value.type) {
+    case 'task:created':
+      return isString(value.task_id) && isString(value.title)
+    case 'task:status':
+      // 契约里是 string，但 UI 的状态徽标只认识 TaskStatus 枚举。
+      return isString(value.task_id) && isTaskStatus(value.status)
+    case 'task:updated':
+      return isTaskInfo(value.task)
+    case 'task:step':
+      return (
+        isString(value.task_id) &&
+        isFiniteNumber(value.index) &&
+        isString(value.title) &&
+        isTaskStepState(value.state)
+      )
+    case 'task:change':
+      return isString(value.task_id) && isFileChangeDto(value.change)
+    case 'task:check':
+      return isString(value.task_id) && isTaskCheck(value.check)
+    case 'task:needs_input':
+      return isString(value.task_id) && isString(value.kind)
+    case 'task:merged':
+      return isString(value.task_id) && isString(value.commit_sha)
+    case 'task:discarded':
+      return isString(value.task_id)
     case 'agent:text_delta':
       return isString(value.session_id) && isFiniteNumber(value.index) && isString(value.text)
     case 'agent:thinking_delta':
@@ -428,13 +714,13 @@ function isAgentEvent(value: unknown): value is CoreEvent {
  * - `{ seq, event }`（契约 EventEnvelope）
  * - 裸 CoreEvent
  */
-function asAgentEvent(raw: unknown): CoreEvent | null {
+function asCoreEvent(raw: unknown): CoreEvent | null {
   const eventPayload = isRecord(raw) && 'payload' in raw ? raw.payload : raw
   const candidate =
     isRecord(eventPayload) && isFiniteNumber(eventPayload.seq) && 'event' in eventPayload
       ? eventPayload.event
       : eventPayload
-  return isAgentEvent(candidate) ? candidate : null
+  return isCoreEvent(candidate) ? candidate : null
 }
 
 function browserNodeStatus(): BridgeResult<NodeStatusResult> {

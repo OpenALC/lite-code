@@ -27,11 +27,12 @@ describe('resolveProfile', () => {
     expect(resolveProfile('editor', 1099).agentPanel).toBe('icon')
   })
 
-  it('agent 模式：中央只显示占位，标签页与底部面板隐藏', () => {
+  it('agent 模式：中央显示会话，标签页与底部面板隐藏，左栏保留任务列表', () => {
     const p = resolveProfile('agent', 1600)
     expect(p.centerView).toBe('agent-placeholder')
     expect(p.tabsVisible).toBe(false)
     expect(p.bottomPanelVisible).toBe(false)
+    expect(p.sidebarVisible).toBe(true)
   })
 
   it('agent 模式窄窗口：Agent 面板仍按宽度收图标', () => {

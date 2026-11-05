@@ -16,11 +16,22 @@ import {
   resolveApproval,
   sessionCreate,
   setNodeManual,
+  taskApply,
+  taskBindSession,
+  taskCancel,
+  taskCreate,
+  taskDiff,
+  taskDiscard,
+  taskList,
+  taskStart,
   workspaceRoot,
   writeFile,
   type BridgeResult,
   type DirListingResult,
+  type TaskDiffResult,
+  type TaskListResult,
 } from './bridge'
+import type { TaskInfo } from './taskTypes'
 
 // node 环境无 window：默认走 fallback 占位路径；Tauri 路径用注入的假
 // __TAURI_INTERNALS__ 驱动（invoke 的入参与 reject 载荷形状都在这里断言）。
@@ -332,13 +343,28 @@ describe('Agent 会话命令', () => {
     expect((await resolveApproval('s1', 3, 'allow_session')).ok).toBe(true)
 
     expect(calls).toEqual([
-      { cmd: 'session_create', args: { mode: 'auto' } },
+      { cmd: 'session_create', args: { mode: 'auto', task_id: null } },
       { cmd: 'agent_send', args: { session_id: 's1', text: 'hello' } },
       { cmd: 'agent_cancel', args: { session_id: 's1' } },
       {
         cmd: 'approval_resolve',
         args: { session_id: 's1', approval_id: 3, decision: 'allow_session' },
       },
+    ])
+  })
+
+  it('Tauri：session_create 把 task_id 透传给契约', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'session', session }
+      },
+    })
+
+    expect((await sessionCreate('auto', 'task-7')).ok).toBe(true)
+    expect(calls).toEqual([
+      { cmd: 'session_create', args: { mode: 'auto', task_id: 'task-7' } },
     ])
   })
 
@@ -377,6 +403,188 @@ describe('Agent 会话命令', () => {
     })
 
     const res = await agentSend('s1', 'hello')
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error.code).toBe('internal')
+  })
+})
+
+describe('Task 工作台命令', () => {
+  function taskInfo(overrides: Partial<TaskInfo> = {}): TaskInfo {
+    return {
+      task_id: 't1',
+      title: 'Fix login',
+      session_id: null,
+      status: 'planning',
+      worktree_path: null,
+      branch: null,
+      port: null,
+      base_sha: null,
+      steps: [],
+      changes: [],
+      checks: [],
+      created_at: 1,
+      ...overrides,
+    }
+  }
+
+  it('浏览器 dev：任务列表初始为空，create 返回占位 Task，生命周期命令维持形状', async () => {
+    const listed = await taskList()
+    expect(listed).toEqual({
+      ok: true,
+      data: { kind: 'tasks', tasks: [] },
+      fallback: true,
+    })
+
+    const created = await taskCreate('Demo task', 's1')
+    expect(created.ok).toBe(true)
+    expect(created.fallback).toBe(true)
+    if (!created.ok) return
+    expect(created.data.task).toMatchObject({
+      title: 'Demo task',
+      status: 'planning',
+      session_id: 's1',
+    })
+    const id = created.data.task.task_id
+
+    const started = await taskStart(id)
+    expect(started.ok).toBe(true)
+    if (started.ok) expect(started.data.task.status).toBe('running')
+
+    const cancelled = await taskCancel(id)
+    expect(cancelled.ok).toBe(true)
+    if (cancelled.ok) expect(cancelled.data.task.status).toBe('failed')
+
+    const applied = await taskApply(id)
+    expect(applied.ok).toBe(true)
+    if (applied.ok) expect(applied.data.task.status).toBe('done')
+
+    const diff = await taskDiff(id)
+    expect(diff.ok).toBe(true)
+    expect(diff.fallback).toBe(true)
+    if (diff.ok) expect(diff.data.patch).toContain('browser dev placeholder diff')
+
+    const bound = await taskBindSession(id, 's2')
+    expect(bound.ok).toBe(true)
+    if (bound.ok) expect(bound.data.task.session_id).toBe('s2')
+
+    expect(await taskDiscard(id)).toEqual({
+      ok: true,
+      data: { kind: 'ack' },
+      fallback: true,
+    })
+  })
+
+  it('Tauri：task_list 以空参数调用并校验 TaskInfo 列表', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const payload: TaskListResult = { kind: 'tasks', tasks: [taskInfo()] }
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return payload
+      },
+    })
+
+    const res = await taskList()
+    expect(calls).toEqual([{ cmd: 'task_list', args: {} }])
+    expect(res).toEqual({ ok: true, data: payload, fallback: false })
+  })
+
+  it('Tauri：task_create 传 title 与 session_id（缺省 null）', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'task', task: taskInfo() }
+      },
+    })
+
+    expect((await taskCreate('Fix login')).ok).toBe(true)
+    expect((await taskCreate('Bind me', 's9')).ok).toBe(true)
+    expect(calls).toEqual([
+      { cmd: 'task_create', args: { title: 'Fix login', session_id: null } },
+      { cmd: 'task_create', args: { title: 'Bind me', session_id: 's9' } },
+    ])
+  })
+
+  it('Tauri：start/cancel/apply/bind/diff/discard 的命令名与参数对应契约', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const diff: TaskDiffResult = {
+      kind: 'task_diff',
+      task_id: 't1',
+      patch: '--- a\n+++ b\n',
+      files: [
+        {
+          path: 'src/a.ts',
+          status: 'modified',
+          applied: false,
+          added: 2,
+          removed: 1,
+        },
+      ],
+    }
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === 'task_discard') return { kind: 'ack' }
+        if (cmd === 'task_diff') return diff
+        return { kind: 'task', task: taskInfo() }
+      },
+    })
+
+    expect((await taskStart('t1')).ok).toBe(true)
+    expect((await taskCancel('t1')).ok).toBe(true)
+    expect((await taskApply('t1')).ok).toBe(true)
+    expect((await taskBindSession('t1', 's2')).ok).toBe(true)
+    expect((await taskDiff('t1')).ok).toBe(true)
+    expect((await taskDiscard('t1')).ok).toBe(true)
+
+    expect(calls).toEqual([
+      { cmd: 'task_start', args: { task_id: 't1' } },
+      { cmd: 'task_cancel', args: { task_id: 't1' } },
+      { cmd: 'task_apply', args: { task_id: 't1' } },
+      { cmd: 'task_bind_session', args: { task_id: 't1', session_id: 's2' } },
+      { cmd: 'task_diff', args: { task_id: 't1' } },
+      { cmd: 'task_discard', args: { task_id: 't1' } },
+    ])
+  })
+
+  it('Tauri：畸形 TaskInfo / task_diff 载荷归入 internal', async () => {
+    installTauri({
+      invoke: async () => ({ kind: 'task', task: { task_id: 't1' } }),
+    })
+    const badTask = await taskCreate('x')
+    expect(badTask.ok).toBe(false)
+    if (!badTask.ok) {
+      expect(badTask.error.code).toBe('internal')
+      expect(badTask.error.message).toContain('TaskInfo')
+    }
+
+    installTauri({
+      invoke: async () => ({
+        kind: 'tasks',
+        tasks: [{ task_id: 't1', status: 'planning' }],
+      }),
+    })
+    const badList = await taskList()
+    expect(badList.ok).toBe(false)
+    if (!badList.ok) expect(badList.error.code).toBe('internal')
+
+    installTauri({
+      invoke: async () => ({
+        kind: 'task_diff',
+        task_id: 't1',
+        patch: 'x',
+        files: [{ path: 'a.ts', status: 'weird' }],
+      }),
+    })
+    const badDiff = await taskDiff('t1')
+    expect(badDiff.ok).toBe(false)
+    if (!badDiff.ok) expect(badDiff.error.code).toBe('internal')
+  })
+
+  it('Tauri：任务命令返回错误 kind 时归入 internal', async () => {
+    installTauri({ invoke: async () => ({ kind: 'ack' }) satisfies CommandResult })
+    const res = await taskStart('t1')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error.code).toBe('internal')
   })
@@ -536,6 +744,80 @@ describe('onCoreEvent', () => {
       record_id: 3,
       summary: '早期对话已摘要',
     })
+  })
+
+  it('转发 task:* 事件；畸形 Task 载荷与未知状态被丢弃', () => {
+    const fake = installEventTauri()
+    const seen: CoreEvent[] = []
+    onCoreEvent(event => seen.push(event))
+    const callback = fake.callbacks.get(1)
+
+    const task = {
+      task_id: 't1',
+      title: 'Fix login',
+      session_id: null,
+      status: 'running',
+      worktree_path: 'D:/wt/t1',
+      branch: 'lc/t1-fix',
+      port: 4300,
+      base_sha: 'abc123',
+      steps: [{ index: 0, title: 'plan', state: 'done' }],
+      changes: [
+        { path: 'a.ts', status: 'modified', applied: false, added: 2, removed: 1 },
+      ],
+      checks: [{ name: 'unit', ok: true, output_tail: '', duration_ms: 12 }],
+      created_at: 1,
+    }
+
+    callback?.(tauriEvent({ type: 'task:created', task_id: 't1', title: 'Fix login' }))
+    callback?.(tauriEvent({ type: 'task:status', task_id: 't1', status: 'running' }))
+    callback?.(tauriEvent({ type: 'task:updated', task }))
+    callback?.(
+      tauriEvent({ type: 'task:step', task_id: 't1', index: 1, title: 'edit', state: 'running' }),
+    )
+    callback?.(
+      tauriEvent({
+        type: 'task:change',
+        task_id: 't1',
+        change: { path: 'b.ts', status: 'added', applied: false, added: 3, removed: 0 },
+      }),
+    )
+    callback?.(
+      tauriEvent({
+        type: 'task:check',
+        task_id: 't1',
+        check: { name: 'lint', ok: false, output_tail: 'boom', duration_ms: 8 },
+      }),
+    )
+    callback?.(tauriEvent({ type: 'task:needs_input', task_id: 't1', kind: 'approval' }))
+    callback?.(tauriEvent({ type: 'task:merged', task_id: 't1', commit_sha: 'def456' }))
+    callback?.(tauriEvent({ type: 'task:discarded', task_id: 't1' }))
+
+    // 非法载荷：状态枚举、TaskInfo 缺字段、step 状态、diff 文件字段。
+    callback?.(tauriEvent({ type: 'task:status', task_id: 't1', status: 'weird' }))
+    callback?.(tauriEvent({ type: 'task:updated', task: { task_id: 't1' } }))
+    callback?.(
+      tauriEvent({ type: 'task:step', task_id: 't1', index: 0, title: 'x', state: 'weird' }),
+    )
+    callback?.(
+      tauriEvent({
+        type: 'task:change',
+        task_id: 't1',
+        change: { path: 'x', status: 'weird' },
+      }),
+    )
+
+    expect(seen.map(event => event.type)).toEqual([
+      'task:created',
+      'task:status',
+      'task:updated',
+      'task:step',
+      'task:change',
+      'task:check',
+      'task:needs_input',
+      'task:merged',
+      'task:discarded',
+    ])
   })
 
   it('取消订阅：unlisten + unregisterListener，回调不再触发', async () => {

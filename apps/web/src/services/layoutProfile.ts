@@ -84,7 +84,8 @@ export function resolveProfile(
   const editorMode = mode === 'editor'
   return {
     mode,
-    sidebarVisible: editorMode,
+    // P4 三栏：Agent 模式同样保留左栏（项目 + 任务），不再收成活动栏。
+    sidebarVisible: true,
     sidebarWidth: layout.sidebarWidth,
     agentPanel,
     agentWidth: layout.agentWidth,
