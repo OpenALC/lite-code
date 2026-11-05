@@ -1,8 +1,8 @@
 {
-  "_source": "scripts/perf/run.ps1 于 2026-11-05 在本机实测生成（Windows 10.0.26200 x64，target/release/lc-desktop.exe，pwsh 7.6.9）：coldStartMs 为 3 次采样（65/79/81ms）的中位数，计时终点为主窗口句柄出现（近似，见 scripts/perf/run.ps1 头注释）；residualProcs 为 20 次启动-关闭循环后的快照 diff；trayRssMb / activeRssMb / warmStartMs 依赖 P1 Lifecycle 的托盘与窗口场景，接入前为 null。更新基线需 perf-baseline 标签 + 人工合并（docs/CI.md §3）。",
-  "trayRssMb": null,
+  "_source": "P1 收尾实测（2026-11-05，Windows 10.0.26200 x64，生产构建 custom-protocol，pwsh 7.6.9）：托盘 RSS 为窗口销毁后静置 10s 的进程树 WorkingSet 求和；cold/warm 为 3 次采样中位数，终点为主窗口可见（近似，见 scripts/perf/RESULTS.md）；residualProcs 为 20 次窗口开关后的快照 diff。activeRssMb 因缺少 UI 自动化入口暂为 null。更新基线需 perf-baseline 标签 + 人工合并（docs/CI.md §3）。",
+  "trayRssMb": 29.5,
   "activeRssMb": null,
-  "coldStartMs": 79.0,
-  "warmStartMs": null,
+  "coldStartMs": 48.0,
+  "warmStartMs": 47.0,
   "residualProcs": 0
 }
