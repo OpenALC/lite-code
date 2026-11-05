@@ -66,8 +66,63 @@
   "agent": {
     "placeholderTitle": "Agent 模式",
     "placeholderDesc": "P0 占位。会话流、工具卡片与内联审批在 P3（Agent 模式可用）落地。",
+    "panelTitle": "Agent",
     "collapse": "折叠 Agent 面板",
-    "expand": "展开 Agent 面板"
+    "expand": "展开 Agent 面板",
+    "modeLabel": "会话模式",
+    "modes": {
+      "plan": "计划",
+      "chat": "对话",
+      "auto": "自主",
+      "yolo": "完全自主"
+    },
+    "turn": "轮次",
+    "context": "上下文",
+    "contextAssumed": "按 {k}K 估算",
+    "contextHint": "契约暂未暴露会话上下文大小，进度条按 {k}K 估算。",
+    "stop": "停止",
+    "streaming": "运行中…",
+    "send": "发送",
+    "sendHint": "Ctrl+Enter 发送",
+    "composerPlaceholder": "描述你希望 Agent 完成的任务…",
+    "emptyTitle": "请先配置 provider",
+    "emptyDesc": "在 ~/.lite-code/providers.json 中配置 provider，或设置对应的 API key 环境变量。",
+    "browserDemo": "浏览器演示模式：命令与 Agent 事件流不可用。",
+    "thinking": "思考过程",
+    "tool": {
+      "running": "运行中",
+      "approval": "待审批",
+      "ok": "完成",
+      "error": "失败",
+      "expand": "展开",
+      "collapse": "收起"
+    },
+    "approval": {
+      "title": "需要审批",
+      "source": "触发来源",
+      "reason": "理由",
+      "allowOnce": "仅本次",
+      "allowSession": "本会话同类",
+      "deny": "拒绝",
+      "yoloNotice": "完全自主模式下仍被拦截",
+      "resolving": "提交中…",
+      "pendingHint": "请先处理上方的审批请求"
+    },
+    "sources": {
+      "mode": "模式策略",
+      "static_blacklist": "静态黑名单",
+      "user_blacklist": "用户黑名单",
+      "model_risk": "模型判定",
+      "outside_workspace": "工作区外",
+      "network_tool": "网络工具",
+      "execute_review": "执行审查"
+    },
+    "yolo": {
+      "title": "启用完全自主模式？",
+      "desc": "静态黑名单仍会请求审批。切换会创建新会话并清空当前消息流。",
+      "confirm": "启用",
+      "cancel": "取消"
+    }
   },
   "bottom": {
     "terminal": "终端",

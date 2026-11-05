@@ -1,14 +1,20 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { CommandResult } from '@lc-proto'
+import type { CommandResult, CoreEvent, SessionInfo } from '@lc-proto'
 
 import {
+  agentCancel,
+  agentSend,
+  CORE_EVENT_CHANNEL,
   detectNode,
   downloadNodePortable,
   isTauri,
+  onCoreEvent,
   openWorkspace,
   readFile,
   readDir,
+  resolveApproval,
+  sessionCreate,
   setNodeManual,
   workspaceRoot,
   writeFile,
@@ -21,6 +27,7 @@ import {
 
 interface FakeInternals {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
+  transformCallback?: (callback: (response: unknown) => void, once?: boolean) => number
 }
 
 function installTauri(fake: FakeInternals): void {
@@ -265,5 +272,232 @@ describe('Tauri 路径', () => {
     const res = await detectNode()
     expect(calls).toEqual([{ cmd: 'node_detect', args: {} }])
     expect(res.ok).toBe(true)
+  })
+})
+
+describe('Agent 会话命令', () => {
+  const session: SessionInfo = {
+    session_id: 's1',
+    mode: 'auto',
+    turn: 0,
+    max_turns: 25,
+    cancelled: false,
+  }
+
+  it('浏览器 dev：session 返回 fallback 占位，其余命令返回 fallback ack', async () => {
+    const created = await sessionCreate('plan')
+    expect(created.ok).toBe(true)
+    expect(created.fallback).toBe(true)
+    if (created.ok) {
+      expect(created.data.kind).toBe('session')
+      expect(created.data.session).toMatchObject({ mode: 'plan', turn: 0 })
+    }
+
+    for (const res of [
+      await agentSend('s1', 'hello'),
+      await agentCancel('s1'),
+      await resolveApproval('s1', 1, 'allow_once'),
+    ]) {
+      expect(res.ok).toBe(true)
+      expect(res.fallback).toBe(true)
+      if (res.ok) expect(res.data).toEqual({ kind: 'ack' })
+    }
+  })
+
+  it('Tauri：命令名与 snake_case 参数与契约 CoreCommand 对应', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === 'session_create') return { kind: 'session', session }
+        return { kind: 'ack' }
+      },
+    })
+
+    const created = await sessionCreate('auto')
+    expect(created).toEqual({
+      ok: true,
+      data: { kind: 'session', session },
+      fallback: false,
+    })
+    expect((await agentSend('s1', 'hello')).ok).toBe(true)
+    expect((await agentCancel('s1')).ok).toBe(true)
+    expect((await resolveApproval('s1', 3, 'allow_session')).ok).toBe(true)
+
+    expect(calls).toEqual([
+      { cmd: 'session_create', args: { mode: 'auto' } },
+      { cmd: 'agent_send', args: { session_id: 's1', text: 'hello' } },
+      { cmd: 'agent_cancel', args: { session_id: 's1' } },
+      {
+        cmd: 'approval_resolve',
+        args: { session_id: 's1', approval_id: 3, decision: 'allow_session' },
+      },
+    ])
+  })
+
+  it('Tauri：返回 kind 与命令不匹配时归入 internal', async () => {
+    installTauri({ invoke: async () => ({ kind: 'ack' }) satisfies CommandResult })
+
+    const created = await sessionCreate('auto')
+    expect(created.ok).toBe(false)
+    if (!created.ok) expect(created.error.code).toBe('internal')
+  })
+
+  it('Tauri：ack 命令收到非 ack 载荷时归入 internal', async () => {
+    installTauri({
+      invoke: async () => ({ kind: 'session', session }) satisfies CommandResult,
+    })
+
+    const res = await agentSend('s1', 'hello')
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error.code).toBe('internal')
+  })
+})
+
+describe('onCoreEvent', () => {
+  interface FakeEventWindow {
+    callbacks: Map<number, (response: unknown) => void>
+    calls: Array<{ cmd: string; args?: Record<string, unknown> }>
+    unregistered: Array<{ event: string; eventId: number }>
+  }
+
+  function installEventTauri(listenResult: Promise<number> = Promise.resolve(7)): FakeEventWindow {
+    const callbacks = new Map<number, (response: unknown) => void>()
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const unregistered: Array<{ event: string; eventId: number }> = []
+    let nextId = 1
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === 'plugin:event|listen') return listenResult
+        return undefined
+      },
+      transformCallback: callback => {
+        const id = nextId++
+        callbacks.set(id, callback)
+        return id
+      },
+    })
+    ;(
+      (globalThis as unknown as { window: { __TAURI_EVENT_PLUGIN_INTERNALS__?: unknown } }).window
+    ).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (event: string, eventId: number) => {
+        unregistered.push({ event, eventId })
+      },
+    }
+    return { callbacks, calls, unregistered }
+  }
+
+  function tauriEvent(payload: unknown): unknown {
+    return { event: CORE_EVENT_CHANNEL, id: 1, payload }
+  }
+
+  it('浏览器 dev 返回 no-op', () => {
+    const off = onCoreEvent(() => {
+      throw new Error('handler must not run outside Tauri')
+    })
+    expect(() => off()).not.toThrow()
+  })
+
+  it('注册 core:event 监听并转发契约事件', () => {
+    const fake = installEventTauri()
+    const seen: CoreEvent[] = []
+    onCoreEvent(event => seen.push(event))
+
+    expect(fake.calls[0]).toEqual({
+      cmd: 'plugin:event|listen',
+      args: { event: CORE_EVENT_CHANNEL, target: { kind: 'Any' }, handler: 1 },
+    })
+
+    const callback = fake.callbacks.get(1)
+    expect(callback).toBeDefined()
+    callback?.(tauriEvent({ type: 'agent:text_delta', session_id: 's1', index: 0, text: 'hi' }))
+    callback?.({
+      type: 'agent:done',
+      session_id: 's1',
+      stop_reason: 'end_turn',
+    })
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatchObject({ type: 'agent:text_delta', text: 'hi' })
+    expect(seen[1]).toMatchObject({ type: 'agent:done', stop_reason: 'end_turn' })
+  })
+
+  it('兼容 EventEnvelope 包装与裸 CoreEvent', () => {
+    const fake = installEventTauri()
+    const seen: CoreEvent[] = []
+    onCoreEvent(event => seen.push(event))
+    const callback = fake.callbacks.get(1)
+
+    callback?.({
+      event: CORE_EVENT_CHANNEL,
+      id: 1,
+      payload: {
+        seq: 9,
+        event: { type: 'agent:usage', session_id: 's1', input: 1, output: 2, cached: 0 },
+      },
+    })
+    callback?.(tauriEvent({ type: 'error', error: { code: 'io', message: 'boom' } }))
+    callback?.({ type: 'agent:thinking_delta', session_id: 's1', text: 'raw' })
+
+    expect(seen.map(event => event.type)).toEqual([
+      'agent:usage',
+      'error',
+      'agent:thinking_delta',
+    ])
+  })
+
+  it('丢弃非契约载荷、未知事件与畸形审批卡', () => {
+    const fake = installEventTauri()
+    const seen: CoreEvent[] = []
+    onCoreEvent(event => seen.push(event))
+    const callback = fake.callbacks.get(1)
+
+    callback?.(tauriEvent({ type: 'fs:tree', generation: 2 }))
+    callback?.(tauriEvent({ type: 'agent:text_delta', session_id: 's1', text: 'missing index' }))
+    callback?.(tauriEvent({ type: 'agent:approval_required', session_id: 's1', approval: {} }))
+    callback?.(tauriEvent(null))
+    callback?.('not-an-event')
+
+    expect(seen).toHaveLength(0)
+  })
+
+  it('取消订阅：unlisten + unregisterListener，回调不再触发', async () => {
+    const fake = installEventTauri()
+    const seen: CoreEvent[] = []
+    const off = onCoreEvent(event => seen.push(event))
+    const callback = fake.callbacks.get(1)
+
+    await Promise.resolve()
+    await Promise.resolve()
+    off()
+    await Promise.resolve()
+
+    expect(fake.calls).toContainEqual({
+      cmd: 'plugin:event|unlisten',
+      args: { event: CORE_EVENT_CHANNEL, eventId: 7 },
+    })
+    expect(fake.unregistered).toEqual([{ event: CORE_EVENT_CHANNEL, eventId: 7 }])
+
+    callback?.(tauriEvent({ type: 'agent:text_delta', session_id: 's1', index: 0, text: 'late' }))
+    expect(seen).toHaveLength(0)
+  })
+
+  it('listen 尚未返回就取消：返回后立即 unlisten', async () => {
+    let resolveListen!: (eventId: number) => void
+    const listenResult = new Promise<number>(resolve => {
+      resolveListen = resolve
+    })
+    const fake = installEventTauri(listenResult)
+    const off = onCoreEvent(() => {})
+    off()
+
+    resolveListen(11)
+    await vi.waitFor(() => {
+      expect(fake.calls).toContainEqual({
+        cmd: 'plugin:event|unlisten',
+        args: { event: CORE_EVENT_CHANNEL, eventId: 11 },
+      })
+    })
   })
 })

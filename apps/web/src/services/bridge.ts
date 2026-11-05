@@ -10,18 +10,32 @@
 // 命令侧错误：Rust 命令返回 `Result<CommandResult, ErrorBody>`（契约信封），
 // invoke 的 reject 载荷即序列化的 `ErrorBody`，这里归一为 BridgeResult 的 error 分支。
 
-import type { CommandResult, ErrorBody, ErrorCode } from '@lc-proto'
+import type {
+  ApprovalDecision,
+  CommandResult,
+  CoreEvent,
+  ErrorBody,
+  ErrorCode,
+  SessionInfo,
+  SessionMode,
+} from '@lc-proto'
 
 /** 按 `kind` 窄化的契约结果类型（直接从 codegen 产物派生，不复制定义）。 */
 export type DirListingResult = Extract<CommandResult, { kind: 'dir_listing' }>
 export type FileContentResult = Extract<CommandResult, { kind: 'file_content' }>
 export type NodeStatusResult = Extract<CommandResult, { kind: 'node_status' }>
 export type WorkspaceRootResult = Extract<CommandResult, { kind: 'workspace_root' }>
+export type SessionResult = Extract<CommandResult, { kind: 'session' }>
 export type AckResult = Extract<CommandResult, { kind: 'ack' }>
 
 /** Tauri webview 注入的 IPC 内部入口（@tauri-apps/api 的 invoke 底层）。 */
 interface TauriInternals {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>
+  transformCallback?: (callback: (response: unknown) => void, once?: boolean) => number
+}
+
+interface TauriEventInternals {
+  unregisterListener?: (event: string, eventId: number) => void
 }
 
 function internals(): TauriInternals | null {
@@ -140,6 +154,268 @@ export async function writeFile(
     return { ok: false, error: internalError(`fs_write_file 返回 kind=${String(res.data.kind)}`), fallback: false }
   }
   return { ok: true, data: res.data, fallback: false }
+}
+
+// ==== Agent 会话命令（契约 v0.3） ====
+
+/** 浏览器 dev 会话 id；UI 在非 Tauri 环境禁用发送，这里只是保持返回形状一致。 */
+const BROWSER_SESSION_ID = 'browser-demo'
+
+/**
+ * 创建会话。浏览器 dev 返回带 `fallback: true` 的占位会话；
+ * 真实 provider 配置与轮次由 Rust 侧决定（docs/AGENT.md §5）。
+ */
+export async function sessionCreate(mode: SessionMode): Promise<BridgeResult<SessionResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: {
+        kind: 'session',
+        session: {
+          session_id: BROWSER_SESSION_ID,
+          mode,
+          turn: 0,
+          max_turns: 25,
+          cancelled: false,
+        },
+      },
+      fallback: true,
+    }
+  }
+  const res = await call('session_create', { mode })
+  if (!res.ok) return res
+  if (res.data.kind !== 'session') {
+    return { ok: false, error: internalError(`session_create 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  return { ok: true, data: res.data, fallback: false }
+}
+
+/** 发送用户消息；ack 只表示命令已受理，内容通过 agent:* 事件流返回。 */
+export async function agentSend(
+  sessionId: string,
+  text: string,
+): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void sessionId
+    void text
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('agent_send', { session_id: sessionId, text }), 'agent_send')
+}
+
+/** 取消当前轮；Rust 侧通过 CancellationToken 传播到 HTTP 与工具执行。 */
+export async function agentCancel(sessionId: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void sessionId
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('agent_cancel', { session_id: sessionId }), 'agent_cancel')
+}
+
+/** 提交审批决定；成功后 Rust 侧恢复该轮执行并继续下发 agent:* 事件。 */
+export async function resolveApproval(
+  sessionId: string,
+  approvalId: number,
+  decision: ApprovalDecision,
+): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void sessionId
+    void approvalId
+    void decision
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(
+    await call('approval_resolve', {
+      session_id: sessionId,
+      approval_id: approvalId,
+      decision,
+    }),
+    'approval_resolve',
+  )
+}
+
+function asAck(
+  res: BridgeResult<CommandResult>,
+  command: string,
+): BridgeResult<AckResult> {
+  if (!res.ok) return res
+  if (res.data.kind !== 'ack') {
+    return {
+      ok: false,
+      error: internalError(`${command} 返回 kind=${String(res.data.kind)}`),
+      fallback: false,
+    }
+  }
+  return { ok: true, data: res.data, fallback: false }
+}
+
+// ==== 核心事件订阅（Tauri v2 event plugin 的低层入口） ====
+
+/**
+ * Rust 侧 `app.emit` 使用的事件名（主 agent 的 Tauri 命令层须与此一致）。
+ *
+ * docs/ARCHITECTURE.md §4 的 `core://event` 是早期示意名；契约 v0.3 的
+ * Agent 视图接线按任务约定统一为 `core:event`。所有 agent:* 与 error
+ * 事件都作为同一个 CoreEvent 载荷下发（也接受 EventEnvelope 包装）。
+ */
+export const CORE_EVENT_CHANNEL = 'core:event'
+
+/**
+ * 订阅核心事件流。只在 Tauri webview 内生效；浏览器 dev 返回 no-op。
+ *
+ * 实现对齐 @tauri-apps/api/event 的 listen：
+ * `transformCallback` 注册回调 → `plugin:event|listen` 拿到 eventId →
+ * 取消订阅时 `plugin:event|unlisten`。不引入 @tauri-apps/api 依赖。
+ *
+ * 只转发 agent:* 与 error 事件；载荷形状不符（非契约数据）直接丢弃。
+ */
+export function onCoreEvent(handler: (event: CoreEvent) => void): () => void {
+  const tauri = internals()
+  const transform = tauri?.transformCallback
+  if (!tauri || typeof transform !== 'function') return () => {}
+
+  let active = true
+  let unlisten: (() => void) | null = null
+
+  const callbackId = transform((raw: unknown) => {
+    if (!active) return
+    const event = asAgentEvent(raw)
+    if (event) handler(event)
+  })
+
+  void tauri
+    .invoke<number>('plugin:event|listen', {
+      event: CORE_EVENT_CHANNEL,
+      target: { kind: 'Any' },
+      handler: callbackId,
+    })
+    .then(eventId => {
+      const stop = (): void => {
+        unregisterEventCallback(CORE_EVENT_CHANNEL, eventId)
+        void tauri
+          .invoke('plugin:event|unlisten', { event: CORE_EVENT_CHANNEL, eventId })
+          .catch(() => {})
+      }
+      if (active) unlisten = stop
+      else stop()
+    })
+    .catch(() => {
+      // 监听注册失败只影响事件流；命令通道仍可用，UI 会显示错误/空状态。
+    })
+
+  return () => {
+    active = false
+    if (unlisten) {
+      unlisten()
+      unlisten = null
+    }
+  }
+}
+
+function unregisterEventCallback(event: string, eventId: number): void {
+  if (typeof window === 'undefined') return
+  const plugin = (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventInternals })
+    .__TAURI_EVENT_PLUGIN_INTERNALS__
+  plugin?.unregisterListener?.(event, eventId)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string'
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isSessionMode(value: unknown): value is SessionMode {
+  return value === 'plan' || value === 'chat' || value === 'auto' || value === 'yolo'
+}
+
+function isSessionInfo(value: unknown): value is SessionInfo {
+  if (!isRecord(value)) return false
+  return (
+    isString(value.session_id) &&
+    isSessionMode(value.mode) &&
+    isFiniteNumber(value.turn) &&
+    isFiniteNumber(value.max_turns) &&
+    typeof value.cancelled === 'boolean'
+  )
+}
+
+function isApprovalPrompt(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const command = value.command
+  return (
+    isFiniteNumber(value.approval_id) &&
+    isString(value.tool) &&
+    (command === undefined || command === null || typeof command === 'string') &&
+    isString(value.source) &&
+    isString(value.reason)
+  )
+}
+
+function isErrorBodyLike(value: unknown): boolean {
+  return isRecord(value) && isString(value.code) && isString(value.message)
+}
+
+/**
+ * 事件载荷校验：只放行本 UI 消费的 agent:* 与 error。
+ * 校验字段是 reducer 会直接读取的那些（如 approval.approval_id），
+ * 防止跨 IPC 的畸形数据在 reducer 里抛错。
+ */
+function isAgentEvent(value: unknown): value is CoreEvent {
+  if (!isRecord(value) || !isString(value.type)) return false
+  switch (value.type) {
+    case 'agent:text_delta':
+      return isString(value.session_id) && isFiniteNumber(value.index) && isString(value.text)
+    case 'agent:thinking_delta':
+      return isString(value.session_id) && isString(value.text)
+    case 'agent:tool_start':
+      return isString(value.session_id) && isString(value.call_id) && isString(value.name)
+    case 'agent:tool_result':
+      return (
+        isString(value.session_id) &&
+        isString(value.call_id) &&
+        typeof value.ok === 'boolean' &&
+        isString(value.text)
+      )
+    case 'agent:approval_required':
+      return isString(value.session_id) && isApprovalPrompt(value.approval)
+    case 'agent:session_state':
+      return isSessionInfo(value.session)
+    case 'agent:usage':
+      return (
+        isString(value.session_id) &&
+        isFiniteNumber(value.input) &&
+        isFiniteNumber(value.output) &&
+        isFiniteNumber(value.cached)
+      )
+    case 'agent:done':
+      return isString(value.session_id) && isString(value.stop_reason)
+    case 'error':
+      return isErrorBodyLike(value.error)
+    default:
+      return false
+  }
+}
+
+/**
+ * Tauri 事件回调 → CoreEvent。兼容三种载荷：
+ * - `{ event, id, payload }`（Tauri Event）
+ * - `{ seq, event }`（契约 EventEnvelope）
+ * - 裸 CoreEvent
+ */
+function asAgentEvent(raw: unknown): CoreEvent | null {
+  const eventPayload = isRecord(raw) && 'payload' in raw ? raw.payload : raw
+  const candidate =
+    isRecord(eventPayload) && isFiniteNumber(eventPayload.seq) && 'event' in eventPayload
+      ? eventPayload.event
+      : eventPayload
+  return isAgentEvent(candidate) ? candidate : null
 }
 
 function browserNodeStatus(): BridgeResult<NodeStatusResult> {

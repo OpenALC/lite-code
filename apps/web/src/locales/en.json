@@ -66,8 +66,63 @@
   "agent": {
     "placeholderTitle": "Agent mode",
     "placeholderDesc": "P0 placeholder. Session stream, tool cards and inline approvals land in P3.",
+    "panelTitle": "Agent",
     "collapse": "Collapse Agent panel",
-    "expand": "Expand Agent panel"
+    "expand": "Expand Agent panel",
+    "modeLabel": "Session mode",
+    "modes": {
+      "plan": "Plan",
+      "chat": "Chat",
+      "auto": "Auto",
+      "yolo": "Yolo"
+    },
+    "turn": "Turn",
+    "context": "Context",
+    "contextAssumed": "{k}K assumed",
+    "contextHint": "The contract does not expose the session context size yet; the bar assumes {k}K.",
+    "stop": "Stop",
+    "streaming": "Running…",
+    "send": "Send",
+    "sendHint": "Ctrl+Enter to send",
+    "composerPlaceholder": "Describe what the agent should do…",
+    "emptyTitle": "Configure a provider to start",
+    "emptyDesc": "Add a provider in ~/.lite-code/providers.json or set the matching API key environment variable.",
+    "browserDemo": "Browser demo mode: commands and agent events are disabled.",
+    "thinking": "Thinking",
+    "tool": {
+      "running": "Running",
+      "approval": "Approval",
+      "ok": "Done",
+      "error": "Failed",
+      "expand": "Show more",
+      "collapse": "Show less"
+    },
+    "approval": {
+      "title": "Approval required",
+      "source": "Source",
+      "reason": "Reason",
+      "allowOnce": "Once",
+      "allowSession": "This session",
+      "deny": "Deny",
+      "yoloNotice": "Blocked even in fully autonomous mode",
+      "resolving": "Submitting…",
+      "pendingHint": "Resolve the approval above to continue"
+    },
+    "sources": {
+      "mode": "Mode policy",
+      "static_blacklist": "Static blacklist",
+      "user_blacklist": "User blacklist",
+      "model_risk": "Model risk",
+      "outside_workspace": "Outside workspace",
+      "network_tool": "Network tool",
+      "execute_review": "Execution review"
+    },
+    "yolo": {
+      "title": "Enable fully autonomous mode?",
+      "desc": "The static blacklist still asks for approval. Switching mode starts a new session and clears the current stream.",
+      "confirm": "Enable",
+      "cancel": "Cancel"
+    }
   },
   "bottom": {
     "terminal": "Terminal",

@@ -2,13 +2,23 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import AgentPlaceholder from './components/AgentPlaceholder.vue'
+import AgentPanel from './components/AgentPanel.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import FileTree from './components/FileTree.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import RuntimeSettings from './components/RuntimeSettings.vue'
 import TabBar from './components/TabBar.vue'
-import { isTauri, openWorkspace, workspaceRoot } from './services/bridge'
+import { createAgentSession } from './services/agentSession'
+import {
+  agentCancel,
+  agentSend,
+  isTauri,
+  onCoreEvent,
+  openWorkspace,
+  resolveApproval,
+  sessionCreate,
+  workspaceRoot,
+} from './services/bridge'
 import {
   LAYOUT_LIMITS,
   NARROW_WIDTH_PX,
@@ -25,6 +35,15 @@ const { t } = useI18n()
 const ui = ref(uiStore.get())
 const unsub = uiStore.subscribe(s => {
   ui.value = s
+})
+
+// P3 Agent 会话控制器：docked 与居中的 Agent 视图共享同一事件流、草稿与错误。
+const agentSession = createAgentSession({
+  sessionCreate,
+  agentSend,
+  agentCancel,
+  resolveApproval,
+  onCoreEvent,
 })
 
 const layout = ref<LayoutPrefs>(loadLayoutPrefs())
@@ -142,6 +161,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsub()
+  agentSession.dispose()
   window.removeEventListener('resize', onResize)
   window.removeEventListener('keydown', onKey)
 })
@@ -253,7 +273,10 @@ onBeforeUnmount(() => {
       <section class="center">
         <TabBar v-if="profile.tabsVisible" />
         <CodeEditor v-if="profile.centerView === 'editor'" />
-        <AgentPlaceholder v-else />
+        <AgentPanel
+          v-else
+          :controller="agentSession"
+        />
         <div
           v-if="profile.bottomPanelVisible"
           class="resizer h"
@@ -299,7 +322,7 @@ onBeforeUnmount(() => {
       >
         <template v-if="profile.agentPanel === 'docked'">
           <div class="agent-head">
-            <span>{{ t('agent.placeholderTitle') }}</span>
+            <span>{{ t('agent.panelTitle') }}</span>
             <button
               type="button"
               class="agent-toggle"
@@ -309,7 +332,7 @@ onBeforeUnmount(() => {
               ×
             </button>
           </div>
-          <AgentPlaceholder />
+          <AgentPanel :controller="agentSession" />
         </template>
         <template v-else>
           <button
