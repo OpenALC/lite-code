@@ -1,10 +1,11 @@
 //! 命令契约。UI → 核心的全部入口；Tauri 命令只是这里的转发层
 //! （docs/README.md：lc-core 不依赖 Tauri）。
 
+use crate::agent::{ApprovalDecision, SessionInfo, SessionMode};
 use crate::runtime::{NodeStatus, ShellInfo};
 
 /// 当前契约版本。规则见 docs/VERSIONING.md §8。
-pub const CONTRACT_VERSION: &str = "0.2.0";
+pub const CONTRACT_VERSION: &str = "0.3.0";
 
 /// 全部命令名，与 [`CoreCommand`] 的 serde tag 一一对应。
 /// 单元测试保证与枚举同步（数量 + 命名）。
@@ -18,6 +19,10 @@ pub const CONTRACT_COMMANDS: &[&str] = &[
     "fs_read_dir",
     "fs_read_file",
     "fs_write_file",
+    "session_create",
+    "agent_send",
+    "agent_cancel",
+    "approval_resolve",
     "contract_info",
 ];
 
@@ -32,7 +37,11 @@ pub const CONTRACT_EVENTS: &[&str] = &[
     "task:needs_input",
     "task:merged",
     "agent:text_delta",
+    "agent:thinking_delta",
     "agent:tool_start",
+    "agent:tool_result",
+    "agent:approval_required",
+    "agent:session_state",
     "agent:usage",
     "agent:done",
     "error",
@@ -86,6 +95,18 @@ pub enum CoreCommand {
     FsReadFile { path: String },
     /// 保存文本文件；目标必须落在 workspace 根内，允许新建
     FsWriteFile { path: String, content: String },
+    /// 创建 P3 会话（模式在会话级生效）
+    SessionCreate { mode: SessionMode },
+    /// 向会话发送用户消息；流式结果走 agent:* 事件
+    AgentSend { session_id: String, text: String },
+    /// 取消运行中的会话
+    AgentCancel { session_id: String },
+    /// 处理审批卡
+    ApprovalResolve {
+        session_id: String,
+        approval_id: u64,
+        decision: ApprovalDecision,
+    },
     /// 契约元信息（lc-cli 与 UI 关于页共用）
     ContractInfo,
 }
@@ -100,6 +121,9 @@ pub enum CommandResult {
     },
     Shell {
         shell: Option<ShellInfo>,
+    },
+    Session {
+        session: SessionInfo,
     },
     WorkspaceRoot {
         root: Option<String>,

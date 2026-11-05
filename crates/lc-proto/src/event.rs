@@ -1,6 +1,7 @@
 //! 事件契约。核心 → UI 单向下行，全部带序号；UI 只订阅不查询（除首次加载）。
 //! task:* 事件名与 docs/TASKS.md §7 保持一致。
 
+use crate::agent::{ApprovalPrompt, SessionInfo};
 use crate::error::ErrorBody;
 use crate::runtime::{NodeStatus, ShellInfo};
 
@@ -51,12 +52,32 @@ pub enum CoreEvent {
         text: String,
     },
 
+    #[serde(rename = "agent:thinking_delta")]
+    AgentThinkingDelta { session_id: String, text: String },
+
     #[serde(rename = "agent:tool_start")]
     AgentToolStart {
         session_id: String,
         call_id: String,
         name: String,
     },
+
+    #[serde(rename = "agent:tool_result")]
+    AgentToolResult {
+        session_id: String,
+        call_id: String,
+        ok: bool,
+        text: String,
+    },
+
+    #[serde(rename = "agent:approval_required")]
+    AgentApprovalRequired {
+        session_id: String,
+        approval: ApprovalPrompt,
+    },
+
+    #[serde(rename = "agent:session_state")]
+    AgentSessionState { session: SessionInfo },
 
     #[serde(rename = "agent:usage")]
     AgentUsage {

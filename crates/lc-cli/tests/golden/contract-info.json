@@ -1,6 +1,6 @@
 {
   "name": "lc-proto",
-  "contract_version": "0.2.0",
+  "contract_version": "0.3.0",
   "commands": [
     "node_detect",
     "node_set_manual",
@@ -11,6 +11,10 @@
     "fs_read_dir",
     "fs_read_file",
     "fs_write_file",
+    "session_create",
+    "agent_send",
+    "agent_cancel",
+    "approval_resolve",
     "contract_info"
   ],
   "events": [
@@ -23,7 +27,11 @@
     "task:needs_input",
     "task:merged",
     "agent:text_delta",
+    "agent:thinking_delta",
     "agent:tool_start",
+    "agent:tool_result",
+    "agent:approval_required",
+    "agent:session_state",
     "agent:usage",
     "agent:done",
     "error"

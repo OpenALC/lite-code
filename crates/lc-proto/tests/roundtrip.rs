@@ -15,7 +15,7 @@ fn command_tags_match_constant_list() {
     // 数量守卫：新增命令必须同步登记
     assert_eq!(
         CONTRACT_COMMANDS.len(),
-        10,
+        14,
         "命令数量变化时须更新 CONTRACT_COMMANDS 与此测试"
     );
 }
@@ -48,6 +48,33 @@ fn command_serializes_with_documented_tag() {
     assert_eq!(
         json,
         r#"{"method":"fs_write_file","path":"D:/p/a.txt","content":"saved"}"#
+    );
+
+    let json = serde_json::to_string(&CoreCommand::SessionCreate {
+        mode: SessionMode::Auto,
+    })
+    .unwrap();
+    assert_eq!(json, r#"{"method":"session_create","mode":"auto"}"#);
+
+    let json = serde_json::to_string(&CoreCommand::AgentSend {
+        session_id: "s1".into(),
+        text: "hi".into(),
+    })
+    .unwrap();
+    assert_eq!(
+        json,
+        r#"{"method":"agent_send","session_id":"s1","text":"hi"}"#
+    );
+
+    let json = serde_json::to_string(&CoreCommand::ApprovalResolve {
+        session_id: "s1".into(),
+        approval_id: 7,
+        decision: ApprovalDecision::AllowSession,
+    })
+    .unwrap();
+    assert_eq!(
+        json,
+        r#"{"method":"approval_resolve","session_id":"s1","approval_id":7,"decision":"allow_session"}"#
     );
 }
 
@@ -121,7 +148,31 @@ fn contract_meta_is_complete() {
     assert!(meta.commands.contains(&"workspace_root".to_string()));
     assert!(meta.commands.contains(&"workspace_open".to_string()));
     assert!(meta.commands.contains(&"fs_write_file".to_string()));
+    assert!(meta.commands.contains(&"agent_send".to_string()));
     assert!(meta.events.contains(&"task:needs_input".to_string()));
+    assert!(meta.events.contains(&"agent:approval_required".to_string()));
+}
+
+#[test]
+fn approval_prompt_event_roundtrips() {
+    let event = CoreEvent::AgentApprovalRequired {
+        session_id: "s1".into(),
+        approval: ApprovalPrompt {
+            approval_id: 3,
+            tool: "shell".into(),
+            command: Some("npm publish".into()),
+            source: ApprovalSource::UserBlacklist,
+            reason: "用户黑名单".into(),
+        },
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(
+        json.contains(r#""type":"agent:approval_required""#),
+        "{json}"
+    );
+    assert!(json.contains(r#""approval_id":3"#), "{json}");
+    let back: CoreEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, event);
 }
 
 #[test]

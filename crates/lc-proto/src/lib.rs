@@ -4,11 +4,13 @@
 //! TS 绑定由 `cargo run -p lc-proto --features codegen --bin codegen` 生成，
 //! 产物位于 `bindings/`，进仓并由 CI 做漂移检查。
 
+pub mod agent;
 pub mod command;
 pub mod error;
 pub mod event;
 pub mod runtime;
 
+pub use agent::{ApprovalDecision, ApprovalPrompt, ApprovalSource, SessionInfo, SessionMode};
 pub use command::{
     CONTRACT_COMMANDS, CONTRACT_ERROR_CODES, CONTRACT_EVENTS, CONTRACT_VERSION, CommandEnvelope,
     CommandResult, ContractMeta, CoreCommand, DirEntryDto, EntryKind,
