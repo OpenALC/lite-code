@@ -207,6 +207,24 @@ try {
 
 通用 JSON-RPC over stdio 客户端。**不捆绑 language server**，只检测用户已安装的 `rust-analyzer` / `gopls` / `pyright`。v1 只保证 TS/JS（用 Monaco 内置 worker）。
 
+### 5.7 HarmonyOS / ArkWeb（P6 spike 结论）
+
+2026-11-05 在本机 DevEco 26.0.0（API 26）+ Relay_Phone_API26 模拟器完成 spike，
+工程在 `spikes/harmony-arkweb`：
+
+| 门禁项 | 结论 | 说明 |
+|---|---|---|
+| ArkWeb 跑现有前端 | ✅ | 通过 HTTP dev server 加载 `apps/web`，布局/文件树/编辑器/任务栏均渲染 |
+| rawfile 直载 Vite 产物 | ❌ | `resource://rawfile` 下 ES module 与 CSS 被 CORS 拒绝（origin null）；需 HTTP 或单文件内联 |
+| NAPI 承载 CoreHandle | ✅ | `libentry.so` 导出 `createHandle()`，ArkTS 收到 `{id,native}` 并显示 |
+| Monaco 渲染 | ✅ | 语法高亮、折叠、缩略图可用 |
+| Monaco 内存 | ⚠️ | 模拟器 PSS：应用 ~142MB + render ~275MB（完整前端 + Monaco） |
+| Monaco 输入法 | ⚠️ | `uitest uiInput inputText` 未验证出文本；需真机 IME 复核 |
+
+**决策**：按 MILESTONES 门禁“只过前两项 → 只读 + 对话”，鸿蒙首版不启用可编辑 Monaco；
+保留 ArkWeb + NAPI 的只读代码预览与 Agent 会话。若要升级为可编辑，需要先解决
+rawfile 资源加载（HTTP/自定义 scheme/单文件构建）、内存占用与 IME 三项。
+
 ## 6. 生命周期
 
 ```

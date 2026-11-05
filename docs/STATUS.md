@@ -64,7 +64,8 @@
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
 | P5 发布 | ✅ `v0.5.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 资产） |
-| P6 | ⏳ 外部依赖阻塞：30 天观测、第三方审计、签名证书、HarmonyOS SDK、arm64/更新器端点 |
+| P6 鸿蒙 | ✅ spike 完成（DevEco 26/API26）：ArkWeb 跑通前端、NAPI 传 handle；Monaco 内存/IME 未过 → 首版只读+对话 |
+| P6 其余 | ⏳ 30 天观测、第三方审计、签名证书、arm64/更新器端点 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ P4 `preview.2` 全绿；P5 提交由后台 watcher 验证 |
 
