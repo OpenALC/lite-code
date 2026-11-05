@@ -41,6 +41,28 @@
 | P6 稳定化与鸿蒙 | `0.6.x` | `v0.6.1-preview.1` | |
 | 正式版 | `1.0.0` | `v1.0.0` | 仅维护者明确声明时 |
 
+## 2.1 强制约束（执行者不可越权）
+
+以下九条由 `scripts/check-version.mjs` 在 CI 与 release 中机械校验，**不依赖任何人的自觉**：
+
+| # | 约束 | 违反后果 |
+|---|---|---|
+| 1 | 三处 manifest 版本必须完全一致 | CI fail |
+| 2 | 必须是合法 semver | CI fail |
+| 3 | **主版本必须为 0**，除非仓库变量 `ALLOW_V1=true` | CI fail |
+| 4 | 0.x 必须带 `-preview.N`（点号不可省） | CI fail |
+| 5 | 正式版不得带预发布后缀 | CI fail |
+| 6 | release 时 manifest 必须等于 tag | release fail |
+| 7 | release 时第二段必须等于 `.milestone` 的里程碑号 | release fail |
+| 8 | 发版提交必须由 `chore(release):` 前缀的独立 commit 完成 | 人工 review |
+| 9 | tag 只能打在 `main` 上 | 人工 review |
+
+**关于第 3 条**：`ALLOW_V1` 是**仓库变量**（Settings → Variables），不是仓库文件。执行 agent 即使提交改动的 PR 也改不动它，只有维护者在 GitHub 设置里能改。这是"主版本只能由维护者声明"从约定变成机制的关键——把它写进文件里是没用的，agent 会改文件。
+
+**关于第 7 条**：`.milestone` 是仓库根目录的单行文件，值形如 `6`。它在里程碑切换时由维护者更新，是"当前开发阶段"的单一来源。日常 PR 不校验第二段（否则 P6 期间所有 0.5.x 都会红），只在打 tag 时校验。
+
+**执行者须知**：不要主动修改 `Cargo.toml` / `package.json` / `tauri.conf.json` 的版本号，除非该 issue 明确是发版任务。功能 PR 不碰版本号，版本号只在发版 commit 里变化。
+
 ## 3. 打 tag 的时机
 
 | 时机 | tag | 是否必须 |
@@ -49,6 +71,8 @@
 | 里程碑内，高危安全修复 | `0.<P>.<N+1>-preview.1` | 必须 |
 | 里程碑结束，功能完成且已知 bug 清空 | `0.<P>.<N+1>-preview.1` | **必须** |
 | 维护者声明正式版 | `v1.0.0` | 手动 |
+
+> 除上表列出的发版节点外，任何 commit 都不得修改版本号。发版外的版本变动一律视为违规，需回滚。
 
 里程碑收尾的 tag 与中间 tag 格式相同——**没有"里程碑完成版"这种特殊后缀**。里程碑是否完成，看 release notes 与 `MILESTONES.md` 的勾选，不看版本号。
 

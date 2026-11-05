@@ -70,6 +70,13 @@ jobs:
               exit 1
             fi
           fi
+      # 强化校验：manifest 必须等于 tag，第二段必须等于当前里程碑。
+      # 主版本锁由 ALLOW_V1 控制（仓库变量，执行者不可改）。
+      - name: version guard (release)
+        shell: bash
+        env:
+          ALLOW_V1: "${{ vars.ALLOW_V1 == 'true' && 'true' || 'false' }}"
+        run: node scripts/check-version.mjs --release --tag "$GITHUB_REF_NAME"
 
   verify:
     name: verify

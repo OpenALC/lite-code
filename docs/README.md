@@ -15,6 +15,7 @@
 | [CI.md](CI.md) | GitHub Actions 工作流、缓存、签名、secrets、本地复现 |
 | [TASKS.md](TASKS.md) | Task 实体、worktree 隔离、并发配额、合并协议 |
 | [UI.md](UI.md) | 布局、视觉基调、交互约定 |
+| [RELEASE-GATES.md](RELEASE-GATES.md) | P6 出口门禁分类与豁免决定 |
 | [release-notes-template.md](release-notes-template.md) | 发版说明模板 |
 
 ---

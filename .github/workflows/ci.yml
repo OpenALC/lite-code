@@ -59,6 +59,23 @@ jobs:
             fi
           fi
 
+  version-guard:
+    name: version guard
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 主版本只能由维护者显式声明；执行者不得自行改动（docs/VERSIONING.md §1）。
+      # ALLOW_V1 是仓库变量，不是 PR 可改的文件。
+      - name: check version
+        env:
+          ALLOW_V1: "${{ vars.ALLOW_V1 == 'true' && 'true' || 'false' }}"
+        run: node scripts/check-version.mjs
+
   rust-fmt:
     name: fmt
     needs: prep
@@ -197,7 +214,7 @@ jobs:
 
   summary:
     name: ci
-    needs: [prep, rust-fmt, rust-clippy, rust-test, contract, lanes, web, deny]
+    needs: [prep, version-guard, rust-fmt, rust-clippy, rust-test, contract, lanes, web, deny]
     if: always()
     runs-on: ubuntu-22.04
     steps:
