@@ -94,6 +94,7 @@ lane 边界、契约漂移、cargo-deny 等门禁见 [docs/CI.md](docs/CI.md)；
 | [docs/PLAN.md](docs/PLAN.md) | 并行开发组织与风险 |
 | [docs/CI.md](docs/CI.md) | CI、发布与签名 |
 | [docs/STATUS.md](docs/STATUS.md) | 当前进度快照 |
+| [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) | P6 安全审计范围与残余风险 |
 
 ## 许可证
 

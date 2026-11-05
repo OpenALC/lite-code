@@ -40,3 +40,5 @@
 - 数据库面板：连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、只读徽标
 - Git 面板：主工作区 status（staged/unstaged、ahead/behind、merge/rebase）、diff、暂存/取消暂存、提交与最近提交
 - Agent DB 闭环：真实 SQLite 建表 → 写入 → 查询，结果回填后继续
+- 安全边界：DB/MCP 工具输出加不可信数据标记；Tauri CSP 允许预览 iframe 并收紧 object/base
+- HarmonyOS spike：ArkWeb + NAPI 通过；Monaco 内存/IME 未过，首版降级只读+对话
