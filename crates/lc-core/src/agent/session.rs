@@ -162,6 +162,11 @@ impl Session {
         self.approvals.pending()
     }
 
+    /// 丢弃待审批请求，但保留会话可继续（区别于永久终止的 [`Session::cancel`]）。
+    pub fn clear_pending_approvals(&mut self) {
+        self.approvals.clear();
+    }
+
     pub fn authorize(
         &mut self,
         request: &PolicyRequest<'_>,
@@ -216,7 +221,8 @@ impl Session {
         }
     }
 
-    /// 便捷判定：工具 + 风险 + 可选命令/工作区信息。
+    /// 便捷判定：工具 + 风险 + 审批摘要（shell 命令 / SQL / 文件路径 /
+    /// 紧凑参数 JSON）+ 工作区信息。
     pub fn authorize_tool(
         &mut self,
         tool: &str,

@@ -5,6 +5,8 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use lc_proto::ErrorCode;
 use serde_json::Value;
@@ -12,7 +14,7 @@ use serde_json::Value;
 use crate::fs::{RealPathResolver, ensure_within_root};
 use crate::llm::{LlmError, LlmEvent, LlmInput, LlmRequest, OpenAiResponsesClient};
 
-use super::approval::ApprovalRequest;
+use super::approval::{ApprovalRequest, approval_summary};
 use super::collector::{CollectedToolCall, CollectorError, TurnCollector};
 use super::compact::{CompactionRecord, compact, estimate_tokens};
 use super::exec::{ToolCall, ToolError, ToolExecutor, ToolOutput};
@@ -81,6 +83,7 @@ pub struct AgentLoop {
     messages: Vec<LlmInput>,
     pending_calls: VecDeque<CollectedToolCall>,
     tool_observer: Option<ToolResultObserver>,
+    cancel: Option<Arc<AtomicBool>>,
     context_k: u32,
     compress_at_k: u32,
     next_compaction_id: u64,
@@ -110,6 +113,7 @@ impl AgentLoop {
             messages: Vec::new(),
             pending_calls: VecDeque::new(),
             tool_observer: None,
+            cancel: None,
             context_k,
             compress_at_k,
             next_compaction_id: 0,
@@ -154,6 +158,13 @@ impl AgentLoop {
         self
     }
 
+    /// 共享取消令牌（Tauri 命令线程、worker 与循环共用同一 `AtomicBool`）。
+    /// 已发出的 HTTP 流不会被打断，但取消后不会再执行工具或发起下一轮。
+    pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
     pub fn session(&self) -> &Session {
         &self.session
     }
@@ -165,6 +176,33 @@ impl AgentLoop {
     /// 取消会话：停止后续轮次与工具执行（已发出的 HTTP 流不强制中断）。
     pub fn cancel(&mut self) {
         self.session.cancel();
+        if let Some(cancel) = &self.cancel {
+            cancel.store(true, Ordering::Release);
+        }
+    }
+
+    /// 丢弃挂起的审批与同轮剩余调用，但保留会话可继续。用于取消停在审批卡
+    /// 上的轮次（此时循环不在执行，令牌检查不会触发）。
+    pub fn discard_pending(&mut self) {
+        self.pending_calls.clear();
+        self.session.clear_pending_approvals();
+    }
+
+    fn cancelled(&self) -> bool {
+        self.session.is_cancelled()
+            || self
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+    }
+
+    fn ensure_not_cancelled(&mut self) -> Result<(), LoopError> {
+        if self.cancelled() {
+            self.discard_pending();
+            Err(SessionError::Cancelled.into())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn run(
@@ -172,18 +210,31 @@ impl AgentLoop {
         user_text: &str,
         sink: &mut dyn FnMut(LlmEvent),
     ) -> Result<LoopOutcome, LoopError> {
+        self.ensure_not_cancelled()?;
+        // 审批未决时不允许开新轮：否则旧审批恢复时 pending 队列可能已被覆盖。
+        if !self.session.pending().is_empty() {
+            return Err(SessionError::PendingApproval.into());
+        }
         self.messages
             .push(LlmInput::new("user", user_text.to_string()));
         self.turn_loop(sink)
     }
 
     /// 处理审批卡后继续：允许则执行挂起工具并进入下一轮 LLM；拒绝则结束。
+    ///
+    /// 审批决议只授权生成该审批的那一个调用（`pending_calls` 队首）。同轮
+    /// 其余调用必须重新走 `Session::authorize`，遇到新的 Ask 再次挂起；不能
+    /// 借一次 AllowOnce/AllowSession 批量放行后续工具。
     pub fn resolve_approval(
         &mut self,
         approval_id: u64,
         decision: super::approval::ApprovalDecision,
         sink: &mut dyn FnMut(LlmEvent),
     ) -> Result<LoopOutcome, LoopError> {
+        if self.cancelled() {
+            self.discard_pending();
+            return Err(SessionError::Cancelled.into());
+        }
         let request = self
             .session
             .pending()
@@ -193,20 +244,52 @@ impl AgentLoop {
             .ok_or(SessionError::UnknownApproval(approval_id))?;
         let outcome = self.session.approve(approval_id, decision)?;
         if outcome == ApprovalOutcome::Denied {
-            self.pending_calls.clear();
+            self.discard_pending();
             return Ok(LoopOutcome::Denied {
                 source: request.source,
                 reason: request.reason,
             });
         }
-        while let Some(call) = self.pending_calls.pop_front() {
+
+        // 审批队列同一时刻只有一个请求，`turn_loop` 也总是把对应调用放在
+        // pending 队首，因此队首就是本次决议授权的调用。
+        match self.resume_pending_after_approval() {
+            Ok(Some(outcome)) => Ok(outcome),
+            Ok(None) => self.turn_loop(sink),
+            Err(error) => {
+                self.discard_pending();
+                Err(error)
+            }
+        }
+    }
+
+    fn resume_pending_after_approval(&mut self) -> Result<Option<LoopOutcome>, LoopError> {
+        if let Some(call) = self.pending_calls.pop_front() {
             self.execute_and_record(&call)?;
         }
-        self.turn_loop(sink)
+        while let Some(call) = self.pending_calls.pop_front() {
+            match self.authorize_call(&call)? {
+                AuthorizeOutcome::Allowed | AuthorizeOutcome::Cached => {
+                    self.execute_and_record(&call)?;
+                }
+                AuthorizeOutcome::NeedsApproval(approval) => {
+                    self.pending_calls.push_front(call);
+                    return Ok(Some(LoopOutcome::NeedsApproval { approval }));
+                }
+                AuthorizeOutcome::Denied { source, reason } => {
+                    self.pending_calls.clear();
+                    return Ok(Some(LoopOutcome::Denied { source, reason }));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn turn_loop(&mut self, sink: &mut dyn FnMut(LlmEvent)) -> Result<LoopOutcome, LoopError> {
+        // 新轮次不继承上一轮（尤其是被取消轮次）的挂起调用。
+        self.pending_calls.clear();
         loop {
+            self.ensure_not_cancelled()?;
             self.session.begin_turn()?;
 
             let record = compact(
@@ -265,17 +348,8 @@ impl AgentLoop {
 
             let mut calls: VecDeque<CollectedToolCall> = turn.tool_calls.into();
             while let Some(call) = calls.pop_front() {
-                let spec = self
-                    .registry
-                    .get(&call.name)
-                    .ok_or_else(|| LoopError::UnknownTool(call.name.clone()))?;
-                let risk = spec.risk;
-                let command = call.args.get("command").and_then(Value::as_str);
-                let inside = self.inside_workspace(risk, &call.args);
-                match self
-                    .session
-                    .authorize_tool(&call.name, risk, command, inside, None)?
-                {
+                self.ensure_not_cancelled()?;
+                match self.authorize_call(&call)? {
                     AuthorizeOutcome::Allowed | AuthorizeOutcome::Cached => {
                         self.execute_and_record(&call)?;
                     }
@@ -285,6 +359,7 @@ impl AgentLoop {
                         return Ok(LoopOutcome::NeedsApproval { approval });
                     }
                     AuthorizeOutcome::Denied { source, reason } => {
+                        self.pending_calls.clear();
                         return Ok(LoopOutcome::Denied { source, reason });
                     }
                 }
@@ -292,7 +367,22 @@ impl AgentLoop {
         }
     }
 
+    /// 单次工具调用的授权：风险来自注册表，审批摘要来自实际执行参数。
+    fn authorize_call(&mut self, call: &CollectedToolCall) -> Result<AuthorizeOutcome, LoopError> {
+        let risk = self
+            .registry
+            .get(&call.name)
+            .ok_or_else(|| LoopError::UnknownTool(call.name.clone()))?
+            .risk;
+        let summary = approval_summary(&call.name, &call.args);
+        let inside = self.inside_workspace(risk, &call.args);
+        Ok(self
+            .session
+            .authorize_tool(&call.name, risk, summary.as_deref(), inside, None)?)
+    }
+
     fn execute_and_record(&mut self, call: &CollectedToolCall) -> Result<(), LoopError> {
+        self.ensure_not_cancelled()?;
         self.messages.push(LlmInput::function_call(
             &call.id,
             &call.name,
@@ -305,10 +395,11 @@ impl AgentLoop {
             observer(&call.id, &outcome);
         }
         // 工具失败是模型可恢复的输入，不是会话级错误：把错误文本回填，
-        // 让模型决定重试/换方案，而不是直接中断整个循环。
+        // 让模型决定重试/换方案，而不是直接中断整个循环。MCP/DB 的错误
+        // 文本可能来自外部系统，用显式边界包住，避免被当成可信指令。
         let output = match outcome {
             Ok(output) => output.text,
-            Err(error) => format!("tool error: {error}"),
+            Err(error) => format!("[UNTRUSTED TOOL ERROR] tool error: {error} [/UNTRUSTED]"),
         };
         self.messages
             .push(LlmInput::function_call_output(&call.id, output));
@@ -340,6 +431,7 @@ mod tests {
     use crate::agent::policy::PolicyMode;
     use crate::llm::StopReason;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     struct FakeLlm {
@@ -393,6 +485,59 @@ mod tests {
                 text: "tool ok".into(),
             })
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingExecutor {
+        calls: Arc<Mutex<Vec<ToolCall>>>,
+    }
+
+    impl RecordingExecutor {
+        fn calls(&self) -> Arc<Mutex<Vec<ToolCall>>> {
+            Arc::clone(&self.calls)
+        }
+    }
+
+    impl ToolExecutor for RecordingExecutor {
+        fn execute(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+            self.calls.lock().unwrap().push(call.clone());
+            Ok(ToolOutput {
+                text: "tool ok".into(),
+            })
+        }
+    }
+
+    fn tool_turn(calls: &[(&str, &str, Value)]) -> Vec<LlmEvent> {
+        let mut events = Vec::new();
+        for (id, name, args) in calls {
+            events.push(LlmEvent::ToolUseStart {
+                id: (*id).into(),
+                name: (*name).into(),
+            });
+            events.push(LlmEvent::ToolUseArgsDelta {
+                id: (*id).into(),
+                json: args.to_string(),
+            });
+        }
+        events.push(LlmEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        });
+        events
+    }
+
+    fn executed_commands(calls: &Arc<Mutex<Vec<ToolCall>>>) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|call| {
+                call.args
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
     }
 
     fn temp_root(tag: &str) -> PathBuf {
@@ -513,6 +658,265 @@ mod tests {
     }
 
     #[test]
+    fn batch_shell_calls_require_individual_approvals() {
+        let root = temp_root("batch-approval");
+        let llm = FakeLlm::new(vec![
+            tool_turn(&[
+                ("call_1", "shell", json!({"command": "echo one"})),
+                ("call_2", "shell", json!({"command": "echo two"})),
+            ]),
+            final_turn("done"),
+        ]);
+        let requests = llm.requests();
+        let executor = RecordingExecutor::default();
+        let calls = executor.calls();
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(executor),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        );
+
+        let outcome = loop_.run("two shells", &mut |_| {}).unwrap();
+        let LoopOutcome::NeedsApproval { approval } = outcome else {
+            panic!("expected first approval, got {outcome:?}");
+        };
+        assert_eq!(approval.command.as_deref(), Some("echo one"));
+        assert!(executed_commands(&calls).is_empty());
+
+        // 只允许第一个：第二个必须重新走授权并再次挂起，不能跟着执行。
+        let outcome = loop_
+            .resolve_approval(approval.id, ApprovalDecision::AllowOnce, &mut |_| {})
+            .unwrap();
+        let LoopOutcome::NeedsApproval { approval: second } = outcome else {
+            panic!("expected second approval, got {outcome:?}");
+        };
+        assert_eq!(second.command.as_deref(), Some("echo two"));
+        assert_eq!(executed_commands(&calls), ["echo one"]);
+
+        // 拒绝第二个：队列清空，不再执行，也不再发起下一轮 LLM。
+        let outcome = loop_
+            .resolve_approval(second.id, ApprovalDecision::Deny, &mut |_| {})
+            .unwrap();
+        assert!(matches!(outcome, LoopOutcome::Denied { .. }));
+        assert_eq!(executed_commands(&calls), ["echo one"]);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn allow_session_cache_only_reuses_identical_arguments() {
+        let root = temp_root("batch-session");
+        let llm = FakeLlm::new(vec![
+            tool_turn(&[
+                ("call_1", "shell", json!({"command": "echo one"})),
+                ("call_2", "shell", json!({"command": "echo two"})),
+            ]),
+            final_turn("done"),
+        ]);
+        let executor = RecordingExecutor::default();
+        let calls = executor.calls();
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(executor),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        );
+
+        let outcome = loop_.run("two shells", &mut |_| {}).unwrap();
+        let LoopOutcome::NeedsApproval { approval } = outcome else {
+            panic!("expected first approval, got {outcome:?}");
+        };
+        let outcome = loop_
+            .resolve_approval(approval.id, ApprovalDecision::AllowSession, &mut |_| {})
+            .unwrap();
+        let LoopOutcome::NeedsApproval { approval } = outcome else {
+            panic!("different command must ask again, got {outcome:?}");
+        };
+        assert_eq!(approval.command.as_deref(), Some("echo two"));
+        assert_eq!(executed_commands(&calls), ["echo one"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn db_approval_summary_uses_sql_not_decoy_command() {
+        let root = temp_root("db-summary");
+        let llm = FakeLlm::new(vec![
+            tool_turn(&[(
+                "db_1",
+                "db_execute",
+                json!({
+                    "connection_id": "main",
+                    "sql": "DELETE FROM users",
+                    "command": "echo safe",
+                }),
+            )]),
+            final_turn("done"),
+        ]);
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(FakeExecutor::default()),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        );
+
+        let outcome = loop_.run("delete rows", &mut |_| {}).unwrap();
+        let LoopOutcome::NeedsApproval { approval } = outcome else {
+            panic!("expected approval, got {outcome:?}");
+        };
+        assert_eq!(approval.tool, "db_execute");
+        assert_eq!(approval.command.as_deref(), Some("DELETE FROM users"));
+
+        let outcome = loop_
+            .resolve_approval(approval.id, ApprovalDecision::AllowOnce, &mut |_| {})
+            .unwrap();
+        assert_eq!(
+            outcome,
+            LoopOutcome::Final {
+                text: "done".into()
+            }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_approval_summary_uses_path() {
+        let root = temp_root("write-summary");
+        let llm = FakeLlm::new(vec![
+            tool_turn(&[(
+                "w1",
+                "write_file",
+                json!({"path": "../outside.txt", "content": "x"}),
+            )]),
+            final_turn("done"),
+        ]);
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(FakeExecutor::default()),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        );
+
+        let outcome = loop_.run("write outside", &mut |_| {}).unwrap();
+        let LoopOutcome::NeedsApproval { approval } = outcome else {
+            panic!("expected approval, got {outcome:?}");
+        };
+        assert_eq!(approval.tool, "write_file");
+        assert_eq!(approval.command.as_deref(), Some("../outside.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    struct CancellingLlm {
+        requests: Arc<Mutex<usize>>,
+        cancel: Arc<AtomicBool>,
+    }
+
+    impl LlmStream for CancellingLlm {
+        fn stream(
+            &self,
+            _request: &LlmRequest,
+            sink: &mut dyn FnMut(LlmEvent),
+        ) -> Result<(), LlmError> {
+            *self.requests.lock().unwrap() += 1;
+            sink(LlmEvent::ToolUseStart {
+                id: "call_1".into(),
+                name: "read_file".into(),
+            });
+            sink(LlmEvent::ToolUseArgsDelta {
+                id: "call_1".into(),
+                json: r#"{"path":"a.txt"}"#.into(),
+            });
+            sink(LlmEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            });
+            self.cancel.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cancel_token_stops_tools_and_next_turn() {
+        let root = temp_root("cancel-token");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(0));
+        let executor = RecordingExecutor::default();
+        let calls = executor.calls();
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(CancellingLlm {
+                requests: Arc::clone(&requests),
+                cancel: Arc::clone(&cancel),
+            }),
+            Box::new(executor),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        )
+        .with_cancel(cancel);
+
+        let error = loop_.run("go", &mut |_| {}).expect_err("must cancel");
+        assert_eq!(error, LoopError::Session(SessionError::Cancelled));
+        assert_eq!(*requests.lock().unwrap(), 1);
+        assert!(calls.lock().unwrap().is_empty(), "取消后不得执行工具");
+
+        // 同一令牌仍置位：下一条消息在调用 LLM 前就被拦下。
+        let error = loop_
+            .run("again", &mut |_| {})
+            .expect_err("still cancelled");
+        assert_eq!(error, LoopError::Session(SessionError::Cancelled));
+        assert_eq!(*requests.lock().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancel_before_approval_resolution_skips_pending_calls() {
+        let root = temp_root("cancel-approval");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let llm = FakeLlm::new(vec![
+            tool_turn(&[
+                ("call_1", "shell", json!({"command": "echo one"})),
+                ("call_2", "shell", json!({"command": "echo two"})),
+            ]),
+            final_turn("done"),
+        ]);
+        let requests = llm.requests();
+        let executor = RecordingExecutor::default();
+        let calls = executor.calls();
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(executor),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        )
+        .with_cancel(Arc::clone(&cancel));
+
+        let outcome = loop_.run("two shells", &mut |_| {}).unwrap();
+        let LoopOutcome::NeedsApproval { approval } = outcome else {
+            panic!("expected approval, got {outcome:?}");
+        };
+        cancel.store(true, Ordering::Release);
+        let error = loop_
+            .resolve_approval(approval.id, ApprovalDecision::AllowOnce, &mut |_| {})
+            .expect_err("cancelled approval must not execute");
+        assert_eq!(error, LoopError::Session(SessionError::Cancelled));
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn unknown_tool_is_rejected() {
         let root = temp_root("unknown");
         let llm = Box::new(FakeLlm::new(vec![vec![
@@ -605,6 +1009,8 @@ mod tests {
                 _ => None,
             })
             .expect("function_call_output");
+        assert!(output.starts_with("[UNTRUSTED TOOL ERROR]"), "{output}");
+        assert!(output.ends_with("[/UNTRUSTED]"), "{output}");
         assert!(output.contains("tool error"), "{output}");
         assert!(output.contains("missing.txt"), "{output}");
         let _ = std::fs::remove_dir_all(&root);

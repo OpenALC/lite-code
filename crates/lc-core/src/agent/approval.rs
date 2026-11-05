@@ -5,15 +5,47 @@
 
 use std::collections::HashSet;
 
+use serde_json::Value;
+
 use super::policy::PolicySource;
 
 pub type ApprovalId = u64;
+
+/// 审批摘要：来自工具的实际执行参数，用于审批卡展示与 `AllowSession`
+/// 缓存键。**不能**直接采信请求里的 `command` 字段——`db_*` 与 MCP 工具
+/// 的真实参数不是它，伪造的 `command` 会让审批卡与缓存键偏离实际执行内容。
+///
+/// - `shell`：`command`
+/// - `db_*`：`sql`（无 SQL 的 `db_list` / `db_schema` 回退到完整参数）
+/// - `write_file` / `edit_file`：`path`
+/// - 其它工具（含 MCP）：紧凑 JSON 参数
+///
+/// 参数缺失或类型不对时回退到紧凑 JSON，保证摘要始终反映实际参数。
+pub(crate) fn approval_summary(tool: &str, args: &Value) -> Option<String> {
+    let field = match tool {
+        "shell" => Some("command"),
+        "write_file" | "edit_file" => Some("path"),
+        name if name.starts_with("db_") => Some("sql"),
+        _ => None,
+    };
+    if let Some(field) = field
+        && let Some(value) = args.get(field).and_then(Value::as_str)
+    {
+        return Some(value.to_string());
+    }
+    if args.is_null() {
+        // MCP 客户端会把 null 参数规范化为 {}；摘要保持一致。
+        return Some("{}".to_string());
+    }
+    Some(args.to_string())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub id: ApprovalId,
     pub tool: String,
-    /// shell/SQL 的完整命令原文；文件工具为 None。
+    /// 审批摘要（见 [`approval_summary`]）：shell 命令原文、SQL、文件路径或
+    /// 紧凑参数 JSON。契约字段名保持 `command`，但不再等同于"命令"。
     pub command: Option<String>,
     pub source: PolicySource,
     pub reason: String,
@@ -23,12 +55,12 @@ pub struct ApprovalRequest {
 pub enum ApprovalDecision {
     /// 只允许这一次。
     AllowOnce,
-    /// 本次会话允许同类（tool + command 完全相同）。
+    /// 本次会话允许同类（tool + 完整审批摘要完全相同）。
     AllowSession,
     Deny,
 }
 
-/// 同类判定键：工具名 + 命令原文。文件工具没有命令，按工具名归类。
+/// 同类判定键：工具名 + 完整审批摘要。参数不同的调用不会互相放行。
 fn class_key(tool: &str, command: Option<&str>) -> (String, Option<String>) {
     (tool.to_string(), command.map(str::to_string))
 }
@@ -138,5 +170,58 @@ mod tests {
         cache.allow_session("write_file", None);
         assert!(cache.allows("write_file", None));
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn approval_summary_uses_actual_execution_arguments() {
+        use serde_json::json;
+
+        assert_eq!(
+            approval_summary(
+                "shell",
+                &json!({"command": "rm -rf build", "timeout_ms": 1000})
+            )
+            .as_deref(),
+            Some("rm -rf build")
+        );
+        // db_* 的实际参数是 sql；伪造的 command 不能影响审批卡或缓存键。
+        assert_eq!(
+            approval_summary(
+                "db_execute",
+                &json!({"connection_id": "main", "sql": "DELETE FROM t", "command": "echo safe"})
+            )
+            .as_deref(),
+            Some("DELETE FROM t")
+        );
+        assert_eq!(
+            approval_summary(
+                "db_query",
+                &json!({"connection_id": "main", "sql": "SELECT 1", "command": "echo safe"})
+            )
+            .as_deref(),
+            Some("SELECT 1")
+        );
+        // 无 SQL 的数据库工具按完整参数归类。
+        assert_eq!(
+            approval_summary("db_schema", &json!({"connection_id": "main"})).as_deref(),
+            Some(r#"{"connection_id":"main"}"#)
+        );
+        assert_eq!(
+            approval_summary("write_file", &json!({"path": "src/a.ts", "content": "x"})).as_deref(),
+            Some("src/a.ts")
+        );
+        assert_eq!(
+            approval_summary("edit_file", &json!({"path": "a.ts", "old_string": "a"})).as_deref(),
+            Some("a.ts")
+        );
+        // MCP 等动态工具：完整紧凑 JSON，参数变化即换缓存键。
+        assert_eq!(
+            approval_summary("mcp_fs_read", &json!({"path": "a"})).as_deref(),
+            Some(r#"{"path":"a"}"#)
+        );
+        assert_eq!(
+            approval_summary("db_list", &json!({})).as_deref(),
+            Some("{}")
+        );
     }
 }

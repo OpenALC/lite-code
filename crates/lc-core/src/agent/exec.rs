@@ -3,7 +3,7 @@
 //! [`super::shell`] 实现（ProcessSupervisor 整组回收 + 输出裁剪），其余执行类
 //! 工具仍明确返回 Unsupported。
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use globset::Glob;
 use lc_proto::EntryKind;
@@ -43,6 +43,8 @@ pub enum ToolError {
     InvalidArgs(String),
     #[error("路径不在工作区内：{0}")]
     PathOutsideRoot(String),
+    #[error("拒绝写入版本库元数据（.git/.hg/.svn）：{0}")]
+    ProtectedPath(String),
     #[error("文件不存在：{0}")]
     NotFound(String),
     #[error("I/O 错误：{0}")]
@@ -98,6 +100,55 @@ fn truncate(mut text: String) -> String {
     text
 }
 
+/// 版本库元数据目录名。写这些路径等于让模型有机会改写 hooks / fsmonitor
+/// 等本机执行配置，进而绕过审批执行任意代码。
+const VCS_METADATA_NAMES: &[&str] = &[".git", ".hg", ".svn"];
+
+/// 路径中任一段（大小写不敏感）是版本库元数据目录即拒绝。Windows 会忽略
+/// 组件末尾的点和空格，这里先归一化再去匹配；`.git` 文件本身同样命中。
+fn reject_vcs_metadata(path: &Path) -> Result<(), ToolError> {
+    let protected = path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        let name = name.to_string_lossy();
+        let normalized = name.trim_end_matches(['.', ' ']);
+        VCS_METADATA_NAMES
+            .iter()
+            .any(|vcs| normalized.eq_ignore_ascii_case(vcs))
+    });
+    if protected {
+        return Err(ToolError::ProtectedPath(display_path(path)));
+    }
+    Ok(())
+}
+
+/// 写路径校验：字面路径、工作区内的候选路径，以及已存在目标的真实路径
+/// （或不存在目标的父目录真实路径）都必须不含 VCS 元数据组件。后两步用于
+/// 挡住 `link -> .git` 这类符号链接绕过。
+fn ensure_writable_path(root: &Path, path: &str) -> Result<(), ToolError> {
+    let requested = Path::new(path);
+    reject_vcs_metadata(requested)?;
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    reject_vcs_metadata(&candidate)?;
+
+    let resolved = match std::fs::canonicalize(&candidate) {
+        Ok(resolved) => Some(resolved),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => candidate
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok()),
+        Err(_) => None,
+    };
+    if let Some(resolved) = resolved {
+        reject_vcs_metadata(&resolved)?;
+    }
+    Ok(())
+}
+
 /// 工具执行抽象：真实实现 [`LocalToolExecutor`]，测试可注入 fake。
 pub trait ToolExecutor: Send + Sync {
     fn execute(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
@@ -144,6 +195,7 @@ impl LocalToolExecutor {
 
     fn write_file(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let path = arg_str(args, "path")?;
+        ensure_writable_path(&self.root, path)?;
         let content = arg_str(args, "content")?;
         let written = write_file_text(&self.root, Path::new(path), content, &RealPathResolver)
             .map_err(fs_error)?;
@@ -154,6 +206,7 @@ impl LocalToolExecutor {
 
     fn edit_file(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let path = arg_str(args, "path")?;
+        ensure_writable_path(&self.root, path)?;
         let old = arg_str(args, "old_string")?;
         let new = arg_str(args, "new_string")?;
         let replace_all = arg_bool(args, "replace_all", false);
@@ -360,6 +413,74 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ToolError::PathOutsideRoot(_)));
         assert!(!outside.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejects_vcs_metadata_writes_but_allows_reads_and_normal_files() {
+        let root = temp_root("vcs");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "[core]\n").unwrap();
+        fs::create_dir_all(root.join("sub/.git")).unwrap();
+        fs::create_dir_all(root.join(".HG")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        // worktree 的 `.git` 是文件而不是目录，同样必须保护。
+        fs::create_dir_all(root.join("worktree")).unwrap();
+        fs::write(root.join("worktree/.git"), "gitdir: ../.git/worktrees/w\n").unwrap();
+        let executor = LocalToolExecutor::new(&root);
+
+        for path in [".git/config", "sub/.git/x", ".HG/hgrc", "worktree/.git"] {
+            let err = executor
+                .execute(&ToolCall::new(
+                    "write_file",
+                    json!({"path": path, "content": "x"}),
+                ))
+                .unwrap_err();
+            assert!(
+                matches!(err, ToolError::ProtectedPath(_)),
+                "{path}: {err:?}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(root.join(".git/config")).unwrap(),
+            "[core]\n"
+        );
+        assert!(!root.join("sub/.git/x").exists());
+        assert!(!root.join(".HG/hgrc").exists());
+
+        let edit = executor
+            .execute(&ToolCall::new(
+                "edit_file",
+                json!({"path": ".git/config", "old_string": "core", "new_string": "x"}),
+            ))
+            .unwrap_err();
+        assert!(matches!(edit, ToolError::ProtectedPath(_)));
+        assert_eq!(
+            fs::read_to_string(root.join(".git/config")).unwrap(),
+            "[core]\n"
+        );
+
+        // 读路径保持不变（审计只要求阻止写入）。
+        let read = executor
+            .execute(&ToolCall::new("read_file", json!({"path": ".git/config"})))
+            .unwrap();
+        assert_eq!(read.text, "[core]\n");
+
+        // 正常文件与名字相近的 `.github` 不受影响。
+        executor
+            .execute(&ToolCall::new(
+                "write_file",
+                json!({"path": "src/a.txt", "content": "ok"}),
+            ))
+            .expect("normal write");
+        executor
+            .execute(&ToolCall::new(
+                "write_file",
+                json!({"path": ".github/workflows/ci.yml", "content": "ok"}),
+            ))
+            .expect(".github write");
+
         let _ = fs::remove_dir_all(&root);
     }
 

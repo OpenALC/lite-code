@@ -398,11 +398,22 @@ impl Worker {
         self.complete(result);
     }
 
-    /// 空闲时的取消没有在途轮次，清掉 latch，避免下一条消息被误判为取消。
-    fn cancel_idle(&self) {
+    /// 取消命令在 worker 空闲时到达：没有在途轮次就清掉 latch，避免下一条
+    /// 消息被误判为取消。若 `busy` 为真但循环不在跑，说明停在审批卡上：
+    /// 丢弃挂起审批并结束本轮，否则会话会一直挂着旧审批无法继续。
+    fn cancel_idle(&mut self) {
         if !self.busy.load(Ordering::Acquire) {
             self.cancel.store(false, Ordering::Release);
+            return;
         }
+        if self.agent.session().pending().is_empty() {
+            // 忙但尚未进入审批挂起（例如 Send 已入队）：保留取消 latch，
+            // 由 worker 处理该 Send 时统一收尾。
+            return;
+        }
+        self.agent.discard_pending();
+        self.cancel.store(false, Ordering::Release);
+        self.finish_cancelled();
     }
 
     fn complete(&mut self, result: Result<LoopOutcome, LoopError>) {
@@ -490,6 +501,7 @@ fn spawn_worker(
     let observer = emitter.clone();
     let compaction_observer = emitter.clone();
     let agent = agent
+        .with_cancel(cancel.clone())
         .with_tool_observer(Box::new(move |call_id, result| {
             observer.forward_tool_result(call_id, result)
         }))
@@ -804,6 +816,7 @@ fn tool_error_body(error: &ToolError) -> ErrorBody {
         ToolError::PathOutsideRoot(_) => ErrorCode::PathOutsideRoot,
         ToolError::NotFound(_) => ErrorCode::NotFound,
         ToolError::InvalidArgs(_) => ErrorCode::InvalidArgument,
+        ToolError::ProtectedPath(_) => ErrorCode::PermissionDenied,
         // 服务错误在 ToolError::Database 里只剩文本：闸门拒绝与不可用分开映射，
         // 其余（连接不存在、未连接、Node 缺失）统一按不可用处理。
         ToolError::Database(message) if message.contains("拒绝") => ErrorCode::DbRejected,
@@ -1535,6 +1548,91 @@ mod tests {
     }
 
     #[test]
+    fn worker_cancel_prevents_loop_from_executing_tools() {
+        struct CancelBeforeToolLlm {
+            cancel: Arc<AtomicBool>,
+        }
+
+        impl LlmStream for CancelBeforeToolLlm {
+            fn stream(
+                &self,
+                _request: &LlmRequest,
+                sink: &mut dyn FnMut(LlmEvent),
+            ) -> Result<(), LlmError> {
+                sink(LlmEvent::ToolUseStart {
+                    id: "call_1".into(),
+                    name: "read_file".into(),
+                });
+                sink(LlmEvent::ToolUseArgsDelta {
+                    id: "call_1".into(),
+                    json: r#"{"path":"a.txt"}"#.into(),
+                });
+                sink(LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                });
+                self.cancel.store(true, Ordering::Release);
+                Ok(())
+            }
+        }
+
+        struct CountingExecutor {
+            calls: Arc<Mutex<usize>>,
+        }
+
+        impl ToolExecutor for CountingExecutor {
+            fn execute(&self, _call: &ToolCall) -> Result<ToolOutput, ToolError> {
+                *self.calls.lock().expect("calls") += 1;
+                Ok(ToolOutput {
+                    text: "tool ok".into(),
+                })
+            }
+        }
+
+        let sink = RecordingSink::default();
+        let sessions = AgentSessions::default();
+        let id = sessions.allocate_id();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(Mutex::new(0));
+        let agent = AgentLoop::new(
+            Session::new(id.clone(), PolicyMode::Auto),
+            Box::new(CancelBeforeToolLlm {
+                cancel: Arc::clone(&cancel),
+            }),
+            Box::new(CountingExecutor {
+                calls: Arc::clone(&calls),
+            }),
+            ToolRegistry::with_builtins(),
+            std::env::temp_dir(),
+            "test-model",
+        );
+        // 关键：AgentLoop 没有自己 with_cancel，必须由 spawn_worker 接入
+        // 命令层共享的同一令牌。
+        let handle = spawn_worker(
+            &sessions,
+            id,
+            agent,
+            Arc::new(sink.clone()),
+            cancel,
+            None,
+            None,
+        )
+        .expect("spawn");
+
+        handle.begin_send().expect("begin");
+        handle
+            .sender
+            .send(WorkerCommand::Send("go".into()))
+            .expect("send");
+        wait_for(|| !handle.busy.load(Ordering::Acquire));
+
+        assert_eq!(*calls.lock().expect("calls"), 0, "取消后不得执行工具");
+        assert!(sink.events().iter().any(|event| matches!(
+            event,
+            CoreEvent::AgentDone { stop_reason, .. } if stop_reason == CANCELLED_STOP_REASON
+        )));
+    }
+
+    #[test]
     fn worker_keeps_busy_while_approval_pending_then_resumes() {
         let sink = RecordingSink::default();
         let llm = FakeLlm::new(vec![
@@ -1608,6 +1706,77 @@ mod tests {
         )));
         assert!(matches!(
             events.last(),
+            Some(CoreEvent::AgentDone { stop_reason, .. }) if stop_reason == "end_turn"
+        ));
+    }
+
+    #[test]
+    fn worker_cancel_at_approval_clears_pending_and_allows_next_turn() {
+        let sink = RecordingSink::default();
+        let llm = FakeLlm::new(vec![
+            vec![
+                LlmEvent::ToolUseStart {
+                    id: "call_1".into(),
+                    name: "shell".into(),
+                },
+                LlmEvent::ToolUseArgsDelta {
+                    id: "call_1".into(),
+                    json: r#"{"command":"echo hi"}"#.into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta {
+                    index: 0,
+                    text: "after cancel".into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ]);
+        let (_sessions, handle) = spawn_test_worker(&sink, Box::new(llm));
+
+        handle.begin_send().expect("begin");
+        handle
+            .sender
+            .send(WorkerCommand::Send("run echo".into()))
+            .expect("send");
+        wait_for(|| {
+            sink.events()
+                .iter()
+                .any(|event| matches!(event, CoreEvent::AgentApprovalRequired { .. }))
+        });
+        assert!(handle.busy.load(Ordering::Acquire));
+
+        handle.request_cancel();
+        handle.sender.send(WorkerCommand::Cancel).expect("cancel");
+        wait_for(|| !handle.busy.load(Ordering::Acquire));
+        assert!(!handle.cancel.load(Ordering::Acquire));
+        assert!(matches!(
+            sink.events().last(),
+            Some(CoreEvent::AgentDone { stop_reason, .. }) if stop_reason == CANCELLED_STOP_REASON
+        ));
+
+        // 旧审批已随取消丢弃，下一条消息不需要先 resolve 即可运行。
+        handle.begin_send().expect("next send");
+        handle
+            .sender
+            .send(WorkerCommand::Send("next".into()))
+            .expect("send next");
+        wait_for(|| {
+            sink.events().iter().any(|event| {
+                matches!(
+                    event,
+                    CoreEvent::AgentTextDelta { text, .. } if text == "after cancel"
+                )
+            })
+        });
+        wait_for(|| !handle.busy.load(Ordering::Acquire));
+        assert!(matches!(
+            sink.events().last(),
             Some(CoreEvent::AgentDone { stop_reason, .. }) if stop_reason == "end_turn"
         ));
     }
