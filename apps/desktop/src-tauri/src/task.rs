@@ -29,9 +29,12 @@ const TASK_STATE_UNAVAILABLE: &str = "任务存储不可用（锁中毒），请
 
 /// 任务存储的应用级状态。首次命令按当前 workspace 根惰性加载；根切换
 /// （`workspace_open`）时显式 [`TaskState::reset`]，下一次命令重新加载。
-#[derive(Default)]
+///
+/// 内部是 `Arc<Mutex<..>>`，因此可以克隆给会话 worker：worker 只在状态迁移
+/// 时短暂加锁，不做 LLM/网络/磁盘大操作。
+#[derive(Default, Clone)]
 pub(crate) struct TaskState {
-    inner: Mutex<TaskStoreSlot>,
+    inner: Arc<Mutex<TaskStoreSlot>>,
 }
 
 #[derive(Default)]
@@ -58,12 +61,66 @@ impl TaskState {
         root: &Path,
         action: impl FnOnce(&mut TaskStore) -> Result<T, ErrorBody>,
     ) -> Result<T, ErrorBody> {
-        let mut slot = self
-            .inner
-            .lock()
-            .map_err(|_| ErrorBody::new(ErrorCode::Internal, TASK_STATE_UNAVAILABLE))?;
+        let mut slot = self.lock()?;
         let store = slot.ensure_with(root, |root| TaskStore::load_default(root))?;
         action(store)
+    }
+
+    /// 不要求 workspace 根：worker 在会话创建时已通过 `with_store`
+    /// 初始化 store，后续状态迁移只复用同一实例（也保证与 `session_create`
+    /// 的绑定/启动写入同一份内存状态）。
+    pub(crate) fn with_current<T>(
+        &self,
+        action: impl FnOnce(&mut TaskStore) -> Result<T, TaskError>,
+    ) -> Result<T, ErrorBody> {
+        let mut slot = self.lock()?;
+        let store = slot.store.as_mut().ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Internal,
+                "任务存储尚未初始化：请先创建或打开任务",
+            )
+        })?;
+        action(store).map_err(|error| error.to_error_body())
+    }
+
+    fn mark_status(
+        &self,
+        task_id: impl AsRef<str>,
+        status: TaskStatus,
+    ) -> Result<TaskInfo, ErrorBody> {
+        self.with_current(move |store| store.set_status(task_id, status))
+    }
+
+    /// 审批挂起：进入 `Blocked`，端口与 worktree 保持不变。
+    pub(crate) fn mark_needs_input(&self, task_id: impl AsRef<str>) -> Result<TaskInfo, ErrorBody> {
+        self.mark_status(task_id, TaskStatus::Blocked)
+    }
+
+    pub(crate) fn mark_running(&self, task_id: impl AsRef<str>) -> Result<TaskInfo, ErrorBody> {
+        self.mark_status(task_id, TaskStatus::Running)
+    }
+
+    pub(crate) fn mark_review(&self, task_id: impl AsRef<str>) -> Result<TaskInfo, ErrorBody> {
+        self.mark_status(task_id, TaskStatus::Review)
+    }
+
+    pub(crate) fn mark_failed(&self, task_id: impl AsRef<str>) -> Result<TaskInfo, ErrorBody> {
+        self.mark_status(task_id, TaskStatus::Failed)
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, TaskStoreSlot>, ErrorBody> {
+        self.inner
+            .lock()
+            .map_err(|_| ErrorBody::new(ErrorCode::Internal, TASK_STATE_UNAVAILABLE))
+    }
+
+    /// 测试入口：直接注入已构造的 store（生产路径走 `with_store` +
+    /// `TaskStore::load_default`，避免测试读写用户的真实数据目录）。
+    #[cfg(test)]
+    pub(crate) fn init_for_test(&self, store: TaskStore) {
+        let mut slot = self.lock().expect("task state lock");
+        slot.root = Some(store.repo_root().to_path_buf());
+        slot.store = Some(store);
     }
 }
 
@@ -1005,5 +1062,54 @@ mod tests {
             .expect_err("load must fail");
         assert_eq!(error.code, ErrorCode::Io);
         assert!(error.message.contains("boom"), "{}", error.message);
+    }
+
+    #[test]
+    fn task_state_clone_shares_store_and_requires_initialization() {
+        let base = temp_root("state-clone");
+        let repo = base.join("repo");
+        init_repo(&repo);
+
+        let state = TaskState::new();
+        let clone = state.clone();
+
+        // 未初始化（worker 先于 session_create 绑定）→ Internal，命令层不 panic。
+        let error = clone
+            .with_current(|store| Ok(store.list().len()))
+            .expect_err("store is not initialized");
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert!(error.message.contains("尚未初始化"), "{}", error.message);
+
+        let mut store = store_for(&base, &repo, 2);
+        let task = store
+            .create("shared state", Some("s-shared".into()))
+            .expect("create");
+        store.start(&task.task_id).expect("start");
+        state.init_for_test(store);
+
+        // 克隆共享同一 store：任一 handle 的迁移对另一个立即可见。
+        assert_eq!(
+            clone
+                .with_current(|store| Ok(store.list().len()))
+                .expect("clone sees store"),
+            1
+        );
+        let blocked = clone.mark_needs_input(&task.task_id).expect("mark blocked");
+        assert_eq!(blocked.status, TaskStatus::Blocked);
+        let seen = state
+            .with_current(|store| {
+                store.get(&task.task_id).ok_or_else(|| TaskError::NotFound {
+                    task_id: task.task_id.clone(),
+                })
+            })
+            .expect("original sees clone mutation");
+        assert_eq!(seen.status, TaskStatus::Blocked);
+
+        // reset 同样作用于所有克隆。
+        clone.reset();
+        let error = state
+            .with_current(|store| Ok(store.list().len()))
+            .expect_err("reset clears shared slot");
+        assert_eq!(error.code, ErrorCode::Internal);
     }
 }

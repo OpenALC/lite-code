@@ -778,6 +778,170 @@ fn bind_session_persists_and_can_unbind() {
 }
 
 #[test]
+fn task_for_session_finds_bound_task() {
+    let td = TestDir::new("by-session");
+    let plain = td.path().join("plain");
+    std::fs::create_dir_all(&plain).expect("create plain dir");
+    let mut store = td.store(&plain);
+
+    let first = store.create("first", Some("session-1".into())).unwrap();
+    let second = store.create("second", Some("session-2".into())).unwrap();
+
+    assert_eq!(
+        store.task_for_session("session-1").unwrap().task_id,
+        first.task_id
+    );
+    assert_eq!(
+        store.task_for_session("session-2").unwrap().task_id,
+        second.task_id
+    );
+
+    // 解绑后不再命中；未绑定的第三个任务也不会串到旧会话。
+    store.bind_session(&first.task_id, None).unwrap();
+    assert!(store.task_for_session("session-1").is_none());
+    let unbound = store.create("unbound", None).unwrap();
+    assert!(unbound.session_id.is_none());
+    assert_eq!(
+        store.task_for_session("session-2").unwrap().task_id,
+        second.task_id
+    );
+}
+
+#[test]
+fn task_for_session_missing_returns_none() {
+    let td = TestDir::new("by-session-miss");
+    let plain = td.path().join("plain");
+    std::fs::create_dir_all(&plain).expect("create plain dir");
+    let mut store = td.store(&plain);
+    store.create("no session", None).unwrap();
+
+    assert!(store.task_for_session("session-ghost").is_none());
+}
+
+#[test]
+fn set_status_allows_explicit_runtime_transitions() {
+    let td = TestDir::new("set-status-cycle");
+    let repo = init_repo(&td.repo());
+    let mut store = td.store(&repo);
+    let task = store.create("cycle", None).unwrap();
+    let started = store.start(&task.task_id).unwrap();
+    let port = started.port.expect("port after start");
+    let worktree = started.worktree_path.clone().expect("worktree");
+
+    let blocked = store
+        .set_status(&task.task_id, TaskStatus::Blocked)
+        .unwrap();
+    assert_eq!(blocked.status, TaskStatus::Blocked);
+    // Blocked 不释放端口/worktree：审批结束后同一任务继续。
+    assert_eq!(blocked.port, Some(port));
+    assert_eq!(blocked.worktree_path.as_deref(), Some(worktree.as_str()));
+
+    for expected in [
+        TaskStatus::Running,
+        TaskStatus::Review,
+        TaskStatus::Failed,
+        TaskStatus::Blocked,
+        TaskStatus::Running,
+    ] {
+        let updated = store.set_status(&task.task_id, expected).unwrap();
+        assert_eq!(updated.status, expected);
+        assert_eq!(updated.port, Some(port));
+        assert_eq!(updated.worktree_path.as_deref(), Some(worktree.as_str()));
+    }
+
+    // 幂等设置同一状态不报错，也不改变其它字段。
+    let same = store
+        .set_status(&task.task_id, TaskStatus::Running)
+        .unwrap();
+    assert_eq!(same.status, TaskStatus::Running);
+    assert_eq!(store.get(&task.task_id).unwrap().port, Some(port));
+}
+
+#[test]
+fn set_status_rejects_done_and_unstarted_tasks() {
+    let td = TestDir::new("set-status-reject");
+    let plain = td.path().join("plain");
+    std::fs::create_dir_all(&plain).expect("create plain dir");
+    let mut store = td.store(&plain);
+
+    let planning = store.create("planning", None).unwrap();
+    let error = store
+        .set_status(&planning.task_id, TaskStatus::Blocked)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        TaskError::InvalidState {
+            status: TaskStatus::Planning,
+            ..
+        }
+    ));
+    assert!(matches!(
+        store
+            .set_status(&planning.task_id, TaskStatus::Running)
+            .unwrap_err(),
+        TaskError::InvalidState { .. }
+    ));
+
+    store.start(&planning.task_id).unwrap();
+    assert_eq!(store.apply(&planning.task_id).unwrap().commit, "");
+    let after_done = store.get(&planning.task_id).unwrap();
+    assert_eq!(after_done.status, TaskStatus::Done);
+
+    for target in [
+        TaskStatus::Running,
+        TaskStatus::Blocked,
+        TaskStatus::Review,
+        TaskStatus::Failed,
+    ] {
+        assert!(
+            matches!(
+                store.set_status(&planning.task_id, target).unwrap_err(),
+                TaskError::InvalidState {
+                    status: TaskStatus::Done,
+                    ..
+                }
+            ),
+            "Done must not transition to {target:?}"
+        );
+    }
+    assert_eq!(
+        store.get(&planning.task_id).unwrap().status,
+        TaskStatus::Done
+    );
+
+    let ghost = store
+        .set_status("task-ghost", TaskStatus::Running)
+        .unwrap_err();
+    assert!(matches!(ghost, TaskError::NotFound { .. }));
+}
+
+#[test]
+fn set_status_persists_across_reload() {
+    let td = TestDir::new("set-status-persist");
+    let repo = init_repo(&td.repo());
+    let persist = td.data().join("tasks.json");
+    let mut store = TaskStore::new(&persist, &repo);
+
+    let task = store.create("persist status", Some("s-1".into())).unwrap();
+    let started = store.start(&task.task_id).unwrap();
+    let port = started.port.expect("port");
+    let worktree = started.worktree_path.clone().expect("worktree");
+
+    let blocked = store
+        .set_status(&task.task_id, TaskStatus::Blocked)
+        .unwrap();
+    assert_eq!(blocked.status, TaskStatus::Blocked);
+    drop(store);
+
+    let reloaded = TaskStore::new(&persist, &repo);
+    let after = reloaded.get(&task.task_id).unwrap();
+    assert_eq!(after.status, TaskStatus::Blocked);
+    assert_eq!(after.port, Some(port));
+    assert_eq!(after.worktree_path.as_deref(), Some(worktree.as_str()));
+    assert_eq!(after.session_id.as_deref(), Some("s-1"));
+}
+
+#[test]
 fn cancel_keeps_worktree_and_releases_port() {
     let td = TestDir::new("cancel");
     let repo = init_repo(&td.repo());

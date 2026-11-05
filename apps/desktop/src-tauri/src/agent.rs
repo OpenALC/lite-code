@@ -23,8 +23,10 @@ use lc_core::agent::{
 };
 use lc_core::llm::{LlmEvent, RuntimeError, load_default};
 use lc_core::mcp::{McpConfig, McpExecutor, McpHost};
+use lc_core::task::TaskError;
 use lc_proto::{
     ApprovalDecision, CommandResult, CoreEvent, ErrorBody, ErrorCode, EventEnvelope, SessionMode,
+    TaskInfo, TaskStatus,
 };
 use tauri::Emitter;
 
@@ -278,6 +280,57 @@ fn keeps_busy(outcome: &LoopOutcome) -> bool {
 
 // ==== worker 线程 ====
 
+/// Worker 与任务状态的连接：会话创建时从 `session_create` 传入，后续只在
+/// 状态迁移时短暂加锁。
+struct TaskBinding {
+    task_id: String,
+    state: TaskState,
+}
+
+impl TaskBinding {
+    /// 迁移到指定状态并返回最新快照；仅接受审批联动用到的四个运行期状态。
+    /// 失败只记录日志：任务存储异常不能中断 Agent 会话与审批 UI。
+    fn mark(&self, status: TaskStatus) -> Option<TaskInfo> {
+        let result = match status {
+            TaskStatus::Blocked => self.state.mark_needs_input(&self.task_id),
+            TaskStatus::Running => self.state.mark_running(&self.task_id),
+            TaskStatus::Review => self.state.mark_review(&self.task_id),
+            TaskStatus::Failed => self.state.mark_failed(&self.task_id),
+            TaskStatus::Planning | TaskStatus::Queued | TaskStatus::Done => return None,
+        };
+        match result {
+            Ok(task) => Some(task),
+            Err(error) => {
+                eprintln!(
+                    "[task] 任务 {} 迁移到 {status:?} 失败：{}",
+                    self.task_id, error.message
+                );
+                None
+            }
+        }
+    }
+
+    /// 审批 resolve 开始：若任务仍是 Blocked，先回到 Running，避免 UI 在
+    /// 后续 LLM 流期间一直显示“待确认”。非 Blocked（例如取消已置 Failed）
+    /// 不迁移，尊重显式终态。
+    fn resume_if_blocked(&self) -> Option<TaskInfo> {
+        let status = self
+            .state
+            .with_current(|store| {
+                store.get(&self.task_id).ok_or_else(|| TaskError::NotFound {
+                    task_id: self.task_id.clone(),
+                })
+            })
+            .ok()?
+            .status;
+        if status == TaskStatus::Blocked {
+            self.mark(TaskStatus::Running)
+        } else {
+            None
+        }
+    }
+}
+
 struct Worker {
     id: String,
     agent: AgentLoop,
@@ -285,6 +338,8 @@ struct Worker {
     cancel: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
     registry: Weak<SessionsInner>,
+    /// 绑定任务时，round 结束/取消都要同步任务状态（P4 审批联动）。
+    task: Option<TaskBinding>,
     /// 会话结束时终止 MCP 子进程；与 AgentLoop 内的执行器共享同一 host。
     mcp: Option<McpExecutor>,
 }
@@ -329,6 +384,10 @@ impl Worker {
             self.finish_cancelled();
             return;
         }
+        // 审批卡已处理：先解除 Blocked，再继续执行被挂起的工具与下一轮 LLM。
+        if let Some(task) = self.task.as_ref().and_then(TaskBinding::resume_if_blocked) {
+            self.emitter.emit(CoreEvent::TaskUpdated { task });
+        }
         let emitter = self.emitter.clone();
         let result = self
             .agent
@@ -352,6 +411,11 @@ impl Worker {
         }
         match result {
             Ok(outcome) => {
+                match &outcome {
+                    LoopOutcome::NeedsApproval { .. } => self.mark_needs_input(),
+                    LoopOutcome::Final { .. } => self.mark_task(TaskStatus::Review),
+                    LoopOutcome::Denied { .. } => self.mark_task(TaskStatus::Failed),
+                }
                 for event in completion_events(self.agent.session(), &outcome) {
                     self.emitter.emit(event);
                 }
@@ -360,6 +424,7 @@ impl Worker {
                 }
             }
             Err(error) => {
+                self.mark_task(TaskStatus::Failed);
                 self.emitter.emit(CoreEvent::Error {
                     error: loop_error_body(&error),
                 });
@@ -368,7 +433,29 @@ impl Worker {
         }
     }
 
+    /// 审批挂起：先落 Blocked，再发 `task:needs_input`（每轮一次）。事件走
+    /// `core:event`，与 agent 事件共用 agent sink 的 seq，不额外抢焦点。
+    fn mark_needs_input(&self) {
+        let Some(binding) = self.task.as_ref() else {
+            return;
+        };
+        binding.mark(TaskStatus::Blocked);
+        self.emitter.emit(CoreEvent::TaskNeedsInput {
+            task_id: binding.task_id.clone(),
+            kind: "approval".into(),
+        });
+    }
+
+    fn mark_task(&self, status: TaskStatus) {
+        if let Some(task) = self.task.as_ref().and_then(|binding| binding.mark(status)) {
+            self.emitter.emit(CoreEvent::TaskUpdated { task });
+        }
+    }
+
     fn finish_cancelled(&self) {
+        // 取消是终止态：契约没有 Canceled，任务统一记为 Failed（worktree 保留
+        // 供 Review/Discard）。
+        self.mark_task(TaskStatus::Failed);
         self.emitter.cancelled(self.agent.session());
         self.busy.store(false, Ordering::Release);
     }
@@ -380,6 +467,7 @@ fn spawn_worker(
     agent: AgentLoop,
     sink: Arc<dyn EventSink>,
     cancel: Arc<AtomicBool>,
+    task: Option<TaskBinding>,
     mcp: Option<McpExecutor>,
 ) -> Result<SessionHandle, ErrorBody> {
     let (sender, receiver) = mpsc::channel();
@@ -415,6 +503,7 @@ fn spawn_worker(
         cancel,
         busy,
         registry: Arc::downgrade(&sessions.inner),
+        task,
         mcp,
     };
     let spawned = thread::Builder::new()
@@ -517,12 +606,20 @@ pub(crate) fn session_create(
         None => None,
     };
 
+    // 克隆共享的 TaskState（Arc）交给 worker：会话内的审批/结束/取消都能
+    // 直接迁移任务状态，不需要再次解析 workspace 根。
+    let task_binding = bound.as_ref().map(|bound| TaskBinding {
+        task_id: bound.task.task_id.clone(),
+        state: tasks.inner().clone(),
+    });
+
     if let Err(error) = spawn_worker(
         &sessions,
         info.session_id.clone(),
         agent,
         sink.clone(),
         Arc::new(AtomicBool::new(false)),
+        task_binding,
         Some(mcp_shutdown),
     ) {
         if let Some(bound) = bound.as_ref()
@@ -711,6 +808,9 @@ fn tool_error_body(error: &ToolError) -> ErrorBody {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
@@ -719,6 +819,7 @@ mod tests {
     };
     use lc_core::llm::ProviderKind;
     use lc_core::llm::{LlmError, LlmRequest, StopReason};
+    use lc_core::task::TaskStore;
     use lc_proto::{ApprovalSource, SessionInfo, SessionMode};
 
     use super::*;
@@ -806,6 +907,7 @@ mod tests {
             Arc::new(sink.clone()),
             cancel,
             None,
+            None,
         )
         .expect("spawn worker");
         (sessions, handle)
@@ -826,6 +928,116 @@ mod tests {
         events
             .iter()
             .filter(|event| matches!(event, CoreEvent::AgentTextDelta { .. }))
+            .count()
+    }
+
+    // ---- 任务联动测试夹具：临时 git 仓库 + 已 start 的任务 ----
+
+    struct TaskFixture {
+        state: TaskState,
+        task_id: String,
+    }
+
+    impl TaskFixture {
+        fn binding(&self) -> TaskBinding {
+            TaskBinding {
+                task_id: self.task_id.clone(),
+                state: self.state.clone(),
+            }
+        }
+
+        fn task(&self) -> TaskInfo {
+            self.state
+                .with_current(|store| {
+                    store.get(&self.task_id).ok_or_else(|| TaskError::NotFound {
+                        task_id: self.task_id.clone(),
+                    })
+                })
+                .expect("task snapshot")
+        }
+
+        fn status(&self) -> TaskStatus {
+            self.task().status
+        }
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "lc-desktop-agent-{}-{}-{}",
+            tag,
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("create temp root");
+        dir
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_PAGER", "cat")
+            .output()
+            .unwrap_or_else(|error| panic!("spawn git {args:?}: {error}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}:\nstdout: {}\nstderr: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn init_repo(dir: &Path) {
+        fs::create_dir_all(dir).expect("create repo dir");
+        run_git(dir, &["init", "-q"]);
+        run_git(dir, &["config", "user.email", "agent-task@example.com"]);
+        run_git(dir, &["config", "user.name", "Agent Task Test"]);
+        run_git(dir, &["config", "core.autocrlf", "false"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        fs::write(dir.join("README.md"), "hello\n").expect("write README");
+        run_git(dir, &["add", "-A"]);
+        run_git(dir, &["commit", "-q", "-m", "init"]);
+    }
+
+    fn task_fixture(tag: &str, session_id: &str) -> TaskFixture {
+        let base = temp_root(tag);
+        let repo = base.join("repo");
+        init_repo(&repo);
+        let mut store = TaskStore::with_max_running(base.join("data").join("tasks.json"), &repo, 2);
+        let task = store
+            .create("approval link", Some(session_id.into()))
+            .expect("create task");
+        let started = store.start(&task.task_id).expect("start task");
+        assert_eq!(started.status, TaskStatus::Running);
+        assert!(started.port.is_some());
+        assert!(started.worktree_path.is_some());
+
+        let state = TaskState::new();
+        state.init_for_test(store);
+        TaskFixture {
+            state,
+            task_id: task.task_id,
+        }
+    }
+
+    fn task_updated_statuses(events: &[CoreEvent]) -> Vec<TaskStatus> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                CoreEvent::TaskUpdated { task } => Some(task.status),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn needs_input_count(events: &[CoreEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| matches!(event, CoreEvent::TaskNeedsInput { .. }))
             .count()
     }
 
@@ -1225,6 +1437,7 @@ mod tests {
             Arc::new(sink.clone()),
             cancel,
             None,
+            None,
         )
         .expect("spawn");
 
@@ -1408,5 +1621,267 @@ mod tests {
         let json = serde_json::to_value(&prompt).expect("serialize");
         assert_eq!(json["approval_id"], 3);
         assert_eq!(json["source"], "execute_review");
+    }
+
+    // ---- 审批 → 任务状态联动 ----
+
+    #[test]
+    fn worker_approval_marks_blocked_then_review() {
+        let sink = RecordingSink::default();
+        let sessions = AgentSessions::default();
+        let id = sessions.allocate_id();
+        let fixture = task_fixture("approval-link", &id);
+        let llm = FakeLlm::new(vec![
+            vec![
+                LlmEvent::ToolUseStart {
+                    id: "call_1".into(),
+                    name: "shell".into(),
+                },
+                LlmEvent::ToolUseArgsDelta {
+                    id: "call_1".into(),
+                    json: r#"{"command":"echo hi"}"#.into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta {
+                    index: 0,
+                    text: "finished".into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let handle = spawn_worker(
+            &sessions,
+            id.clone(),
+            test_loop(&id, Box::new(llm)),
+            Arc::new(sink.clone()),
+            cancel,
+            Some(fixture.binding()),
+            None,
+        )
+        .expect("spawn task worker");
+
+        handle.begin_send().expect("begin");
+        handle
+            .sender
+            .send(WorkerCommand::Send("run echo".into()))
+            .expect("send");
+        wait_for(|| {
+            sink.events()
+                .iter()
+                .any(|event| matches!(event, CoreEvent::AgentApprovalRequired { .. }))
+        });
+
+        // NeedsApproval：Blocked + needs_input 各一次；端口/worktree 保留。
+        let blocked = fixture.task();
+        assert_eq!(blocked.status, TaskStatus::Blocked);
+        assert!(blocked.port.is_some(), "Blocked 不释放端口");
+        assert!(blocked.worktree_path.is_some(), "Blocked 不释放 worktree");
+        let events = sink.events();
+        assert_eq!(needs_input_count(&events), 1, "{events:?}");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            CoreEvent::TaskNeedsInput { task_id, kind }
+                if task_id == &fixture.task_id && kind == "approval"
+        )));
+        assert!(handle.busy.load(Ordering::Acquire), "审批期间保持 busy");
+
+        let approval_id = events
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::AgentApprovalRequired { approval, .. } => Some(approval.approval_id),
+                _ => None,
+            })
+            .expect("approval id");
+        handle
+            .sender
+            .send(WorkerCommand::ResolveApproval {
+                approval_id,
+                decision: CoreApprovalDecision::AllowOnce,
+            })
+            .expect("resolve");
+        wait_for(|| !handle.busy.load(Ordering::Acquire));
+
+        // resolve：Blocked → Running → Review；needs_input 不重复。
+        assert_eq!(fixture.status(), TaskStatus::Review);
+        let events = sink.events();
+        assert_eq!(
+            task_updated_statuses(&events),
+            vec![TaskStatus::Running, TaskStatus::Review],
+            "{events:?}"
+        );
+        assert_eq!(needs_input_count(&events), 1, "{events:?}");
+    }
+
+    #[test]
+    fn worker_loop_error_marks_task_failed() {
+        struct FailingLlm;
+
+        impl LlmStream for FailingLlm {
+            fn stream(
+                &self,
+                _request: &LlmRequest,
+                _sink: &mut dyn FnMut(LlmEvent),
+            ) -> Result<(), LlmError> {
+                Err(LlmError::Http("boom".into()))
+            }
+        }
+
+        let sink = RecordingSink::default();
+        let sessions = AgentSessions::default();
+        let id = sessions.allocate_id();
+        let fixture = task_fixture("error-link", &id);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let handle = spawn_worker(
+            &sessions,
+            id.clone(),
+            test_loop(&id, Box::new(FailingLlm)),
+            Arc::new(sink.clone()),
+            cancel,
+            Some(fixture.binding()),
+            None,
+        )
+        .expect("spawn task worker");
+
+        handle.begin_send().expect("begin");
+        handle
+            .sender
+            .send(WorkerCommand::Send("hello".into()))
+            .expect("send");
+        wait_for(|| !handle.busy.load(Ordering::Acquire));
+
+        assert_eq!(fixture.status(), TaskStatus::Failed);
+        let events = sink.events();
+        let updated = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    CoreEvent::TaskUpdated { task } if task.status == TaskStatus::Failed
+                )
+            })
+            .unwrap_or_else(|| panic!("missing failed task:updated: {events:?}"));
+        let error = events
+            .iter()
+            .position(|event| matches!(event, CoreEvent::Error { .. }))
+            .unwrap_or_else(|| panic!("missing agent error: {events:?}"));
+        assert!(updated < error, "task snapshot precedes agent error");
+    }
+
+    #[test]
+    fn worker_cancel_marks_task_failed() {
+        struct CancelDuringStream {
+            cancel: Arc<AtomicBool>,
+        }
+
+        impl LlmStream for CancelDuringStream {
+            fn stream(
+                &self,
+                _request: &LlmRequest,
+                sink: &mut dyn FnMut(LlmEvent),
+            ) -> Result<(), LlmError> {
+                sink(LlmEvent::TextDelta {
+                    index: 0,
+                    text: "first".into(),
+                });
+                self.cancel.store(true, Ordering::Release);
+                sink(LlmEvent::TextDelta {
+                    index: 0,
+                    text: "hidden".into(),
+                });
+                Ok(())
+            }
+        }
+
+        let sink = RecordingSink::default();
+        let sessions = AgentSessions::default();
+        let id = sessions.allocate_id();
+        let fixture = task_fixture("cancel-link", &id);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let handle = spawn_worker(
+            &sessions,
+            id.clone(),
+            test_loop(
+                &id,
+                Box::new(CancelDuringStream {
+                    cancel: cancel.clone(),
+                }),
+            ),
+            Arc::new(sink.clone()),
+            cancel,
+            Some(fixture.binding()),
+            None,
+        )
+        .expect("spawn task worker");
+
+        handle.begin_send().expect("begin");
+        handle
+            .sender
+            .send(WorkerCommand::Send("hello".into()))
+            .expect("send");
+        wait_for(|| !handle.busy.load(Ordering::Acquire));
+
+        assert_eq!(fixture.status(), TaskStatus::Failed);
+        let events = sink.events();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CoreEvent::TaskUpdated { task } if task.status == TaskStatus::Failed
+            )),
+            "{events:?}"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(CoreEvent::AgentDone { stop_reason, .. }) if stop_reason == "cancelled"
+        ));
+    }
+
+    #[test]
+    fn task_link_events_have_contract_shape() {
+        let seq = AtomicU64::new(9);
+        let needs = next_envelope(
+            &seq,
+            CoreEvent::TaskNeedsInput {
+                task_id: "task-1".into(),
+                kind: "approval".into(),
+            },
+        );
+        let json = serde_json::to_value(&needs).expect("serialize needs_input");
+        assert_eq!(json["seq"], 9);
+        assert_eq!(json["event"]["type"], "task:needs_input");
+        assert_eq!(json["event"]["task_id"], "task-1");
+        assert_eq!(json["event"]["kind"], "approval");
+
+        let updated = next_envelope(
+            &seq,
+            CoreEvent::TaskUpdated {
+                task: TaskInfo {
+                    task_id: "task-1".into(),
+                    title: "approval link".into(),
+                    session_id: Some("s-1".into()),
+                    status: TaskStatus::Review,
+                    worktree_path: Some("/tmp/wt".into()),
+                    branch: Some("lc/task-1".into()),
+                    port: Some(4300),
+                    base_sha: None,
+                    steps: Vec::new(),
+                    changes: Vec::new(),
+                    checks: Vec::new(),
+                    created_at: 1,
+                },
+            },
+        );
+        let json = serde_json::to_value(&updated).expect("serialize updated");
+        assert_eq!(json["seq"], 10);
+        assert_eq!(json["event"]["type"], "task:updated");
+        assert_eq!(json["event"]["task"]["task_id"], "task-1");
+        assert_eq!(json["event"]["task"]["status"], "review");
+        assert_eq!(json["event"]["task"]["session_id"], "s-1");
     }
 }

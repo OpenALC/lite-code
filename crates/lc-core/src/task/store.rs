@@ -310,6 +310,44 @@ impl TaskStore {
         Ok(self.tasks[index].task.clone())
     }
 
+    /// 按会话反查任务（审批联动用）。会话 id 不强制唯一，返回创建顺序中
+    /// 第一个绑定的任务。
+    pub fn task_for_session(&self, session_id: &str) -> Option<TaskInfo> {
+        self.tasks
+            .iter()
+            .find(|record| record.task.session_id.as_deref() == Some(session_id))
+            .map(|record| record.task.clone())
+    }
+
+    /// 显式状态迁移（P4 审批联动）：仅允许 `Running` / `Blocked` / `Review` /
+    /// `Failed` 之间互转。`Done` 是终态，`Planning` / `Queued` 只能经 `start`
+    /// 进入运行态。`Blocked` 只改状态，不释放端口与 worktree：审批结束后同一
+    /// 任务继续在原 worktree 上运行。
+    pub fn set_status(
+        &mut self,
+        task_id: impl AsRef<str>,
+        status: TaskStatus,
+    ) -> Result<TaskInfo, TaskError> {
+        let task_id = task_id.as_ref();
+        let index = self.index_of(task_id).ok_or_else(|| TaskError::NotFound {
+            task_id: task_id.to_string(),
+        })?;
+        let current = self.tasks[index].task.status;
+        if current == status {
+            return Ok(self.tasks[index].task.clone());
+        }
+        if !is_explicit_status(current) || !is_explicit_status(status) {
+            return Err(invalid_state(
+                &self.tasks[index].task,
+                "set_status",
+                "running, blocked, review or failed",
+            ));
+        }
+        self.tasks[index].task.status = status;
+        self.persist()?;
+        Ok(self.tasks[index].task.clone())
+    }
+
     /// 重新扫描 worktree：更新 `changes`。`checks` 由工具执行事件驱动，
     /// 本层没有 check runner，因此保持原值（通常为空）。
     pub fn refresh(&mut self, task_id: impl AsRef<str>) -> Result<TaskInfo, TaskError> {
@@ -629,6 +667,15 @@ fn read_store(path: &Path) -> Result<StoreFile, TaskError> {
             message: error.to_string(),
         }),
     }
+}
+
+/// `set_status` 可显式迁移的状态集合（`Done` 终态，`Planning`/`Queued`
+/// 不属于运行期状态机）。
+fn is_explicit_status(status: TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Running | TaskStatus::Blocked | TaskStatus::Review | TaskStatus::Failed
+    )
 }
 
 fn invalid_state(task: &TaskInfo, action: &'static str, expected: &'static str) -> TaskError {
