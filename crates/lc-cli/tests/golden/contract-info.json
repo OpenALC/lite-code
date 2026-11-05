@@ -48,6 +48,7 @@
     "node_unavailable",
     "node_broken",
     "shell_unavailable",
-    "contract_mismatch"
+    "contract_mismatch",
+    "permission_denied"
   ]
 }

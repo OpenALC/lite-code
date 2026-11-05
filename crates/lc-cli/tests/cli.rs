@@ -113,3 +113,67 @@ fn node_info_json_outputs_node_field_and_exits_zero() {
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(v.get("node").is_some(), "必须有 node 字段（可为 null）");
 }
+
+#[test]
+fn agent_run_rejects_missing_workspace() {
+    let missing = std::env::temp_dir().join(format!(
+        "lc-cli-agent-missing-workspace-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&missing);
+    let (code, stdout, stderr) = run_cli(&[
+        "agent",
+        "run",
+        "--prompt",
+        "hi",
+        "--workspace",
+        missing.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("工作区"), "stderr: {stderr}");
+    assert!(stdout.is_empty(), "失败时 stdout 不应有内容：{stdout}");
+}
+
+#[test]
+fn agent_run_json_emits_error_event_when_provider_is_unavailable() {
+    let missing = std::env::temp_dir().join(format!(
+        "lc-cli-agent-missing-providers-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&missing);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_lc-cli"))
+        .args(["agent", "run", "--prompt", "hi", "--json"])
+        .env("LC_PROVIDERS_FILE", &missing)
+        .env_remove("LC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .expect("spawn lc-cli");
+    assert_eq!(out.status.code(), Some(1));
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let line = stdout.lines().next().expect("--json 至少输出 error 事件");
+    let event: serde_json::Value = serde_json::from_str(line).expect("stdout 必须是 JSON 事件");
+    assert_eq!(event.get("seq").and_then(|s| s.as_u64()), Some(1));
+    assert_eq!(
+        event
+            .get("event")
+            .and_then(|e| e.get("type"))
+            .and_then(|t| t.as_str()),
+        Some("error")
+    );
+    assert!(
+        stderr.contains("providers"),
+        "stderr 必须有可操作提示：{stderr}"
+    );
+    assert!(stderr.contains("LC_API_KEY"), "stderr: {stderr}");
+}
+
+#[test]
+fn agent_run_help_documents_yolo_confirmation() {
+    let (code, stdout, stderr) = run_cli(&["agent", "run", "--help"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("yolo"), "help: {stdout}");
+    assert!(stdout.contains("显式确认"), "help: {stdout}");
+}

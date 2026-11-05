@@ -5,20 +5,32 @@
 //! 约定：`detect` 类命令永远退出 0（只报告，不报错——未装 Node 是合法状态）；
 //! `set-manual` / `portable download` / `info` 是显式动作/读取，失败退出非 0。
 
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
 
+use lc_cli::agent_run::{
+    ApprovalAction, EXIT_ERROR, HumanOutput, JsonEventLines, approval_action, approval_auto_line,
+    approval_details, build_session, error_exit_code, human_output, loop_error_event,
+    mode_from_str, outcome_exit_code, resolve_instructions, resolve_workspace, tool_result_event,
+};
 use lc_cli::{
     command_result_json, contract_meta_json, node_info_human, node_info_json, node_status_human,
     node_status_json, set_manual_report_json, shell_report_json,
 };
+use lc_core::agent::{
+    AgentLoop, DEFAULT_MAX_TURNS, LocalToolExecutor, LoopOutcome, ToolError, ToolOutput,
+    ToolRegistry, ToolResultObserver, llm_event, loop_outcome,
+};
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_node_runtime};
 use lc_core::fs::{RealPathResolver, read_dir_level};
+use lc_core::llm::{LlmEvent, RuntimeError, load_default, providers_path};
 use lc_core::runtime::manual::{self, ManualError};
 use lc_core::runtime::portable::{self, VersionSpec};
 use lc_core::runtime::{detect_shell_real, probe_real};
-use lc_proto::{CommandResult, ContractMeta};
+use lc_proto::{CommandResult, ContractMeta, CoreEvent, ErrorBody, ErrorCode};
 
 #[derive(Parser)]
 #[command(
@@ -52,6 +64,49 @@ enum Cmd {
     Fs {
         #[command(subcommand)]
         cmd: FsCmd,
+    },
+    /// Agent 会话（headless）
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// 运行一次 headless Agent 会话（P3 出口命令）
+    #[command(long_about = "运行一次 headless Agent 会话。\n\n\
+退出码：0 = 正常结束；1 = 运行错误（含轮次上限）；2 = 权限策略拒绝或审批未通过。\n\
+--mode yolo 表示完全自主；命令行调用本身即视为显式确认，无需再次确认。")]
+    Run {
+        /// 用户提示词
+        #[arg(long)]
+        prompt: String,
+        /// 权限模式：plan / chat / auto / yolo（yolo 由命令行显式确认）
+        #[arg(
+            long,
+            default_value = "auto",
+            value_parser = ["plan", "chat", "auto", "yolo"]
+        )]
+        mode: String,
+        /// 工作区根（缺省当前目录；canonicalize 后必须是已存在的目录）
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// 最大轮次（LLM 往返次数）
+        #[arg(long, default_value_t = DEFAULT_MAX_TURNS)]
+        max_turns: u32,
+        /// 覆盖默认系统指令
+        #[arg(long)]
+        instructions: Option<String>,
+        /// stdout 每行输出一个 EventEnvelope JSON（不混入人类文本）
+        #[arg(long)]
+        json: bool,
+        /// 自动允许所有审批（AllowOnce），适合 CI
+        #[arg(long)]
+        yes: bool,
+        /// 把模型的思考增量写到 stderr
+        #[arg(long)]
+        show_thinking: bool,
     },
 }
 
@@ -264,6 +319,33 @@ fn main() {
                 }
             }
         }
+        Cmd::Agent {
+            cmd:
+                AgentCmd::Run {
+                    prompt,
+                    mode,
+                    workspace,
+                    max_turns,
+                    instructions,
+                    json,
+                    yes,
+                    show_thinking,
+                },
+        } => {
+            let code = run_agent(
+                prompt,
+                &mode,
+                workspace,
+                max_turns,
+                instructions,
+                json,
+                yes,
+                show_thinking,
+            );
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Cmd::Contract {
             cmd: ContractCmd::Info { json },
         } => {
@@ -293,4 +375,235 @@ fn main() {
 fn node_info_from_default_config() -> Result<Option<NodeRuntime>, lc_core::config::ConfigError> {
     let store = JsonConfigStore::at_default_path()?;
     load_node_runtime(&store)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_agent(
+    prompt: String,
+    mode: &str,
+    workspace: Option<PathBuf>,
+    max_turns: u32,
+    instructions: Option<String>,
+    json: bool,
+    yes: bool,
+    show_thinking: bool,
+) -> i32 {
+    let emitter = Arc::new(Mutex::new(Emitter::new(json, show_thinking)));
+
+    let workspace_path = workspace.unwrap_or_else(|| PathBuf::from("."));
+    let workspace = match resolve_workspace(&workspace_path) {
+        Ok(path) => path,
+        Err(error) => {
+            return fatal(
+                &emitter,
+                json,
+                ErrorCode::InvalidArgument,
+                format!("agent run: {error}"),
+            );
+        }
+    };
+
+    let Some(mode) = mode_from_str(mode) else {
+        return fatal(
+            &emitter,
+            json,
+            ErrorCode::InvalidArgument,
+            format!("agent run: 无法解析权限模式 {mode:?}"),
+        );
+    };
+
+    let runtime = match load_default() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return fatal(
+                &emitter,
+                json,
+                ErrorCode::Internal,
+                provider_failure_message(&error),
+            );
+        }
+    };
+    let client = match runtime.openai_client() {
+        Ok(client) => client,
+        Err(error) => {
+            return fatal(
+                &emitter,
+                json,
+                ErrorCode::Internal,
+                provider_failure_message(&error),
+            );
+        }
+    };
+
+    let session_id = format!("cli-{}", std::process::id());
+    let registry = ToolRegistry::with_builtins();
+    let tools = registry.llm_tools();
+    let mut agent_loop = AgentLoop::new(
+        build_session(session_id.clone(), mode, max_turns),
+        Box::new(client),
+        Box::new(LocalToolExecutor::new(workspace.clone())),
+        registry,
+        workspace,
+        runtime.model_id,
+    )
+    .with_instructions(resolve_instructions(instructions.as_deref()))
+    .with_tools(tools);
+
+    let observer_emitter = Arc::clone(&emitter);
+    let observer_session = session_id.clone();
+    let observer: ToolResultObserver = Box::new(
+        move |call_id: &str, result: &Result<ToolOutput, ToolError>| {
+            let event = tool_result_event(&observer_session, call_id, result);
+            emit(&observer_emitter, &event);
+        },
+    );
+    agent_loop = agent_loop.with_tool_observer(observer);
+
+    let sink_emitter = Arc::clone(&emitter);
+    let sink_session = session_id.clone();
+    let mut sink = move |event: LlmEvent| {
+        if let Some(event) = llm_event(&sink_session, &event) {
+            emit(&sink_emitter, &event);
+        }
+    };
+
+    let mut outcome = Some(agent_loop.run(&prompt, &mut sink));
+    let mut denied_by_cli = false;
+    let exit_code = loop {
+        let current = match outcome.take() {
+            Some(Ok(current)) => current,
+            Some(Err(error)) => {
+                emit(&emitter, &loop_error_event(&error));
+                break error_exit_code();
+            }
+            None => unreachable!("每轮都会重新赋值 outcome"),
+        };
+        let events = loop_outcome(&session_id, &current);
+        let code = outcome_exit_code(&current);
+        match current {
+            LoopOutcome::Final { .. } => {
+                for event in &events {
+                    emit(&emitter, event);
+                }
+                break code;
+            }
+            LoopOutcome::Denied { .. } => {
+                // 审批被 CLI 拒绝时，完整字段已写 stderr；JSON 仍要 error 事件。
+                if !denied_by_cli || json {
+                    for event in &events {
+                        emit(&emitter, event);
+                    }
+                }
+                break code;
+            }
+            LoopOutcome::NeedsApproval { approval } => {
+                for event in &events {
+                    emit(&emitter, event);
+                }
+                let action = approval_action(yes);
+                if action == ApprovalAction::Deny {
+                    denied_by_cli = true;
+                }
+                if !json {
+                    match action {
+                        ApprovalAction::AllowOnce => {
+                            eprint!("{}", approval_auto_line(&approval));
+                        }
+                        ApprovalAction::Deny => {
+                            eprint!("{}", approval_details(&approval));
+                        }
+                    }
+                }
+                outcome =
+                    Some(agent_loop.resolve_approval(approval.id, action.decision(), &mut sink));
+            }
+        }
+    };
+
+    emitter.lock().expect("emitter mutex").finish();
+    exit_code
+}
+
+fn emit(emitter: &Arc<Mutex<Emitter>>, event: &CoreEvent) {
+    emitter.lock().expect("emitter mutex").emit(event);
+}
+
+fn fatal(emitter: &Arc<Mutex<Emitter>>, json: bool, code: ErrorCode, message: String) -> i32 {
+    emit(
+        emitter,
+        &CoreEvent::Error {
+            error: ErrorBody::new(code, message.clone()),
+        },
+    );
+    if json {
+        // JSON 模式 stdout 只有事件；可操作提示照常写 stderr。
+        eprintln!("{message}");
+    }
+    EXIT_ERROR
+}
+
+fn provider_failure_message(error: &RuntimeError) -> String {
+    let path = providers_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "~/.lite-code/providers.json".into());
+    format!(
+        "agent run: provider 不可用：{error}\n\
+         \n\
+         providers 配置文件：{path}\n\
+         可用环境变量 LC_PROVIDERS_FILE 指向其他文件。\n\
+         密钥优先读取 LC_API_KEY；providers.json 中也可用 \"apiKeyRef\": \"env:NAME\" 引用环境变量。\n\
+         没有配置文件时可只设环境变量：LC_API_KEY（必填）、LC_BASE_URL、LC_MODEL。"
+    )
+}
+
+/// 事件出口：JSON 模式一行一个 EventEnvelope；人类模式按流写 stdout/stderr。
+struct Emitter {
+    json: bool,
+    show_thinking: bool,
+    lines: JsonEventLines,
+    wrote_stdout: bool,
+}
+
+impl Emitter {
+    fn new(json: bool, show_thinking: bool) -> Self {
+        Self {
+            json,
+            show_thinking,
+            lines: JsonEventLines::new(),
+            wrote_stdout: false,
+        }
+    }
+
+    fn emit(&mut self, event: &CoreEvent) {
+        if self.json {
+            let line = self.lines.next_line(event);
+            let mut stdout = io::stdout().lock();
+            let _ = writeln!(stdout, "{line}");
+            let _ = stdout.flush();
+            return;
+        }
+
+        match human_output(event, self.show_thinking) {
+            HumanOutput::Nothing => {}
+            HumanOutput::Stdout(text) => {
+                self.wrote_stdout |= !text.is_empty();
+                let mut stdout = io::stdout().lock();
+                let _ = stdout.write_all(text.as_bytes());
+                let _ = stdout.flush();
+            }
+            HumanOutput::Stderr(text) => {
+                let mut stderr = io::stderr().lock();
+                let _ = stderr.write_all(text.as_bytes());
+                let _ = stderr.flush();
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        if !self.json && self.wrote_stdout {
+            let mut stdout = io::stdout().lock();
+            let _ = writeln!(stdout);
+            let _ = stdout.flush();
+        }
+    }
 }

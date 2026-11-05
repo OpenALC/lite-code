@@ -1,6 +1,8 @@
 //! lc-cli 命令实现。JSON 输出直接序列化 lc-proto DTO，
 //! 保证 CLI 与 Tauri 壳看到的是同一份契约。
 
+pub mod agent_run;
+
 use lc_core::config::NodeRuntime;
 use lc_core::runtime::manual::ManualError;
 use lc_proto::{CommandResult, ContractMeta, NodeFailureReason, NodeStatus, ShellInfo};
