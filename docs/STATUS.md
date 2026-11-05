@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`4ee477e`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`b4dedce`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 
 ## 当前位置一览
@@ -16,6 +16,7 @@
 | 编辑器保存 | ✅ 真实文件打开、编辑、窗口级 Ctrl+S、dirty、fallback 提示 |
 | 大文件分级 | ✅ >5MB 降级能力、>20MB 只读预览并阻止保存 |
 | per-tab model | ✅ 每标签独立 Monaco model，undo/光标/滚动保留；关闭即释放 |
+| dirty 基线 | ✅ `savedContent` 差异推导 dirty；撤销回已保存内容自动变干净 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ `226b80c` 全绿；最新提交 CI 进行中 |
 
@@ -39,10 +40,12 @@
 7. **per-tab Monaco model**（`4ee477e`）
    - 每标签独立 model、view state 与内容监听；切标签 setModel，关闭/卸载释放。
    - 浏览器实测：切标签后内容保留，Ctrl+Z 可撤销切标签前的输入；占位树不再永远“读取中”。
+8. **dirty 基线**（`b4dedce`）
+   - `savedContent` 作为落盘基线，`dirty = content !== savedContent`；撤销回已保存内容自动变干净。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
-1. 无保存冲突检测（需要契约加 mtime/hash 或前端 savedContent 基线）。
+1. 无外部修改冲突检测（savedContent 基线已有；mtime/hash 契约字段未做）。
 2. 托盘“退出”绕过 webview 脏检查，可能丢未保存缓冲。
 3. workspace 根仍取 CWD/环境变量，尚无“打开文件夹”流程；已校验必须是目录。
 4. `@lc-proto` 目前只有 tsconfig 别名，未来若生成运行时常量需补 Vite alias。
@@ -79,5 +82,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 70 · lc-cli 15 · lc-proto 9 · lc-desktop 11 · web 85（8 文件）· 合计 **190**。
+lc-core 70 · lc-cli 15 · lc-proto 9 · lc-desktop 11 · web 86（8 文件）· 合计 **191**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
