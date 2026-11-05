@@ -1,14 +1,18 @@
-// 标签页状态：open / close / activate / dirty 跟踪（UI.md §3、P1 Editor UI lane）。
+// 标签页状态：open / close / activate / 内容与 dirty 跟踪（UI.md §3、P1 Editor UI lane）。
 // 关闭保护：dirty 标签的 closeTab 不真正关闭、不弹窗，只返回 needsConfirm，
 // 由视图层决定确认交互（UI.md §7：不用模态框打断流程）。
 // 框架无关：按 services/store.ts 的模式只暴露纯函数与 subscribe()（UI.md §8）。
 import { createStore, type Store } from './store'
 
 export interface Tab {
-  /** 稳定标识（真实文件接入后为文件路径） */
+  /** 稳定标识（真实文件为文件路径；样例缓冲区为 sample） */
   id: string
   /** 展示名（文件名属数据，不走 i18n key） */
   title: string
+  /** 真实文件路径；null = 非文件缓冲区（P0 样例），保存时跳过 */
+  path: string | null
+  /** 当前缓冲区内容（保存时直接取这里，避免视图层与 store 双份状态） */
+  content: string
   dirty: boolean
 }
 
@@ -28,26 +32,54 @@ export interface CloseOptions {
   force?: boolean
 }
 
+/** P0 样例缓冲区内容（与 main.rs 标签对应；不可保存，仅用于起壳展示）。 */
+export const SAMPLE_CONTENT = `// lite-code · P0
+// 这个缓冲区证明 Monaco 起壳成功：能打开、能编辑。
+// 文件系统集成（打开真实文件 / 保存 / 冲突检测）在 P1 落地。
+fn main() {
+    println!("Hello, lite-code");
+}
+`
+
 /**
- * 初始状态：P0 的样例缓冲区（与 CodeEditor.vue 的 SAMPLE 对应）。
+ * 初始状态：P0 的样例缓冲区（非真实文件，path = null）。
  * 所有操作都是不可变更新，复位可直接 set(INITIAL_TABS_STATE)。
  */
 export const INITIAL_TABS_STATE: TabsState = {
-  tabs: [{ id: 'sample', title: 'main.rs', dirty: false }],
+  tabs: [
+    { id: 'sample', title: 'main.rs', path: null, content: SAMPLE_CONTENT, dirty: false },
+  ],
   activeId: 'sample',
 }
 
 export const tabsStore: Store<TabsState> = createStore<TabsState>(INITIAL_TABS_STATE)
 
-/** 打开标签：已存在同 id 时不重复创建，只激活（保留原 dirty 状态）。 */
-export function openTab(tab: { id: string; title: string }): void {
+export interface OpenTabInput {
+  id: string
+  title: string
+  /** 缺省为 id（真实文件）；样例缓冲区显式传 null */
+  path?: string | null
+  content?: string
+}
+
+/** 打开标签：已存在同 id 时不重复创建，只激活（保留原内容与 dirty 状态）。 */
+export function openTab(tab: OpenTabInput): void {
   const state = tabsStore.get()
   if (state.tabs.some(t => t.id === tab.id)) {
     tabsStore.set({ ...state, activeId: tab.id })
     return
   }
   tabsStore.set({
-    tabs: [...state.tabs, { id: tab.id, title: tab.title, dirty: false }],
+    tabs: [
+      ...state.tabs,
+      {
+        id: tab.id,
+        title: tab.title,
+        path: tab.path === undefined ? tab.id : tab.path,
+        content: tab.content ?? '',
+        dirty: false,
+      },
+    ],
     activeId: tab.id,
   })
 }
@@ -71,6 +103,27 @@ export function setDirty(id: string, dirty: boolean): boolean {
   const tabs = state.tabs.map(t => (t.id === id ? { ...t, dirty } : t))
   tabsStore.set({ ...state, tabs })
   return true
+}
+
+/** 更新缓冲区内容并标记 dirty；内容未变时不发通知。 */
+export function updateContent(id: string, content: string): boolean {
+  const state = tabsStore.get()
+  const index = state.tabs.findIndex(t => t.id === id)
+  if (index < 0) return false
+  if (state.tabs[index].content === content) return true
+  const tabs = state.tabs.map(t => (t.id === id ? { ...t, content, dirty: true } : t))
+  tabsStore.set({ ...state, tabs })
+  return true
+}
+
+/** 保存成功后清除 dirty（内容已由 updateContent 保持最新）。 */
+export function markSaved(id: string): boolean {
+  return setDirty(id, false)
+}
+
+/** 当前激活标签；无激活标签时返回 null。 */
+export function activeTab(state: TabsState = tabsStore.get()): Tab | null {
+  return state.tabs.find(t => t.id === state.activeId) ?? null
 }
 
 /**

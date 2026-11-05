@@ -2,11 +2,14 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   activateTab,
+  activeTab,
   closeTab,
   INITIAL_TABS_STATE,
+  markSaved,
   openTab,
   setDirty,
   tabsStore,
+  updateContent,
   type TabsState,
 } from './tabs'
 
@@ -16,9 +19,16 @@ beforeEach(() => {
 })
 
 describe('初始状态', () => {
-  it('P0 样例缓冲区对应一个已激活的 main.rs 标签', () => {
+  it('P0 样例缓冲区对应一个已激活的 main.rs 标签（不可保存）', () => {
     const state = tabsStore.get()
-    expect(state.tabs).toEqual([{ id: 'sample', title: 'main.rs', dirty: false }])
+    expect(state.tabs).toHaveLength(1)
+    expect(state.tabs[0]).toMatchObject({
+      id: 'sample',
+      title: 'main.rs',
+      path: null,
+      dirty: false,
+    })
+    expect(state.tabs[0].content).toContain('fn main()')
     expect(state.activeId).toBe('sample')
   })
 })
@@ -102,6 +112,50 @@ describe('setDirty', () => {
     setDirty('sample', true)
     expect(seen.length).toBe(1)
     unsub()
+  })
+})
+
+describe('内容与保存', () => {
+  it('openTab 携带内容/路径，初始干净', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'fn a() {}' })
+    const tab = tabsStore.get().tabs.find(t => t.id === 'a.rs')
+    expect(tab).toMatchObject({ path: 'a.rs', content: 'fn a() {}', dirty: false })
+  })
+
+  it('updateContent 更新内容并置 dirty；同值不通知', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'v1' })
+    const seen: TabsState[] = []
+    const unsub = tabsStore.subscribe(s => seen.push(s))
+    expect(updateContent('a.rs', 'v2')).toBe(true)
+    expect(tabsStore.get().tabs.find(t => t.id === 'a.rs')).toMatchObject({
+      content: 'v2',
+      dirty: true,
+    })
+    expect(seen.length).toBe(1)
+    updateContent('a.rs', 'v2')
+    expect(seen.length).toBe(1)
+    unsub()
+  })
+
+  it('markSaved 清除 dirty 但保留内容', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'v1' })
+    updateContent('a.rs', 'v2')
+    expect(markSaved('a.rs')).toBe(true)
+    expect(tabsStore.get().tabs.find(t => t.id === 'a.rs')).toMatchObject({
+      content: 'v2',
+      dirty: false,
+    })
+  })
+
+  it('activeTab 返回当前标签或 null', () => {
+    expect(activeTab()?.id).toBe('sample')
+    closeTab('sample', { force: true })
+    expect(activeTab()).toBe(null)
+  })
+
+  it('不存在的 id：更新/保存均返回 false', () => {
+    expect(updateContent('ghost.rs', 'x')).toBe(false)
+    expect(markSaved('ghost.rs')).toBe(false)
   })
 })
 

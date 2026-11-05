@@ -13,7 +13,11 @@
     "closeConfirm": "Unsaved changes — click again to confirm close"
   },
   "editor": {
-    "ready": "Monaco ready: this buffer is editable (P0 shell validation)"
+    "ready": "Monaco ready: this buffer is editable (P0 shell validation)",
+    "saved": "Saved",
+    "savedDemo": "Saved (browser demo, not written to disk)",
+    "saveFailed": "Save failed",
+    "sampleNotSaveable": "Sample buffer is not saveable"
   },
   "tree": {
     "title": "Files",
@@ -24,7 +28,7 @@
     "empty": "Empty directory",
     "loadError": "Failed to read this directory",
     "fileError": "Failed to read this file",
-    "readOnly": "Files open read-only; editing and saving arrive in a later batch"
+    "editableHint": "Open a file to edit; Ctrl+S saves"
   },
   "agent": {
     "placeholderTitle": "Agent mode",

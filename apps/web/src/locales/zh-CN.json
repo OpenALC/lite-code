@@ -13,7 +13,11 @@
     "closeConfirm": "有未保存更改：再次点击确认关闭"
   },
   "editor": {
-    "ready": "Monaco 已就绪：本缓冲区可编辑（P0 起壳验证）"
+    "ready": "Monaco 已就绪：本缓冲区可编辑（P0 起壳验证）",
+    "saved": "已保存",
+    "savedDemo": "已保存（浏览器演示，未写磁盘）",
+    "saveFailed": "保存失败",
+    "sampleNotSaveable": "示例缓冲区不可保存"
   },
   "tree": {
     "title": "文件树",
@@ -24,7 +28,7 @@
     "empty": "空目录",
     "loadError": "无法读取该目录",
     "fileError": "无法读取该文件",
-    "readOnly": "文件以只读方式打开，编辑与保存将在后续批次接入"
+    "editableHint": "打开文件后可编辑，Ctrl+S 保存"
   },
   "agent": {
     "placeholderTitle": "Agent 模式",

@@ -71,10 +71,10 @@ async function onEntryClick(entry: DirEntryDto): Promise<void> {
     }
     return
   }
-  // 文件：读取成功才开页（内容渲染由 Editor UI lane 接入 CodeEditor）
+  // 文件：读取成功才开页，内容进标签 store，由 CodeEditor 渲染并保存
   const res = await readFile(props.root, entry.path)
   if (res.ok) {
-    openTab({ id: entry.path, title: entry.name })
+    openTab({ id: entry.path, title: entry.name, path: entry.path, content: res.data.text })
   } else {
     fileError.value = res.error
   }
@@ -163,7 +163,7 @@ async function onEntryClick(entry: DirEntryDto): Promise<void> {
       v-if="!noRoot"
       class="hint"
     >
-      {{ t('tree.readOnly') }}
+      {{ t('tree.editableHint') }}
     </div>
   </div>
 </template>
