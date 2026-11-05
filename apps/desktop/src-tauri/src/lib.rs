@@ -12,6 +12,7 @@
 
 mod agent;
 mod db;
+mod git;
 mod task;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ use db::{
     DbEvents, DbState, db_connect, db_delete_connection, db_disconnect, db_execute, db_explain,
     db_list, db_query, db_save_connection, db_schema,
 };
+use git::{git_commit, git_diff, git_log, git_stage, git_status, git_unstage};
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_workspace_root, store_workspace_root};
 use lc_core::fs::{
     DirLevel, FsError, RealPathResolver, ensure_within_root, read_dir_level, write_file_text,
@@ -403,7 +405,13 @@ pub fn run() {
             task_apply,
             task_discard,
             task_diff,
-            task_bind_session
+            task_bind_session,
+            git_status,
+            git_diff,
+            git_stage,
+            git_unstage,
+            git_commit,
+            git_log
         ])
         .setup(|app| {
             #[cfg(desktop)]
