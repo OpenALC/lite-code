@@ -10,6 +10,7 @@ pub mod llm;
 pub mod mcp;
 pub mod process;
 pub mod runtime;
+pub mod task;
 
 /// 核心版本号（workspace 统一管理）。
 pub fn version() -> &'static str {
