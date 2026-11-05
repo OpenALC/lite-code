@@ -114,6 +114,7 @@ pub enum CoreCommand {
     /// 创建 P3 会话（模式在会话级生效）；`task_id` 存在时在任务 worktree 内运行
     SessionCreate {
         mode: SessionMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
     },
     /// 向会话发送用户消息；流式结果走 agent:* 事件

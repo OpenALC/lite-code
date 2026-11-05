@@ -556,7 +556,7 @@ pub(crate) fn session_create(
 }
 
 /// 发送用户消息：置 busy 后立即返回 Ack，内容走 `agent:*` 事件。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub(crate) fn agent_send(
     session_id: String,
     text: String,
@@ -573,7 +573,7 @@ pub(crate) fn agent_send(
 }
 
 /// 处理审批卡：转发给 worker，成功受理即返回 Ack。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub(crate) fn approval_resolve(
     session_id: String,
     approval_id: u64,
@@ -593,7 +593,7 @@ pub(crate) fn approval_resolve(
 }
 
 /// 取消当前轮：先置位（sink 立即停止下发），再通知 worker 收尾。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub(crate) fn agent_cancel(
     session_id: String,
     sessions: tauri::State<'_, AgentSessions>,

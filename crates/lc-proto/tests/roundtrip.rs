@@ -15,7 +15,7 @@ fn command_tags_match_constant_list() {
     // 数量守卫：新增命令必须同步登记
     assert_eq!(
         CONTRACT_COMMANDS.len(),
-        14,
+        22,
         "命令数量变化时须更新 CONTRACT_COMMANDS 与此测试"
     );
 }
@@ -52,9 +52,20 @@ fn command_serializes_with_documented_tag() {
 
     let json = serde_json::to_string(&CoreCommand::SessionCreate {
         mode: SessionMode::Auto,
+        task_id: None,
     })
     .unwrap();
     assert_eq!(json, r#"{"method":"session_create","mode":"auto"}"#);
+
+    let json = serde_json::to_string(&CoreCommand::SessionCreate {
+        mode: SessionMode::Auto,
+        task_id: Some("task-1".into()),
+    })
+    .unwrap();
+    assert_eq!(
+        json,
+        r#"{"method":"session_create","mode":"auto","task_id":"task-1"}"#
+    );
 
     let json = serde_json::to_string(&CoreCommand::AgentSend {
         session_id: "s1".into(),

@@ -1,12 +1,27 @@
 // Task/工作台 DTO（docs/TASKS.md §2）。
 //
-// 契约 v0.5 的 codegen 产物在 CommandResult/CoreEvent 里引用了 TaskInfo、
-// TaskStepState、FileChangeDto、TaskCheck，但导出清单还没登记这些类型，
-// 因此这里按 `crates/lc-proto/src/task.rs` 镜像一份本地定义，并集中提供
-// 跨 IPC 边界的形状校验。等 codegen 导出后，本文件的类型应改为 re-export，
-// 其他模块的 import 路径保持不变。
-//
-// 字段名/枚举值与 Rust serde（snake_case）严格一致；本文件不依赖框架。
+// 类型单一来源：@lc-proto（crates/lc-proto codegen 产物）。本文件只保留
+// 运行时形状校验与任务状态枚举数组，字段名/枚举值与 Rust serde 严格一致。
+
+import type {
+  ChangeStatus,
+  FileChangeDto,
+  TaskCheck,
+  TaskInfo,
+  TaskStatus,
+  TaskStep,
+  TaskStepState,
+} from '@lc-proto'
+
+export type {
+  ChangeStatus,
+  FileChangeDto,
+  TaskCheck,
+  TaskInfo,
+  TaskStatus,
+  TaskStep,
+  TaskStepState,
+}
 
 export const TASK_STATUSES = [
   'planning',
@@ -17,51 +32,10 @@ export const TASK_STATUSES = [
   'failed',
   'queued',
 ] as const
-export type TaskStatus = (typeof TASK_STATUSES)[number]
 
 export const CHANGE_STATUSES = ['modified', 'added', 'deleted', 'renamed'] as const
-export type ChangeStatus = (typeof CHANGE_STATUSES)[number]
 
 export const TASK_STEP_STATES = ['pending', 'running', 'done', 'failed'] as const
-export type TaskStepState = (typeof TASK_STEP_STATES)[number]
-
-export interface TaskStep {
-  index: number
-  title: string
-  state: TaskStepState
-}
-
-export interface FileChangeDto {
-  path: string
-  status: ChangeStatus
-  applied: boolean
-  added: number
-  removed: number
-}
-
-export interface TaskCheck {
-  name: string
-  ok: boolean
-  output_tail: string
-  duration_ms: number
-}
-
-export interface TaskInfo {
-  task_id: string
-  title: string
-  /** 非 git 任务或未绑定会话时为 null */
-  session_id: string | null
-  status: TaskStatus
-  /** 非 git 项目没有 worktree */
-  worktree_path: string | null
-  branch: string | null
-  port: number | null
-  base_sha: string | null
-  steps: TaskStep[]
-  changes: FileChangeDto[]
-  checks: TaskCheck[]
-  created_at: number
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
