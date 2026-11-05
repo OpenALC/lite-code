@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lc_proto::{ChangeStatus, TaskStatus};
+use lc_proto::{ChangeStatus, ErrorCode, TaskStatus};
 
 use super::*;
 
@@ -201,6 +201,90 @@ fn reload_marks_running_failed_and_keeps_queued() {
     assert_eq!(promoted.task_id, t3.task_id);
     assert_eq!(promoted.status, TaskStatus::Running);
     assert_eq!(promoted.port, Some(PORT_RANGE_START));
+}
+
+#[test]
+fn task_stores_are_isolated_per_workspace() {
+    let td = TestDir::new("per-workspace");
+    let alpha = init_repo(&td.path().join("alpha"));
+    let beta = td.path().join("beta");
+    std::fs::create_dir_all(&beta).expect("create beta");
+
+    let mut alpha_store = TaskStore::load_at(&td.data(), &alpha).unwrap();
+    assert!(alpha_store.legacy_store_warning().is_none());
+    let alpha_task = alpha_store.create("alpha task", None).unwrap();
+    let alpha_path = alpha_store.persist_path().to_path_buf();
+    assert!(alpha_path.starts_with(td.data().join("tasks")));
+    assert!(
+        worktree_path(&alpha_task).starts_with(td.data().join("worktrees")),
+        "worktrees must stay under <data>/worktrees: {:?}",
+        alpha_task.worktree_path
+    );
+    assert_eq!(
+        alpha_path.extension().and_then(|ext| ext.to_str()),
+        Some("json")
+    );
+    drop(alpha_store);
+
+    let beta_store = TaskStore::load_at(&td.data(), &beta).unwrap();
+    assert!(
+        beta_store.list().is_empty(),
+        "beta workspace must not see alpha tasks"
+    );
+    assert_ne!(beta_store.persist_path(), alpha_path.as_path());
+    drop(beta_store);
+
+    let reopened = TaskStore::load_at(&td.data(), &alpha).unwrap();
+    assert_eq!(reopened.list().len(), 1);
+    assert_eq!(
+        reopened.get(&alpha_task.task_id).unwrap().title,
+        "alpha task"
+    );
+    assert_eq!(reopened.persist_path(), alpha_path.as_path());
+}
+
+#[test]
+fn legacy_global_task_store_warns_without_importing() {
+    let td = TestDir::new("legacy-store");
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("create repo");
+    std::fs::create_dir_all(td.data()).expect("create data dir");
+
+    let legacy = td.data().join("tasks.json");
+    let legacy_json = serde_json::json!({
+        "version": 1,
+        "tasks": [{
+            "task": {
+                "task_id": "task-legacy",
+                "title": "legacy task",
+                "session_id": null,
+                "status": "planning",
+                "worktree_path": null,
+                "branch": null,
+                "port": null,
+                "base_sha": null,
+                "steps": [],
+                "changes": [],
+                "checks": [],
+                "created_at": 1
+            },
+            "notes": []
+        }]
+    });
+    std::fs::write(&legacy, legacy_json.to_string()).expect("write legacy store");
+
+    let store = TaskStore::load_at(&td.data(), &repo).unwrap();
+    assert!(
+        store.list().is_empty(),
+        "legacy tasks must not leak into the new per-workspace store"
+    );
+    let warning = store.legacy_store_warning().expect("legacy store warning");
+    assert!(warning.contains("tasks.json"), "warning: {warning}");
+    assert!(warning.contains("manually"), "warning: {warning}");
+    assert!(
+        legacy.is_file(),
+        "legacy file must not be migrated or deleted"
+    );
 }
 
 // ---- 非 git / worktree 路径 ----
@@ -545,6 +629,57 @@ fn apply_auto_commits_dirty_worktree() {
 }
 
 #[test]
+fn apply_refuses_ignored_files_until_removed() {
+    let td = TestDir::new("apply-ignored");
+    let repo = init_repo(&td.repo());
+    write_file(&repo, ".gitignore", ".env\n");
+    commit_all(&repo, "ignore env");
+    let mut store = td.store(&repo);
+    let task = store.create("ignored", None).unwrap();
+    store.start(&task.task_id).unwrap();
+    let wt = worktree_path(&task);
+    let branch = task.branch.clone().expect("branch");
+
+    write_file(&wt, "feature.txt", "feature\n");
+    commit_all(&wt, "feature");
+    write_file(&wt, ".env", "SECRET=1\n");
+
+    let error = store.apply(&task.task_id).unwrap_err();
+    match &error {
+        TaskError::IgnoredFiles { paths, .. } => {
+            assert!(
+                paths.iter().any(|path| path == ".env"),
+                "paths should list the ignored file: {paths:?}"
+            );
+        }
+        other => panic!("expected IgnoredFiles, got {other:?}"),
+    }
+    let body = error.to_error_body();
+    assert_eq!(body.code, ErrorCode::InvalidArgument);
+    let detail = body.detail.expect("ignored paths detail");
+    assert!(detail.contains(".env"), "detail: {detail}");
+    assert!(detail.contains("apply/discard"), "detail: {detail}");
+
+    assert!(wt.join(".env").is_file(), "ignored file must be preserved");
+    assert!(
+        !repo.join("feature.txt").exists(),
+        "apply must not merge while ignored files exist"
+    );
+    assert_eq!(
+        store.get(&task.task_id).unwrap().status,
+        TaskStatus::Running
+    );
+    git(&repo, &["rev-parse", "--verify", &branch]);
+
+    std::fs::remove_file(wt.join(".env")).expect("remove ignored file");
+    let outcome = store.apply(&task.task_id).unwrap();
+    assert!(!outcome.commit.is_empty());
+    assert!(repo.join("feature.txt").is_file());
+    assert_eq!(store.get(&task.task_id).unwrap().status, TaskStatus::Done);
+    assert!(!wt.exists());
+}
+
+#[test]
 fn apply_conflict_keeps_worktree_and_marks_review() {
     let td = TestDir::new("apply-conflict");
     let repo = init_repo(&td.repo());
@@ -864,6 +999,43 @@ fn discard_rejects_dirty_and_removes_clean_worktree() {
     assert!(discarded.worktree_path.is_none());
     assert!(discarded.branch.is_none());
     assert!(discarded.port.is_none());
+    assert!(!wt.exists());
+    assert!(
+        !git_quiet(&repo, &["rev-parse", "--verify", "--quiet", &branch])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn discard_refuses_ignored_files_until_removed() {
+    let td = TestDir::new("discard-ignored");
+    let repo = init_repo(&td.repo());
+    write_file(&repo, ".gitignore", ".env\n");
+    commit_all(&repo, "ignore env");
+    let mut store = td.store(&repo);
+    let task = store.create("discard ignored", None).unwrap();
+    store.start(&task.task_id).unwrap();
+    let wt = worktree_path(&task);
+    let branch = task.branch.clone().expect("branch");
+
+    write_file(&wt, ".env", "SECRET=1\n");
+    let error = store.discard(&task.task_id).unwrap_err();
+    assert!(matches!(error, TaskError::IgnoredFiles { .. }));
+    let detail = error.to_error_body().detail.expect("detail");
+    assert!(detail.contains(".env"), "detail: {detail}");
+
+    assert!(wt.join(".env").is_file(), "ignored file must be preserved");
+    assert_eq!(
+        store.get(&task.task_id).unwrap().status,
+        TaskStatus::Running
+    );
+    git(&repo, &["rev-parse", "--verify", &branch]);
+
+    std::fs::remove_file(wt.join(".env")).expect("remove ignored file");
+    let discarded = store.discard(&task.task_id).unwrap();
+    assert_eq!(discarded.status, TaskStatus::Failed);
+    assert!(discarded.worktree_path.is_none());
     assert!(!wt.exists());
     assert!(
         !git_quiet(&repo, &["rev-parse", "--verify", "--quiet", &branch])

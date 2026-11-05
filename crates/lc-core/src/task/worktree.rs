@@ -7,7 +7,8 @@
 //! - 主工作区 dirty 时不合并、不自动 stash；冲突时不 abort，保留 merge 状态
 //!   供用户在编辑器里解决；再次 apply 时若 `MERGE_HEAD` 仍在且冲突已全部解决，
 //!   则提交该 merge 后继续收尾（绝不自动选边）；
-//! - 删除 worktree 前由调用方确认干净（`discard` 的 DirtyWorktree 拒绝）。
+//! - 删除 worktree 前由调用方确认干净且没有 ignored 文件（`DirtyWorktree` /
+//!   `IgnoredFiles` 拒绝），因为 `git worktree remove --force` 会一并删除它们。
 
 use std::path::{Path, PathBuf};
 
@@ -199,6 +200,32 @@ pub(crate) fn base_drift(repo_root: &Path, base_sha: &str) -> Result<u32, TaskEr
             path: repo_root.display().to_string(),
             message: format!("cannot parse rev-list --count output: {error}"),
         })
+}
+
+/// worktree 中被 `.gitignore` 等规则排除的文件/目录。
+///
+/// `git worktree remove --force` 会连同 ignored 文件一起删除，因此 apply /
+/// discard 在删除前必须检查；`--directory` 把整个 ignored 目录折叠成一项，
+/// 避免 `node_modules` 这类目录产生海量路径。
+pub(crate) fn ignored_files(worktree: &Path) -> Result<Vec<String>, TaskError> {
+    let out = git_ok(
+        worktree,
+        &[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ],
+        GIT_TIMEOUT,
+    )?;
+    Ok(out
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// worktree 是否有未提交改动（含未跟踪文件）。

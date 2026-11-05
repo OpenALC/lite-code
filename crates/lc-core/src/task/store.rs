@@ -14,7 +14,7 @@ use crate::fs::display_path;
 
 use super::diff::{TaskDiff, build_diff, scan_changes};
 use super::worktree::{self, ApplyOutcome};
-use super::{PORT_RANGE_END, PORT_RANGE_START, TaskError, next_task_id, now_millis};
+use super::{PORT_RANGE_END, PORT_RANGE_START, TaskError, next_task_id, now_millis, project_key};
 
 /// 默认并发上限（docs/TASKS.md §4：验收质量优先）。
 pub const DEFAULT_MAX_RUNNING: usize = 2;
@@ -36,7 +36,7 @@ struct TaskRecord {
     notes: Vec<String>,
 }
 
-/// 任务存储与队列。构造时注入 `tasks.json` 路径与项目根，便于测试隔离；
+/// 任务存储与队列。构造时注入持久化路径与项目根，便于测试隔离；
 /// 生产入口是 [`TaskStore::load_default`]。
 #[derive(Debug)]
 pub struct TaskStore {
@@ -46,6 +46,7 @@ pub struct TaskStore {
     tasks: Vec<TaskRecord>,
     max_running: usize,
     load_warning: Option<TaskError>,
+    legacy_store_warning: Option<String>,
 }
 
 impl TaskStore {
@@ -69,12 +70,39 @@ impl TaskStore {
         store
     }
 
-    /// 生产入口：`lc_core::config::data_dir()/tasks.json`。
+    /// 生产入口：`lc_core::config::data_dir()/tasks/<project-key>.json`。
+    ///
+    /// 不同工作区各自一份任务列表，避免切换 workspace 时看到别的项目的任务。
+    /// 旧版全局 `tasks.json` 不会被导入（否则会把 A 项目任务带进 B），只在
+    /// [`TaskStore::legacy_store_warning`] 中提示手动迁移。
     pub fn load_default(repo_root: impl AsRef<Path>) -> Result<Self, TaskError> {
         let data_dir = crate::config::data_dir().map_err(|error| TaskError::Config {
             message: error.to_string(),
         })?;
-        let mut store = Self::build(data_dir.join("tasks.json"), repo_root, DEFAULT_MAX_RUNNING);
+        let store = Self::load_at(&data_dir, repo_root)?;
+        if let Some(warning) = store.legacy_store_warning() {
+            eprintln!("[task] {warning}");
+        }
+        Ok(store)
+    }
+
+    /// [`TaskStore::load_default`] 的显式数据目录版本（测试使用）。
+    pub(crate) fn load_at(data_dir: &Path, repo_root: impl AsRef<Path>) -> Result<Self, TaskError> {
+        let repo_root = repo_root.as_ref();
+        let persist_path = task_store_path(data_dir, repo_root);
+        let mut store = Self::build(persist_path, repo_root, DEFAULT_MAX_RUNNING);
+        // 持久化文件在 `<data>/tasks/`，但 worktree 仍应落在 `<data>/worktrees/`。
+        store.data_root = data_dir.to_path_buf();
+
+        let legacy = data_dir.join("tasks.json");
+        if legacy.is_file() {
+            store.legacy_store_warning = Some(format!(
+                "legacy shared task store at {} is ignored; move it into {} manually if needed",
+                display_path(&legacy),
+                display_path(&store.persist_path)
+            ));
+        }
+
         store.reload()?;
         Ok(store)
     }
@@ -96,6 +124,7 @@ impl TaskStore {
             tasks: Vec::new(),
             max_running: max_running.clamp(1, HARD_MAX_RUNNING),
             load_warning: None,
+            legacy_store_warning: None,
         }
     }
 
@@ -149,6 +178,11 @@ impl TaskStore {
     /// 首次加载时若文件损坏而走了宽松构造，这里能拿到具体错误。
     pub fn load_warning(&self) -> Option<&TaskError> {
         self.load_warning.as_ref()
+    }
+
+    /// 旧版全局 `tasks.json` 存在时的提示（不做自动迁移）。
+    pub fn legacy_store_warning(&self) -> Option<&str> {
+        self.legacy_store_warning.as_deref()
     }
 
     pub fn list(&self) -> Vec<TaskInfo> {
@@ -403,16 +437,17 @@ impl TaskStore {
     }
 
     /// 应用任务到主工作区：
-    /// 0. 若主工作区停在本任务上一次冲突留下的 merge 且冲突已解决，先提交该 merge；
+    /// 0. worktree 不得含有 ignored 文件（删除 worktree 会丢失它们）；
+    /// 1. 若主工作区停在本任务上一次冲突留下的 merge 且冲突已解决，先提交该 merge；
     ///    仍冲突则保持 `Review` 并返回 [`TaskError::MergeConflict`]（不自动选边）；
-    /// 1. 主工作区必须 clean；
-    /// 2. 计算 base drift（不阻止合并）；
-    /// 3. worktree 的未提交改动先提交到任务分支（避免 merge 后删除 worktree 丢数据）；
-    /// 4. `git merge --no-ff`；冲突保留 merge 状态、任务置 `Review` 并返回错误；
-    /// 5. 成功则记录合并提交、删除 worktree/分支、状态 `Done`。
+    /// 2. 主工作区必须 clean；
+    /// 3. 计算 base drift（不阻止合并）；
+    /// 4. worktree 的未提交改动先提交到任务分支（避免 merge 后删除 worktree 丢数据）；
+    /// 5. `git merge --no-ff`；冲突保留 merge 状态、任务置 `Review` 并返回错误；
+    /// 6. 成功则记录合并提交、删除 worktree/分支、状态 `Done`。
     ///
-    /// 用户手动解决了冲突并已提交 merge 时，第 4 步的 `git merge` 是
-    /// “Already up to date”，同样走第 5 步收尾。
+    /// 用户手动解决了冲突并已提交 merge 时，第 5 步的 `git merge` 是
+    /// “Already up to date”，同样走第 6 步收尾。
     pub fn apply(&mut self, task_id: impl AsRef<str>) -> Result<ApplyOutcome, TaskError> {
         let task_id = task_id.as_ref();
         let index = self.index_of(task_id).ok_or_else(|| TaskError::NotFound {
@@ -458,6 +493,15 @@ impl TaskStore {
             return Err(TaskError::WorktreeMissing {
                 task_id: task_id.to_string(),
                 path: path.to_string(),
+            });
+        }
+
+        // 删除 worktree 会连同 ignored 文件一起删除；先拒绝，避免 apply 后丢数据。
+        let ignored = worktree::ignored_files(&worktree)?;
+        if !ignored.is_empty() {
+            return Err(TaskError::IgnoredFiles {
+                task_id: info.task_id.clone(),
+                paths: ignored,
             });
         }
 
@@ -550,9 +594,10 @@ impl TaskStore {
         })
     }
 
-    /// 丢弃任务：worktree 有未提交改动时拒绝（`DirtyWorktree`）；干净则
-    /// 删除 worktree 与分支（失败仅记 warning），状态置 `Failed`，端口回收。
-    /// 非 git 任务没有 worktree，直接标记。
+    /// 丢弃任务：worktree 含有 ignored 文件时拒绝（`IgnoredFiles`，删除会丢
+    /// 数据）；有未提交改动时拒绝（`DirtyWorktree`）；干净则删除 worktree 与
+    /// 分支（失败仅记 warning），状态置 `Failed`，端口回收。非 git 任务没有
+    /// worktree，直接标记。
     pub fn discard(&mut self, task_id: impl AsRef<str>) -> Result<TaskInfo, TaskError> {
         let task_id = task_id.as_ref();
         let index = self.index_of(task_id).ok_or_else(|| TaskError::NotFound {
@@ -572,6 +617,13 @@ impl TaskStore {
         if let Some(path) = info.worktree_path.as_deref() {
             let worktree = PathBuf::from(path);
             if worktree.is_dir() {
+                let ignored = worktree::ignored_files(&worktree)?;
+                if !ignored.is_empty() {
+                    return Err(TaskError::IgnoredFiles {
+                        task_id: info.task_id.clone(),
+                        paths: ignored,
+                    });
+                }
                 if worktree::worktree_is_dirty(&worktree)? {
                     return Err(TaskError::DirtyWorktree {
                         task_id: task_id.to_string(),
@@ -677,6 +729,13 @@ impl TaskStore {
             .find(|port| !used.contains(port))
             .ok_or(TaskError::PortExhausted)
     }
+}
+
+/// 每个工作区一份任务文件：`<data>/tasks/<project-key>.json`。
+fn task_store_path(data_dir: &Path, repo_root: &Path) -> PathBuf {
+    data_dir
+        .join("tasks")
+        .join(format!("{}.json", project_key(repo_root)))
 }
 
 fn read_store(path: &Path) -> Result<StoreFile, TaskError> {

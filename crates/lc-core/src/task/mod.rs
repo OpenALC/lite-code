@@ -1,8 +1,9 @@
 //! Task 存储、并发队列与 git worktree 管理（docs/TASKS.md §2–§5，P4）。
 //!
-//! 本模块是 headless 核心：状态落在 `lc_core::config::data_dir()/tasks.json`，
-//! worktree 落在数据目录（绝不进入项目目录），Tauri 传输层只负责 `Mutex` 包装
-//! 与 `task:*` 事件发射。
+//! 本模块是 headless 核心：状态按工作区隔离，落在
+//! `lc_core::config::data_dir()/tasks/<project-key>.json`；worktree 落在数据
+//! 目录（绝不进入项目目录），Tauri 传输层只负责 `Mutex` 包装与 `task:*` 事件
+//! 发射。旧版全局 `tasks.json` 不自动迁移，仅记录 warning 提示手动迁移。
 //!
 //! 语义要点：
 //! - 非 git 项目不阻塞任务创建：没有 worktree，任务在串行模式下运行，
@@ -48,6 +49,9 @@ pub const PORT_RANGE_END: u16 = 4399;
 /// 错误信息里保留的输出尾部长度（字符数）。
 const OUTPUT_TAIL_CHARS: usize = 1_500;
 
+/// `IgnoredFiles` 错误 detail 中最多列出的路径数。
+const OUTPUT_PATH_LIMIT: usize = 20;
+
 /// task lane 的错误集合。[`TaskError::code`] 映射到契约错误码，
 /// 传输层包装成 `ErrorBody` 返回 UI。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -81,6 +85,8 @@ pub enum TaskError {
     DirtyMainWorktree { detail: String },
     #[error("task worktree is dirty: {task_id} at {path}")]
     DirtyWorktree { task_id: String, path: String },
+    #[error("task worktree contains ignored files that would be deleted: {task_id}")]
+    IgnoredFiles { task_id: String, paths: Vec<String> },
     #[error("task worktree is missing: {task_id} at {path}")]
     WorktreeMissing { task_id: String, path: String },
     #[error("merge conflict while applying {task_id}: {detail}")]
@@ -105,6 +111,7 @@ impl TaskError {
             | TaskError::NotGit { .. }
             | TaskError::DirtyMainWorktree { .. }
             | TaskError::DirtyWorktree { .. }
+            | TaskError::IgnoredFiles { .. }
             | TaskError::MergeConflict { .. }
             | TaskError::PortExhausted => ErrorCode::InvalidArgument,
             TaskError::StoreCorrupt { .. }
@@ -116,7 +123,25 @@ impl TaskError {
     }
 
     pub fn to_error_body(&self) -> ErrorBody {
-        ErrorBody::new(self.code(), self.to_string())
+        let body = ErrorBody::new(self.code(), self.to_string());
+        match self {
+            TaskError::IgnoredFiles { paths, .. } => {
+                let mut detail =
+                    String::from("remove or back up these ignored files before apply/discard:\n");
+                for path in paths.iter().take(OUTPUT_PATH_LIMIT) {
+                    detail.push_str(path);
+                    detail.push('\n');
+                }
+                if paths.len() > OUTPUT_PATH_LIMIT {
+                    detail.push_str(&format!(
+                        "... and {} more\n",
+                        paths.len() - OUTPUT_PATH_LIMIT
+                    ));
+                }
+                body.with_detail(detail.trim_end().to_string())
+            }
+            _ => body,
+        }
     }
 }
 
