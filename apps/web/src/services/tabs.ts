@@ -14,6 +14,8 @@ export interface Tab {
   path: string | null
   /** 当前缓冲区内容（保存时直接取这里，避免视图层与 store 双份状态） */
   content: string
+  /** 最近一次落盘/打开时的内容基线：dirty = content !== savedContent */
+  savedContent: string
   /** 大文件分级策略（ARCHITECTURE.md §5.1）：能力裁剪与只读 */
   strategy: EditorFileStrategy
   dirty: boolean
@@ -55,6 +57,7 @@ export const INITIAL_TABS_STATE: TabsState = {
       title: 'main.rs',
       path: null,
       content: SAMPLE_CONTENT,
+      savedContent: SAMPLE_CONTENT,
       strategy: resolveEditorStrategy(0),
       dirty: false,
     },
@@ -89,6 +92,7 @@ export function openTab(tab: OpenTabInput): void {
         title: tab.title,
         path: tab.path === undefined ? tab.id : tab.path,
         content: tab.content ?? '',
+        savedContent: tab.content ?? '',
         strategy: tab.strategy ?? resolveEditorStrategy(0),
         dirty: false,
       },
@@ -118,20 +122,31 @@ export function setDirty(id: string, dirty: boolean): boolean {
   return true
 }
 
-/** 更新缓冲区内容并标记 dirty；内容未变时不发通知。 */
+/** 更新缓冲区内容；dirty 始终由 content 与 savedContent 的差异推导。 */
 export function updateContent(id: string, content: string): boolean {
   const state = tabsStore.get()
   const index = state.tabs.findIndex(t => t.id === id)
   if (index < 0) return false
-  if (state.tabs[index].content === content) return true
-  const tabs = state.tabs.map(t => (t.id === id ? { ...t, content, dirty: true } : t))
+  const tab = state.tabs[index]
+  const dirty = content !== tab.savedContent
+  if (tab.content === content && tab.dirty === dirty) return true
+  const tabs = state.tabs.map(t => (t.id === id ? { ...t, content, dirty } : t))
   tabsStore.set({ ...state, tabs })
   return true
 }
 
-/** 保存成功后清除 dirty（内容已由 updateContent 保持最新）。 */
+/** 保存成功：把当前内容设为新基线并清除 dirty。 */
 export function markSaved(id: string): boolean {
-  return setDirty(id, false)
+  const state = tabsStore.get()
+  const index = state.tabs.findIndex(t => t.id === id)
+  if (index < 0) return false
+  const tab = state.tabs[index]
+  if (tab.savedContent === tab.content && !tab.dirty) return true
+  const tabs = state.tabs.map(t =>
+    t.id === id ? { ...t, savedContent: t.content, dirty: false } : t,
+  )
+  tabsStore.set({ ...state, tabs })
+  return true
 }
 
 /** 当前激活标签；无激活标签时返回 null。 */

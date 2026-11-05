@@ -150,6 +150,18 @@ describe('内容与保存', () => {
     unsub()
   })
 
+  it('回到已保存内容自动清除 dirty；保存后基线随之更新', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'v1' })
+    updateContent('a.rs', 'v2')
+    updateContent('a.rs', 'v1')
+    expect(tabsStore.get().tabs.find(t => t.id === 'a.rs')?.dirty).toBe(false)
+
+    updateContent('a.rs', 'v2')
+    markSaved('a.rs')
+    updateContent('a.rs', 'v1')
+    expect(tabsStore.get().tabs.find(t => t.id === 'a.rs')?.dirty).toBe(true)
+  })
+
   it('markSaved 清除 dirty 但保留内容', () => {
     openTab({ id: 'a.rs', title: 'a.rs', content: 'v1' })
     updateContent('a.rs', 'v2')
