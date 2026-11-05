@@ -1,8 +1,9 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`efe8425`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`1d68600`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
+> P1 发布线：tag `v0.1.1-preview.1` 已推送，release workflow 进行中。
 
 ## 当前位置一览
 
@@ -21,11 +22,12 @@
 | 打开工作区 | ✅ 契约 v0.2 `workspace_open`；根由 Rust 状态持有并持久化；当前为路径输入，原生选择器待 P2 |
 | 窗口生命周期 | ✅ 关闭销毁 WebView、托盘/单实例按配置重建；标签内容在销毁前持久化并在重建后恢复 |
 | 构建正确性 | ✅ `lc-desktop` 启用 `tauri/custom-protocol`；perf.yml 先构建前端 dist，避免空 WebView |
-| 性能 | ⚠️ 旧构建初测：冷启动 48ms / 热启动 55ms / 残留 0 / 托盘 RSS 373MB；R4 后正在用生产构建复测 |
+| 性能 | ✅ 托盘 RSS 29.5MB / 冷启动 48ms / 热启动 47ms / 20 次开关残留 0；activeRss 无脚本入口未测 |
 | 10k 文件展开 | ✅ `lc-cli fs read-dir` 首层 1 万文件 87/96/97ms（目标 <200ms） |
 | headless CLI | ✅ `fs read-dir` 复用 UI 同一实现，输出契约 JSON |
+| P1 发布 | ⏳ `v0.1.1-preview.1` 已打 tag，Windows/Linux 构建与 draft 进行中 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `ce62f52` 之前的提交全绿；最新提交 CI 进行中 |
+| main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
 
 ## 本轮完成
 
@@ -64,20 +66,23 @@
 13. **headless fs / 10k 文件**（`efe8425`）
    - `lc-cli fs read-dir` 复用 UI 同一 `read_dir_level`，输出契约 JSON。
    - 本机 1 万文件首层列举 87/96/97ms，低于 200ms 目标。
+14. **P1 性能收尾**（`7ce641d` / `1d68600`）
+   - 生产构建（custom-protocol）实测：托盘 29.5MB、冷启动 48ms、热启动 47ms、20 次开关残留 0。
+   - `scripts/perf/RESULTS.md` 记录口径与构建证据；baseline 已收录四项非 null 指标。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
-1. 托盘 RSS 旧构建初测 373MB；R4 后正在用生产构建复测，目标 <60MB。
-2. 无外部修改冲突检测（savedContent 基线已有；mtime/hash 契约字段未做）。
-3. 托盘“退出”绕过 webview 脏检查，可能丢未保存缓冲。
-4. 原生文件夹选择器未接；当前打开工作区为路径输入。
+1. 无外部修改冲突检测（savedContent 基线已有；mtime/hash 契约字段未做）。
+2. 托盘“退出”绕过 webview 脏检查，可能丢未保存缓冲。
+3. 原生文件夹选择器未接；当前打开工作区为路径输入。
+4. `activeRssMb` 缺 UI 自动化入口未测；cold/warm 终点是“窗口可见”而非应用内“可交互”。
 5. `@lc-proto` 目前只有 tsconfig 别名，未来若生成运行时常量需补 Vite alias。
 
 ## 待办（按序）
 
-1. R4 后性能复测（后台 subagent）：托盘 RSS/热启动/冷启动/残留进程。
-2. P1 出口验收：干净 Win11 无 Node、20 次开关窗口；1 万文件已测（87–97ms）。
-3. P2：五 lane 合流冒烟，发布 `v0.2.1-preview.1`。
+1. 确认 `v0.1.1-preview.1` release draft 产出（Windows NSIS / Linux AppImage+deb / SHA256SUMS）。
+2. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
+3. P2：五 lane 合流冒烟，版本 `0.2.1-preview.1`。
 
 ## 本地验证命令（与 CI 等价）
 
