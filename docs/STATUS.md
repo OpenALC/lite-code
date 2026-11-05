@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`bde0267`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`37deae5`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -31,6 +31,7 @@
 | 发布流程 | ✅ 修复 AppDir 递归上传与重名；checksums/资产名统一；P2 自动 publish 成功 |
 | P3 Tools+Policy | ✅ 工具注册表（≤12）+ 四模式策略 + 三层判定的纯函数骨架与单测 |
 | P3 会话审批 | ✅ 模式/yolo 确认、轮次上限、取消、审批队列、AllowOnce/AllowSession/Deny |
+| P3 工具执行 | ✅ read/write/edit/glob/grep（根内校验、输出截断）；shell 待 PTY lane |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
 
@@ -82,6 +83,10 @@
    - `Session`：模式（yolo 二次确认）、轮次上限、取消、待审批阻塞。
    - `ApprovalQueue` + `ApprovalCache`：AllowOnce / AllowSession（tool+command 同类）/ Deny。
    - 9 个状态机单测；任何工具执行前必须先 authorize。
+17. **P3 工具执行**（`37deae5`）
+   - `LocalToolExecutor`：read/write/edit/glob/grep，全部先经根内校验，输出截断。
+   - edit 拒绝 0/多次匹配，`replace_all` 显式开启；shell 明确 Unsupported 待 PTY lane。
+   - 5 个临时目录集成测试；lane 脚本修复 `pub use {}` 展开误报。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -93,10 +98,9 @@
 
 ## 待办（按序）
 
-1. 确认 `v0.2.1-preview.1` release draft（发布流程修复后首个自动 draft）。
-2. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-3. P3 下一块：工具执行（read/write/edit/glob/grep/shell）与 ToolExecutor 注入。
-4. P3 后续：LLM 网关、Agent UI（会话流/工具卡片/内联审批/composer）。
+1. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
+2. P3 下一块：shell 工具执行（接 ProcessSupervisor / PowerShell 7 探测）。
+3. P3 后续：LLM 网关（Responses + SSE）、Agent UI（会话流/工具卡片/内联审批/composer）。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -123,5 +127,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 89 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **226**。
+lc-core 94 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **231**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
