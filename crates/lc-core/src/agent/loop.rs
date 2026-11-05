@@ -14,12 +14,16 @@ use crate::llm::{LlmError, LlmEvent, LlmInput, LlmRequest, OpenAiResponsesClient
 
 use super::approval::ApprovalRequest;
 use super::collector::{CollectedToolCall, CollectorError, TurnCollector};
-use super::exec::{ToolCall, ToolError, ToolExecutor};
+use super::exec::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use super::policy::PolicySource;
 use super::session::{ApprovalOutcome, AuthorizeOutcome, Session, SessionError};
 use super::tools::{Risk, ToolRegistry};
 
-pub trait LlmStream {
+/// 工具执行结果观察者（call id 只在循环内部可见）。Tauri/CLI 用它发
+/// `agent:tool_result`；错误不会中断会话，而是作为工具输出回填给模型。
+pub type ToolResultObserver = Box<dyn FnMut(&str, &Result<ToolOutput, ToolError>) + Send>;
+
+pub trait LlmStream: Send {
     fn stream(&self, request: &LlmRequest, sink: &mut dyn FnMut(LlmEvent)) -> Result<(), LlmError>;
 }
 
@@ -70,6 +74,7 @@ pub struct AgentLoop {
     tools: Vec<Value>,
     messages: Vec<LlmInput>,
     pending_calls: VecDeque<CollectedToolCall>,
+    tool_observer: Option<ToolResultObserver>,
 }
 
 impl AgentLoop {
@@ -92,7 +97,14 @@ impl AgentLoop {
             tools: Vec::new(),
             messages: Vec::new(),
             pending_calls: VecDeque::new(),
+            tool_observer: None,
         }
+    }
+
+    /// 注册工具结果观察者（每个 call 执行后调用一次，含失败）。
+    pub fn with_tool_observer(mut self, observer: ToolResultObserver) -> Self {
+        self.tool_observer = Some(observer);
+        self
     }
 
     pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
@@ -111,6 +123,11 @@ impl AgentLoop {
 
     pub fn messages(&self) -> &[LlmInput] {
         &self.messages
+    }
+
+    /// 取消会话：停止后续轮次与工具执行（已发出的 HTTP 流不强制中断）。
+    pub fn cancel(&mut self) {
+        self.session.cancel();
     }
 
     pub fn run(
@@ -220,11 +237,20 @@ impl AgentLoop {
             &call.name,
             call.args.to_string(),
         ));
-        let output = self
+        let outcome = self
             .executor
-            .execute(&ToolCall::new(call.name.clone(), call.args.clone()))?;
+            .execute(&ToolCall::new(call.name.clone(), call.args.clone()));
+        if let Some(observer) = self.tool_observer.as_mut() {
+            observer(&call.id, &outcome);
+        }
+        // 工具失败是模型可恢复的输入，不是会话级错误：把错误文本回填，
+        // 让模型决定重试/换方案，而不是直接中断整个循环。
+        let output = match outcome {
+            Ok(output) => output.text,
+            Err(error) => format!("tool error: {error}"),
+        };
         self.messages
-            .push(LlmInput::function_call_output(&call.id, output.text));
+            .push(LlmInput::function_call_output(&call.id, output));
         Ok(())
     }
 
@@ -444,6 +470,77 @@ mod tests {
             loop_.run("x", &mut |_| {}),
             Err(LoopError::UnknownTool(name)) if name == "nope"
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_error_is_fed_back_and_observed() {
+        struct FailingExecutor;
+        impl ToolExecutor for FailingExecutor {
+            fn execute(&self, _call: &ToolCall) -> Result<ToolOutput, ToolError> {
+                Err(ToolError::NotFound("missing.txt".into()))
+            }
+        }
+
+        let root = temp_root("tool-error");
+        let llm = Box::new(FakeLlm::new(vec![
+            vec![
+                LlmEvent::ToolUseStart {
+                    id: "call_e".into(),
+                    name: "read_file".into(),
+                },
+                LlmEvent::ToolUseArgsDelta {
+                    id: "call_e".into(),
+                    json: r#"{"path":"missing.txt"}"#.into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta {
+                    index: 0,
+                    text: "recovered".into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ]));
+        let observed = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink = observed.clone();
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            llm,
+            Box::new(FailingExecutor),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        )
+        .with_tool_observer(Box::new(move |call_id, result| {
+            sink.lock()
+                .unwrap()
+                .push((call_id.to_string(), result.is_err()));
+        }));
+
+        let outcome = loop_.run("read missing", &mut |_| {}).unwrap();
+        assert_eq!(
+            outcome,
+            LoopOutcome::Final {
+                text: "recovered".into()
+            }
+        );
+        assert_eq!(&*observed.lock().unwrap(), &[("call_e".into(), true)]);
+        let output = loop_
+            .messages()
+            .iter()
+            .find_map(|message| match message {
+                LlmInput::FunctionCallOutput { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("function_call_output");
+        assert!(output.contains("tool error"), "{output}");
+        assert!(output.contains("missing.txt"), "{output}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

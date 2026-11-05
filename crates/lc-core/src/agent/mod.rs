@@ -17,7 +17,7 @@ pub use events::{
     approval_prompt, llm_event, loop_outcome, mode_from_contract, mode_to_contract, session_info,
 };
 pub use exec::{LocalToolExecutor, ToolCall, ToolError, ToolExecutor, ToolOutput};
-pub use r#loop::{AgentLoop, LlmStream, LoopError, LoopOutcome};
+pub use r#loop::{AgentLoop, LlmStream, LoopError, LoopOutcome, ToolResultObserver};
 pub use policy::{Policy, PolicyDecision, PolicyError, PolicyMode, PolicyRequest, PolicySource};
 pub use session::{
     ApprovalOutcome, AuthorizeOutcome, DEFAULT_MAX_TURNS, ModeChange, Session, SessionError,
