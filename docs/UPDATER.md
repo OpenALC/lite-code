@@ -124,13 +124,14 @@ Tauri 命令 `update_check`（`apps/desktop/src-tauri/src/updater.rs`）：
    确认 `.milestone=6`。
 2. **打 tag**：`v0.6.1-preview.1`。`release.yml` 的 prep 会校验 tag 与三处 manifest。
 3. **构建**：Windows NSIS、Linux AppImage/deb（x64 与 arm64）、`lc-cli`。
-   如需更新签名，在构建 job 配置：
+   更新器签名需要：
    - `TAURI_SIGNING_PRIVATE_KEY`（私钥内容或路径）
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（有密码时）
 
-   并在 `tauri build` 时启用 `bundle.createUpdaterArtifacts`（见 §6 的建议），
-   让 Tauri 在安装包旁生成 `<产物>.sig`。仓库里**只允许提交公钥**，
-   私钥只能进 GitHub Secrets。
+   并在 `tauri build` 时启用 `bundle.createUpdaterArtifacts`，
+   让 Tauri 在安装包旁生成 `<产物>.sig`。**当前 release.yml 的 build job 尚未注入
+   这两项**（见 §6 第 3 条），所以没有 `.sig` 时清单会写 `signed:false`。
+   仓库里**只允许提交公钥**，私钥只能进 GitHub Secrets。
 4. **生成清单**（在能访问全部产物的 job 中）：
 
    ```bash
@@ -154,8 +155,10 @@ Tauri 命令 `update_check`（`apps/desktop/src-tauri/src/updater.rs`）：
    - 回滚目标来自 `--previous-manifest`（上一版 `latest.json`）；首次发布可省略。
    - `--require-signatures` 用于稳定版门禁：任一平台缺 `.sig` 直接失败。
 5. **发布静态 JSON（注意 draft 时序）**：
-   - 先把 `latest.json` 挂到当次 release（draft）做审计留存；
-   - **等维护者把 draft 发布后**，再把同一份文件上传到滚动 release：
+   - `publish` job 已自动把 `latest.json` 生成到 `artifacts/latest.json` 并挂到当次
+     draft release（同时进入 `SHA256SUMS`）；
+   - **等维护者把 draft 发布后**，`updater-manifest.yml`（`release: published`）
+     会自动完成滚动清单提升：
 
    ```bash
    # 版本 release 已发布，安装包 URL 才可公开访问
@@ -166,9 +169,8 @@ Tauri 命令 `update_check`（`apps/desktop/src-tauri/src/updater.rs`）：
    gh release upload updater-manifest latest.json --clobber
    ```
 
-   不要在 draft 未发布时更新滚动清单：清单里的 URL 会指向尚不可见的资产，
-   客户端检查成功但下载 404。推荐用 `release: published` 的独立 job 自动完成
-   （见 §6）。
+   上面的命令是工作流的等价人工操作。不要在 draft 未发布时更新滚动清单：
+   清单里的 URL 会指向尚不可见的资产，客户端检查成功但下载 404。
 6. **验证**：本地设置 `LC_UPDATE_MANIFEST_URL` 指向清单，调用 `update_check`，
    确认 `available`、`sha256`、`signed` 与产物一致。
 
@@ -193,79 +195,78 @@ Tauri 命令 `update_check`（`apps/desktop/src-tauri/src/updater.rs`）：
 - 当前客户端只透传签名、不校验证书链或 minisign 签名；真正校验应在引入
   `tauri-plugin-updater` 或安装器阶段完成，并配置对应 `pubkey`。
 
-## 6. release.yml 集成建议
+## 6. 工作流集成（已接入）
 
-本 lane 不修改 `.github/workflows/release.yml`（arm64 lane 正在改同一文件）。
-主 agent 合并时建议增加：
+`release.yml` 与 `updater-manifest.yml` 已按本节接入。没有签名密钥时清单仍然生成，
+但明确写 `signed:false`，不会伪造签名。
 
 1. **prep 输出签名开关**（`secrets` 不能在 job 级 `if` 中使用）：
+   - `signing`：来自仓库变量 `SIGNPATH_ENABLED`；
+   - `updater_signing`：`TAURI_SIGNING_PRIVATE_KEY` 是否非空，在 step 级 `env`
+     读取后转成 output。它只用于日志/step summary 提示，不参与伪造签名。
 
-   ```yaml
-   - id: updater
-     shell: bash
-     env:
-       KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-     run: echo "enabled=$([ -n "$KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-   ```
-
-2. **build-windows / build-linux / build-linux-arm64** 的构建步骤：
-   - 注入 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；
-   - 有密钥时给 `pnpm tauri build` 追加
-     `--config '{"bundle":{"createUpdaterArtifacts":true}}'`（避免在
-     `tauri.conf.json` 里永久打开——无密钥的构建会失败）；
-   - 或者保持构建不变，在产物旁逐个手工签名（同样读取环境变量，生成
-     `<产物>.sig`）：
+2. **publish：生成并挂载清单**（`release.yml`）：
+   - `actions/setup-node` 固定 Node 22；
+   - 从滚动 release 读取上一版：
+     `gh release download updater-manifest --pattern latest.json --output previous-latest.json --clobber`；
+     不存在时用 `::notice::` 说明首次发布；同一 tag 重跑且版本相同时忽略 `previous`；
+   - 运行生成器，产物目录与上传/校验共用同一 `$win` 选择
+     （`artifacts/win-x64`，签名启用时为 `artifacts/win-x64-signed`）：
 
      ```bash
-     pnpm tauri signer sign --app-version "$VERSION" "path/to/installer"
+     node scripts/gen-update-manifest.mjs \
+       --version "$VERSION" --tag "$GITHUB_REF_NAME" \
+       --repo "$GITHUB_REPOSITORY" \
+       --artifacts "$win/bundle" \
+       --artifacts artifacts/linux-x64/bundle \
+       --artifacts artifacts/linux-arm64/bundle \
+       --notes-file "docs/releases/$VERSION.md" \
+       --previous-manifest previous-latest.json \
+       --output artifacts/latest.json
      ```
 
-   - `upload-artifact` 的 `bundle/**` 已包含 `.sig`，确认 arm64 lane 也上传。
-3. **publish job**（只生成并挂到 draft，不更新滚动清单）：
-   - 确保 Node ≥ 22（runner 自带版本不保证，建议加 `actions/setup-node`）；
-   - `gh release download updater-manifest --pattern latest.json --output previous-latest.json --clobber || true`
-   - `node scripts/gen-update-manifest.mjs ... --previous-manifest previous-latest.json --output latest.json`
-   - 在 `gh release create` 的 assets 里加入 `latest.json`（以及可选的 `.sig`）。
-   - 若启用 `--require-signatures`，需先保证三个平台都有 `.sig`，否则 publish 失败。
-4. **新增 `release: published` 工作流**（推荐，避免 draft 期间清单指向 404）：
-   监听 release 发布事件，从该 tag 下载 `latest.json`，再 `--clobber` 上传到
-   `updater-manifest`。示意：
+   - 输出 `artifacts/latest.json` 后会被加入 `release-assets.txt`，进而进入
+     `SHA256SUMS` 与 `gh release create` 的资产列表；
+   - 生成后读取 `signed`：为 `false` 时在日志写 `::warning::` 并追加到
+     `$GITHUB_STEP_SUMMARY`，说明是密钥缺失还是“密钥存在但并非所有平台都有 `.sig`”；
+   - draft 未发布前**不会**更新滚动 `updater-manifest`。
 
-   ```yaml
-   on:
-     release:
-       types: [published]
-   jobs:
-     promote-manifest:
-       runs-on: ubuntu-22.04
-       permissions:
-         contents: write
-       steps:
-         - env:
-             GH_TOKEN: ${{ github.token }}
-             TAG: ${{ github.event.release.tag_name }}
-           run: |
-             gh release download "$TAG" --pattern latest.json --output latest.json --clobber
-             gh release view updater-manifest >/dev/null 2>&1 \
-               || gh release create updater-manifest --prerelease \
-                  --title "updater manifest" --notes "滚动更新清单"
-             gh release upload updater-manifest latest.json --clobber
-   ```
+3. **构建侧签名注入仍是 TODO**：
+   - 当前三个 build job 尚未注入 `TAURI_SIGNING_PRIVATE_KEY`，也没有在
+     `pnpm tauri build` 时启用 `bundle.createUpdaterArtifacts`。因此即使配置了
+     私钥，只要安装包旁没有 `.sig`，清单仍是 `signed:false`；
+   - 接入时应在 tag 构建 job 注入私钥与密码，并追加
+     `--config '{"bundle":{"createUpdaterArtifacts":true}}'`，或对产物运行
+     `pnpm tauri signer sign --app-version "$VERSION" <installer>`；
+   - `upload-artifact` 的 `bundle/**` 会自动包含 `.sig`；
+   - 仓库里**只允许提交公钥**，私钥与密码只能进 GitHub Secrets。
 
-   若不想新增工作流，则把这一步保留为人工发布后的操作。
-5. **ci.yml**（可选）：增加 `node --test scripts/gen-update-manifest.test.mjs`，
-   让清单生成器与 Rust 测试一起回归。
+4. **`release: published` 提升滚动清单**（`.github/workflows/updater-manifest.yml`）：
+   - 只处理以 `v` 开头的版本 tag；`updater-manifest` 自身的 published 事件被过滤；
+   - 从该 tag 下载 `latest.json`，校验 `version` 与 tag 一致、`platforms` 非空、
+     `signed` 为布尔值；
+   - `updater-manifest` 不存在时创建为 prerelease，然后 `--clobber` 上传；
+   - 这样 draft 期间清单 URL 不会指向 404：事件只在人工发布后触发。
 
-产物路径参考（当前 release.yml 下载到 `artifacts/` 下）：
+5. **ci.yml 回归**：
+   - `updater-manifest` job 运行 `node --test scripts/gen-update-manifest.test.mjs`；
+   - `audit` job 运行 `pnpm audit --prod --audit-level high`，并进入 `summary` 的 `needs`。
+
+产物路径参考（`publish` 下载到 `artifacts/` 下）：
 
 ```
-artifacts/win-x64/bundle/nsis/*.exe
-artifacts/win-x64/lc-cli.exe
+artifacts/win-x64[-signed]/bundle/nsis/*.exe
+artifacts/win-x64[-signed]/lc-cli.exe
 artifacts/linux-x64/bundle/appimage/*.AppImage
 artifacts/linux-x64/bundle/deb/*.deb
+artifacts/linux-x64/lc-cli
 artifacts/linux-arm64/bundle/appimage/*.AppImage
 artifacts/linux-arm64/bundle/deb/*.deb
+artifacts/linux-arm64/lc-cli-arm64
+artifacts/latest.json
+artifacts/SHA256SUMS
 ```
+
 
 ## 7. 回滚步骤（人工，不自动降级）
 
@@ -305,7 +306,7 @@ artifacts/linux-arm64/bundle/deb/*.deb
 - **预览版不能走 `/releases/latest/`**：GitHub 的 latest 忽略 prerelease，
   所以清单放在固定 tag 的滚动 release（`updater-manifest`）。
 - **draft 时序**：release.yml 只创建 draft；draft 未发布时其资产不可公开访问，
-  滚动清单必须等发布后再更新（§4 第 5 步）。
+  滚动清单由 `updater-manifest.yml` 在 `release: published` 后更新（§4 第 5 步）。
 - **平台覆盖**：仅 Windows x64、Linux x64、Linux arm64；macOS 与其他架构返回
   `not_implemented`。
 - **清单一致性**：`sha256` 与 URL 必须来自同一批已上传产物；先生成清单后重命名/

@@ -5,9 +5,13 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# 最小权限：整个工作流只读；只有 publish 需要写 release。
+# 构建 / 签名 / SBOM job 只需读代码和上传 artifact，不应持有仓库写权限。
 permissions:
-  contents: write
+  contents: read
 
+# Actions 仍按主版本标签引用（@v4 等），本次不强制 pin 到 commit SHA；
+# 后续供应链收紧时可改为 SHA，并在 Dependabot 中说明。
 env:
   RUST_TOOLCHAIN: "1.99.1"
 
@@ -19,20 +23,26 @@ jobs:
       rust: ${{ steps.detect.outputs.rust }}
       web: ${{ steps.detect.outputs.web }}
       signing: ${{ steps.detect.outputs.signing }}
+      updater_signing: ${{ steps.detect.outputs.updater_signing }}
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: detect
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           echo "rust=$([ -f Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "web=$([ -f package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          # 仓库变量控制签名开关：secrets 上下文在 job 级 if 中不可用，必须在这里转成 output。
+          # 仓库变量控制 SignPath 签名开关：secrets 上下文在 job 级 if 中不可用，必须在这里转成 output。
           echo "signing=${{ vars.SIGNPATH_ENABLED == 'true' && 'true' || 'false' }}" >> "$GITHUB_OUTPUT"
+          # 更新器签名（Tauri minisign）只看私钥是否存在；缺失时清单写 signed:false。
+          echo "updater_signing=$([ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       # 版本规则见 docs/VERSIONING.md §6：
       #   0.x 必须带 -preview.N；正式版必须是非零主版本；其余一律拒绝。
       - id: version
@@ -91,6 +101,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -135,6 +147,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -185,6 +199,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -242,22 +258,20 @@ jobs:
     # 签名凭据只在 tag 构建可见；fork 的 PR 拿不到发布凭据。
     if: needs.prep.outputs.rust == 'true' && needs.prep.outputs.signing == 'true'
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: win-x64
-          path: unsigned
-      - name: signpath submit (placeholder)
+      # fail closed：SignPath 尚未接入时，绝不能打印一句“占位”就成功。
+      # 该 job 失败后 publish 的条件不成立，因此不会创建 draft，也不会发布未签名包。
+      - name: refuse unsigned publish
         shell: pwsh
         env:
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
         run: |
-          Write-Host "SignPath 流程接入点：提交 unsigned/ 下 exe 与 msi，等待签名回传"
-          Write-Host "未实现前此 job 只记录凭据存在，不阻断发布（见 docs/CI.md §4）"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: win-x64-signed
-          path: unsigned
-          retention-days: 7
+          Write-Host "::error::SIGNPATH_ENABLED=true，但 SignPath 真实签名流程尚未接入。"
+          if ([string]::IsNullOrEmpty($env:SIGNPATH_API_TOKEN)) {
+            Write-Host "::error::SIGNPATH_API_TOKEN 未配置。"
+          }
+          Write-Host "::error::为防止发布未签名 Windows 安装包，sign job 故意失败并阻止 publish。"
+          Write-Host "::error::接入真实签名前，请将仓库变量 SIGNPATH_ENABLED 设为 false（产物会明确标记未签名）。"
+          exit 1
 
   sbom:
     name: sbom
@@ -265,6 +279,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -298,12 +314,77 @@ jobs:
       needs.build-linux-arm64.result == 'success' &&
       (needs.prep.outputs.signing != 'true' || needs.sign.result == 'success')
     runs-on: ubuntu-22.04
+    # 唯一需要写权限的 job：创建 draft release、读取滚动清单、上传资产。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       # 不指定 name：一次下载 win-x64[-signed]、linux-x64、linux-arm64、sbom。
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: fetch previous updater manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 首次发布没有 updater-manifest；失败不静默，用 notice 说明。
+          if gh release download updater-manifest --pattern latest.json \
+               --output previous-latest.json --clobber 2>/dev/null; then
+            echo "::notice::已读取 updater-manifest/latest.json 作为 previous（回滚通道）"
+          else
+            rm -f previous-latest.json
+            echo "::notice::updater-manifest 不存在或没有 latest.json，本次清单不带 previous"
+          fi
+      - name: generate updater manifest
+        shell: bash
+        env:
+          SIGNING: ${{ needs.prep.outputs.signing }}
+          UPDATER_SIGNING: ${{ needs.prep.outputs.updater_signing }}
+          VERSION: ${{ needs.prep.outputs.version }}
+        run: |
+          set -euo pipefail
+          win=artifacts/win-x64
+          [ "$SIGNING" = "true" ] && win=artifacts/win-x64-signed
+          # 同一 tag 重跑时滚动清单可能已经是当前版本；previous 不能等于当前版本。
+          if [ -f previous-latest.json ]; then
+            prev=$(node -p "require('./previous-latest.json').version")
+            if [ "$prev" = "$VERSION" ]; then
+              echo "::warning::updater-manifest 已是 $VERSION，重跑时忽略 previous"
+              rm -f previous-latest.json
+            fi
+          fi
+          notes="docs/releases/$VERSION.md"
+          if [ ! -f "$notes" ]; then
+            echo "::warning::缺少 $notes，清单说明回退到模板"
+            notes=docs/release-notes-template.md
+          fi
+          args=(--version "$VERSION" --tag "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --output artifacts/latest.json)
+          # 只扫描 bundle 目录：安装包与 .sig 都在这里，避免把 lc-cli 误报为“无法归类”。
+          args+=(--artifacts "$win/bundle" --artifacts artifacts/linux-x64/bundle --artifacts artifacts/linux-arm64/bundle)
+          args+=(--notes-file "$notes")
+          if [ -f previous-latest.json ]; then args+=(--previous-manifest previous-latest.json); fi
+          node scripts/gen-update-manifest.mjs "${args[@]}"
+          signed=$(node -p "require('./artifacts/latest.json').signed")
+          if [ "$signed" = "true" ]; then
+            echo "::notice::latest.json signed:true"
+          else
+            if [ "$UPDATER_SIGNING" = "true" ]; then
+              echo "::warning::TAURI_SIGNING_PRIVATE_KEY 已配置，但并非所有平台都有 .sig；latest.json 记为 signed:false（不伪造签名）"
+            else
+              echo "::warning::未配置 TAURI_SIGNING_PRIVATE_KEY；latest.json 记为 signed:false（不伪造签名）"
+            fi
+            {
+              echo "### 更新器清单签名状态"
+              echo ""
+              echo "本次 latest.json 为 **signed:false**：更新检查可用，但安装包没有更新器签名。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: checksums
         shell: bash
         env:
@@ -314,22 +395,32 @@ jobs:
           shopt -s nullglob
           win=win-x64
           [ "$SIGNING" = "true" ] && win=win-x64-signed
-          # arm64 是 A 类门禁产物：缺失就失败，不允许少资产静默发布。
-          for pattern in \
-            'linux-arm64/bundle/appimage/*.AppImage' \
-            'linux-arm64/bundle/deb/*.deb'; do
-            if ! compgen -G "$pattern" >/dev/null; then
-              echo "::error::缺少 arm64 产物：$pattern"
-              exit 1
-            fi
-          done
-          if [ ! -f linux-arm64/lc-cli ]; then
-            echo "::error::缺少 arm64 产物：linux-arm64/lc-cli"
-            exit 1
+          die() { echo "::error::$*"; exit 1; }
+          have() { compgen -G "$1" >/dev/null; }
+          # 三个平台的关键安装包必须存在；缺任何一个都不生成发布。
+          if ! have "$win/bundle/nsis/*.exe" && ! have "$win/*.msi"; then
+            die "缺少 Windows 安装包（$win）"
           fi
+          have 'linux-x64/bundle/appimage/*.AppImage' || die "缺少 linux-x64 AppImage"
+          have 'linux-x64/bundle/deb/*.deb' || die "缺少 linux-x64 deb"
+          have 'linux-arm64/bundle/appimage/*.AppImage' || die "缺少 linux-arm64 AppImage"
+          have 'linux-arm64/bundle/deb/*.deb' || die "缺少 linux-arm64 deb"
+          [ -f "$win/lc-cli.exe" ] || die "缺少 $win/lc-cli.exe"
+          [ -f linux-x64/lc-cli ] || die "缺少 linux-x64/lc-cli"
+          [ -f linux-arm64/lc-cli ] || die "缺少 linux-arm64/lc-cli"
           # 两个 Linux 构建的 CLI 同名，发布资产不能重名：arm64 加后缀。
           mv linux-arm64/lc-cli linux-arm64/lc-cli-arm64
+          # 所有要上传的资产（除 SHA256SUMS 自身）记录到 release-assets.txt；
+          # 校验与上传共用同一份列表，避免各自的 glob 漂移。
+          : > release-assets.txt
           : > SHA256SUMS
+          add_asset() {
+            local f=$1
+            local name
+            name=$(basename "$f" | tr ' ' '.')
+            sha256sum "$f" | awk -v n="$name" '{print $1"  "n}' >> SHA256SUMS
+            printf '%s\n' "$f" >> release-assets.txt
+          }
           for f in \
             "$win"/bundle/nsis/*.exe \
             "$win"/*.msi \
@@ -339,12 +430,64 @@ jobs:
             linux-x64/lc-cli \
             linux-arm64/bundle/appimage/*.AppImage \
             linux-arm64/bundle/deb/*.deb \
-            linux-arm64/lc-cli-arm64; do
+            linux-arm64/lc-cli-arm64 \
+            latest.json; do
             [ -f "$f" ] || continue
-            name=$(basename "$f" | tr ' ' '.')
-            sha256sum "$f" | awk -v n="$name" '{print $1"  "n}' >> SHA256SUMS
+            add_asset "$f"
           done
+          if [ -d sbom ]; then
+            while IFS= read -r f; do add_asset "$f"; done < <(find sbom -type f | sort)
+          else
+            echo "::warning::无 sbom 产物，跳过"
+          fi
           cat SHA256SUMS
+      - name: verify checksums cover release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          die() { echo "::error::$*"; exit 1; }
+          [ -s release-assets.txt ] || die "release-assets.txt 为空"
+          [ -s SHA256SUMS ] || die "SHA256SUMS 为空"
+          asset_count=$(wc -l < release-assets.txt)
+          sum_count=$(wc -l < SHA256SUMS)
+          [ "$asset_count" -eq "$sum_count" ] || die "SHA256SUMS 行数 ($sum_count) 与发布资产数 ($asset_count) 不一致"
+          # 两个 Windows artifact 目录只能出现一个，避免用错未签名/已签名产物。
+          if grep -q '^win-x64/' release-assets.txt && grep -q '^win-x64-signed/' release-assets.txt; then
+            die "同时存在 win-x64 与 win-x64-signed 资产"
+          fi
+          # 关键平台资产必须出现在清单里。
+          grep -Eq '^win-x64(-signed)?/bundle/nsis/[^/]+\.exe$' release-assets.txt \
+            || grep -Eq '^win-x64(-signed)?/[^/]+\.msi$' release-assets.txt \
+            || die "SHA256SUMS 缺少 Windows 安装包"
+          grep -Eq '^linux-x64/bundle/appimage/[^/]+\.AppImage$' release-assets.txt || die "SHA256SUMS 缺少 linux-x64 AppImage"
+          grep -Eq '^linux-x64/bundle/deb/[^/]+\.deb$' release-assets.txt || die "SHA256SUMS 缺少 linux-x64 deb"
+          grep -Eq '^linux-arm64/bundle/appimage/[^/]+\.AppImage$' release-assets.txt || die "SHA256SUMS 缺少 linux-arm64 AppImage"
+          grep -Eq '^linux-arm64/bundle/deb/[^/]+\.deb$' release-assets.txt || die "SHA256SUMS 缺少 linux-arm64 deb"
+          grep -Eq '^win-x64(-signed)?/lc-cli\.exe$' release-assets.txt || die "SHA256SUMS 缺少 Windows lc-cli"
+          grep -qxF 'linux-x64/lc-cli' release-assets.txt || die "SHA256SUMS 缺少 linux-x64 lc-cli"
+          grep -qxF 'linux-arm64/lc-cli-arm64' release-assets.txt || die "SHA256SUMS 缺少 linux-arm64 lc-cli"
+          grep -qxF 'latest.json' release-assets.txt || die "SHA256SUMS 缺少 latest.json"
+          # basename 不能重复，否则 SHA256SUMS 的 basename 会指向错误文件。
+          dupes=$(while IFS= read -r f; do basename "$f" | tr ' ' '.'; done < release-assets.txt | sort | uniq -d)
+          [ -z "$dupes" ] || die "发布资产 basename 重复：$dupes"
+          # 逐个重算哈希，确认 SHA256SUMS 里确有对应行。
+          while IFS= read -r f; do
+            [ -f "$f" ] || die "清单中的资产不存在：$f"
+            name=$(basename "$f" | tr ' ' '.')
+            actual=$(sha256sum "$f" | awk '{print $1}')
+            grep -qxF "$actual  $name" SHA256SUMS || die "SHA256SUMS 缺少或哈希不匹配：$name"
+          done < release-assets.txt
+          # 反向检查：SHA256SUMS 不能包含未列入发布资产的文件。
+          names=$(mktemp)
+          while IFS= read -r f; do basename "$f" | tr ' ' '.'; done < release-assets.txt | sort > "$names"
+          while IFS= read -r line; do
+            [[ "$line" =~ ^[0-9a-f]{64}\ \ .+$ ]] || die "SHA256SUMS 行格式非法：$line"
+            name=${line#*  }
+            grep -qxF "$name" "$names" || die "SHA256SUMS 含未列入发布资产的文件：$name"
+          done < SHA256SUMS
+          rm -f "$names"
+          echo "::notice::SHA256SUMS 覆盖 $asset_count 个发布资产（win / linux x64 / linux arm64）"
       # 只发 draft：签名失败时发布页不出现，而不是发未签名包再撤回。
       # --prerelease 由版本后缀自动决定（0.x 必带 -preview.N），不靠人勾选。
       - name: create draft release
@@ -361,28 +504,13 @@ jobs:
             args=(--draft --title "$GITHUB_REF_NAME" --notes-file docs/release-notes-template.md)
           fi
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
-          # 只上传安装包，不递归 AppDir；sbom 允许缺失。
-          shopt -s nullglob
-          win=artifacts/win-x64
-          [ "$SIGNING" = "true" ] && win=artifacts/win-x64-signed
-          assets=()
-          for f in \
-            "$win"/bundle/nsis/*.exe \
-            "$win"/*.msi \
-            "$win"/lc-cli.exe \
-            artifacts/linux-x64/bundle/appimage/*.AppImage \
-            artifacts/linux-x64/bundle/deb/*.deb \
-            artifacts/linux-x64/lc-cli \
-            artifacts/linux-arm64/bundle/appimage/*.AppImage \
-            artifacts/linux-arm64/bundle/deb/*.deb \
-            artifacts/linux-arm64/lc-cli-arm64; do
-            [ -f "$f" ] || continue
-            assets+=("$f")
-          done
-          assets+=("artifacts/SHA256SUMS")
-          if [ -d artifacts/sbom ]; then
-            while IFS= read -r f; do assets+=("$f"); done < <(find artifacts/sbom -type f | sort)
-          else
-            echo "::warning::无 sbom 产物，跳过"
+          if [ "$SIGNING" != "true" ]; then
+            echo "::warning::SIGNPATH_ENABLED != true：本次 Windows 安装包未做 Authenticode 签名"
           fi
+          assets=()
+          while IFS= read -r f; do
+            assets+=("artifacts/$f")
+          done < artifacts/release-assets.txt
+          assets+=("artifacts/SHA256SUMS")
           gh release create "$GITHUB_REF_NAME" "${args[@]}" "${assets[@]}"
+          echo "::notice::draft release 已创建，含 latest.json 与 SHA256SUMS；更新滚动清单需等人工发布（updater-manifest.yml）"

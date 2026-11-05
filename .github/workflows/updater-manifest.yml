@@ -1,0 +1,64 @@
+name: updater manifest
+
+# 只在版本 release 真正发布后推进滚动清单，避免 draft 期间 latest.json 里的
+# 资产 URL 指向尚不可访问的安装包（docs/UPDATER.md §4）。
+# 该工作流也会收到 updater-manifest 自身 published 的事件，由 tag 前缀过滤。
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updater-manifest
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: promote latest.json
+    # 只处理 v* 版本 tag；滚动 release 的 tag 是 updater-manifest，不会命中。
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: download latest.json from published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release download "$TAG" --pattern latest.json --output latest.json --clobber; then
+            echo "::warning::release $TAG 没有 latest.json（可能由旧版 release.yml 创建），跳过滚动清单更新"
+            exit 0
+          fi
+          version=$(jq -r '.version // empty' latest.json)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::latest.json version '$version' 与 tag '$TAG' 不一致"
+            exit 1
+          fi
+          jq -e '.platforms | (type == "object") and (length > 0)' latest.json >/dev/null \
+            || { echo "::error::latest.json 缺少 platforms"; exit 1; }
+          jq -e '.signed == true or .signed == false' latest.json >/dev/null \
+            || { echo "::error::latest.json 缺少布尔 signed"; exit 1; }
+          echo "::notice::$TAG latest.json 校验通过（signed=$(jq -r .signed latest.json)）"
+      - name: upload to rolling updater-manifest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ ! -f latest.json ]; then
+            echo "::warning::本次没有可提升的 latest.json，跳过"
+            exit 0
+          fi
+          # 首次发布时创建滚动 release；之后只覆盖 latest.json。
+          if ! gh release view updater-manifest >/dev/null 2>&1; then
+            gh release create updater-manifest --prerelease \
+              --title "updater manifest" \
+              --notes "滚动更新清单；由 release published 工作流自动更新，不要手工编辑。"
+          fi
+          gh release upload updater-manifest latest.json --clobber
+          echo "::notice::updater-manifest/latest.json 已更新"
