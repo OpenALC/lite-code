@@ -63,7 +63,8 @@
 | P5 DB UI | ✅ 连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、untrusted 提示 |
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
-| P5 发布 | ⏳ `v0.5.1-preview.1` tag/release 构建中；SSH/LSP、pg/mysql/mssql、分页 handle 列为已知问题 |
+| P5 发布 | ✅ `v0.5.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 资产） |
+| P6 | ⏳ 外部依赖阻塞：30 天观测、第三方审计、签名证书、HarmonyOS SDK、arm64/更新器端点 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ P4 `preview.2` 全绿；P5 提交由后台 watcher 验证 |
 
@@ -245,5 +246,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 342 · lc-cli 33 · lc-proto 10 · lc-desktop 64 · web 277（15 文件）· 合计 **726**。
+lc-core 343 · lc-cli 33 · lc-proto 10 · lc-desktop 64 · web 277（15 文件）· 合计 **727**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
