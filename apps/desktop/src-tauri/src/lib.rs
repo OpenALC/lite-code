@@ -4,13 +4,18 @@
 //! 业务逻辑全部下沉 lc-core：fs 命令的路径校验（`ensure_within_root`）与
 //! 按层列出（`read_dir_level`）都来自 `lc_core::fs`，返回值直接复用
 //! `lc_proto::CommandResult`，错误经 `FsError::code()` 映射为 `ErrorBody`。
+//! Agent 会话命令在 `agent` 模块：每会话一条 worker 线程，事件统一走
+//! `core:event` 的契约 `EventEnvelope`。
 //!
 //! 生命周期（docs/ARCHITECTURE.md §6 起步版）：
 //! 二次启动 → 唤回主窗口；关闭请求 → 隐藏窗口（核心常驻）；托盘"退出"才真正退出。
 
+mod agent;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use agent::{AgentSessions, agent_cancel, agent_send, approval_resolve, session_create};
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_workspace_root, store_workspace_root};
 use lc_core::fs::{
     DirLevel, FsError, RealPathResolver, ensure_within_root, read_dir_level, write_file_text,
@@ -27,14 +32,14 @@ use tauri::Manager;
 
 /// workspace 根由传输层持有（docs/PLAN.md R3）：显式打开优先，其次
 /// `LC_WORKSPACE_ROOT`、配置文件、进程当前目录。fs 命令不接受前端 root。
-struct WorkspaceState(Mutex<Option<PathBuf>>);
+pub(crate) struct WorkspaceState(Mutex<Option<PathBuf>>);
 
 impl WorkspaceState {
     fn new() -> Self {
         Self(Mutex::new(initial_workspace_root()))
     }
 
-    fn get(&self) -> Option<PathBuf> {
+    pub(crate) fn get(&self) -> Option<PathBuf> {
         self.0.lock().ok().and_then(|g| g.clone())
     }
 
@@ -57,7 +62,7 @@ fn initial_workspace_root() -> Option<PathBuf> {
         .filter(|p| p.is_dir())
 }
 
-fn workspace_unavailable() -> ErrorBody {
+pub(crate) fn workspace_unavailable() -> ErrorBody {
     ErrorBody::new(ErrorCode::NotFound, "workspace root unavailable")
 }
 
@@ -348,6 +353,7 @@ pub fn run() {
 
     builder
         .manage(WorkspaceState::new())
+        .manage(AgentSessions::default())
         .invoke_handler(tauri::generate_handler![
             node_detect,
             node_set_manual,
@@ -358,7 +364,11 @@ pub fn run() {
             workspace_open,
             fs_read_dir,
             fs_read_file,
-            fs_write_file
+            fs_write_file,
+            session_create,
+            agent_send,
+            agent_cancel,
+            approval_resolve
         ])
         .setup(|app| {
             #[cfg(desktop)]
