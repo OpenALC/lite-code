@@ -1,10 +1,10 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`5506d1d`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`bde0267`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
-> P1 发布线：`v0.1.1-preview.1` 构建成功，publish 因 AppDir 重名失败；draft 已按正确资产清单手动重建。
-> P2 发布线：`v0.2.1-preview.1` 已打 tag，release workflow（已修复 publish）构建中。
+> P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
+> P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
 
 ## 当前位置一览
 
@@ -27,8 +27,8 @@
 | 10k 文件展开 | ✅ `lc-cli fs read-dir` 首层 1 万文件 87/96/97ms（目标 <200ms） |
 | headless CLI | ✅ `fs read-dir` 复用 UI 同一实现，输出契约 JSON |
 | P1 发布 | ✅ `v0.1.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 个资产） |
-| P2 发布 | ⏳ `v0.2.1-preview.1` tag 已推送；publish 已改为只上传安装包，构建中 |
-| 发布流程 | ✅ 修复 AppDir 递归上传与重名；checksums/资产名统一 |
+| P2 发布 | ✅ `v0.2.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 个资产） |
+| 发布流程 | ✅ 修复 AppDir 递归上传与重名；checksums/资产名统一；P2 自动 publish 成功 |
 | P3 Tools+Policy | ✅ 工具注册表（≤12）+ 四模式策略 + 三层判定的纯函数骨架与单测 |
 | P3 会话审批 | ✅ 模式/yolo 确认、轮次上限、取消、审批队列、AllowOnce/AllowSession/Deny |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
