@@ -54,8 +54,8 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Responses API 的工具定义（与 [`crate::agent::exec::LocalToolExecutor`]
-    /// 当前支持的 6 个工具一致）。CLI 与 Tauri 共用，避免两处手写 schema。
+    /// Responses API 的工具定义（本地执行器 + [`crate::db::DbExecutor`]
+    /// 支持的 11 个静态工具）。CLI 与 Tauri 共用，避免两处手写 schema。
     pub fn llm_tools(&self) -> Vec<serde_json::Value> {
         let supported = [
             "read_file",
@@ -64,6 +64,11 @@ impl ToolRegistry {
             "glob",
             "grep",
             "shell",
+            "db_list",
+            "db_schema",
+            "db_query",
+            "db_explain",
+            "db_execute",
         ];
         builtin_tool_definitions()
             .into_iter()
@@ -77,20 +82,25 @@ impl ToolRegistry {
 
     /// 默认工具集，恰好 12 个；`mcp_tool` 是动态 MCP 工具的占位，
     /// 由 [`ToolRegistry::with_mcp_tools`] 替换。
+    ///
+    /// P5 的 12 工具预算优先给数据库：`search_code` / `todo_write` /
+    /// `ssh_exec` / `task` 占位被移出（它们的执行器尚未接入），换成
+    /// 5 个 `db_*` 工具。所有数据库工具都是 `Network`，由策略闸门要求
+    /// 审批；`db_execute` 另有 SQL 闸门与只读连接兜底。
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
         for (name, risk) in [
             ("read_file", Risk::Read),
-            ("glob", Risk::Read),
-            ("grep", Risk::Read),
-            ("search_code", Risk::Read),
             ("write_file", Risk::Write),
             ("edit_file", Risk::Write),
-            ("todo_write", Risk::Write),
+            ("glob", Risk::Read),
+            ("grep", Risk::Read),
             ("shell", Risk::Execute),
-            ("ssh_exec", Risk::Execute),
-            ("task", Risk::Execute),
+            ("db_list", Risk::Network),
+            ("db_schema", Risk::Network),
             ("db_query", Risk::Network),
+            ("db_explain", Risk::Network),
+            ("db_execute", Risk::Network),
             ("mcp_tool", Risk::Network),
         ] {
             registry
@@ -101,7 +111,7 @@ impl ToolRegistry {
     }
 
     /// 移除占位 `mcp_tool` 后注册动态 MCP 工具；只注册到上限，多余的静默
-    /// 截断（保持 harness 的 12 工具预算）。`task` / `db_query` 占位保留。
+    /// 截断（保持 harness 的 12 工具预算）。内置的 5 个 `db_*` 工具保留。
     pub fn with_mcp_tools(mut self, specs: impl IntoIterator<Item = ToolSpec>) -> Self {
         self.specs.retain(|spec| spec.name != "mcp_tool");
         for spec in specs {
@@ -142,12 +152,13 @@ impl ToolRegistry {
     }
 }
 
-/// Responses API 的 6 个内置工具定义。名称/参数必须与 `LocalToolExecutor`
-/// 的分支保持一致；新增执行器时同步这里。
+/// Responses API 的 11 个静态内置工具定义（6 个本地文件/shell + 5 个数据库）。
+/// 名称/参数必须与 `LocalToolExecutor` / [`crate::db::DbExecutor`] 的分支
+/// 保持一致；新增执行器时同步这里。`mcp_tool` 由动态 MCP 定义单独提供。
 pub fn builtin_tool_definitions() -> Vec<serde_json::Value> {
     use serde_json::json;
 
-    vec![
+    let mut definitions = vec![
         json!({
             "type": "function",
             "name": "read_file",
@@ -225,7 +236,9 @@ pub fn builtin_tool_definitions() -> Vec<serde_json::Value> {
                 "additionalProperties": false
             }
         }),
-    ]
+    ];
+    definitions.extend(crate::db::db_tool_definitions());
+    definitions
 }
 
 #[cfg(test)]
@@ -236,11 +249,47 @@ mod tests {
     fn builtins_fill_tool_budget() {
         let registry = ToolRegistry::with_builtins();
         assert_eq!(registry.len(), MAX_TOOLS);
+        assert_eq!(
+            registry
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "read_file",
+                "write_file",
+                "edit_file",
+                "glob",
+                "grep",
+                "shell",
+                "db_list",
+                "db_schema",
+                "db_query",
+                "db_explain",
+                "db_execute",
+                "mcp_tool",
+            ]
+        );
         assert_eq!(registry.get("shell").map(|s| s.risk), Some(Risk::Execute));
         assert_eq!(
             registry.get("write_file").map(|s| s.risk),
             Some(Risk::Write)
         );
+        for name in [
+            "db_list",
+            "db_schema",
+            "db_query",
+            "db_explain",
+            "db_execute",
+        ] {
+            assert_eq!(
+                registry.get(name).map(|spec| spec.risk),
+                Some(Risk::Network),
+                "{name} 必须是 Network"
+            );
+        }
+        for removed in ["search_code", "todo_write", "ssh_exec", "task"] {
+            assert!(registry.get(removed).is_none(), "{removed} 已移出预算");
+        }
     }
 
     #[test]
@@ -281,7 +330,12 @@ mod tests {
                 "edit_file",
                 "glob",
                 "grep",
-                "shell"
+                "shell",
+                "db_list",
+                "db_schema",
+                "db_query",
+                "db_explain",
+                "db_execute",
             ]
         );
         for tool in &tools {
@@ -289,6 +343,28 @@ mod tests {
             assert_eq!(tool["parameters"]["type"], "object");
             assert!(tool["description"].as_str().is_some_and(|d| !d.is_empty()));
         }
+    }
+
+    #[test]
+    fn llm_tools_include_database_schemas() {
+        let tools = ToolRegistry::with_builtins().llm_tools();
+        for name in [
+            "db_list",
+            "db_schema",
+            "db_query",
+            "db_explain",
+            "db_execute",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("缺少 {name} 定义"));
+            assert_eq!(tool["parameters"]["type"], "object");
+        }
+        assert!(
+            tools.iter().all(|tool| tool["name"] != "mcp_tool"),
+            "mcp_tool 是占位，不应出现在静态定义中"
+        );
     }
 
     #[test]
@@ -307,8 +383,9 @@ mod tests {
         let registry = ToolRegistry::with_builtins().with_mcp_tools([]);
         assert_eq!(registry.len(), MAX_TOOLS - 1);
         assert!(registry.get("mcp_tool").is_none());
-        assert!(registry.get("task").is_some());
         assert!(registry.get("db_query").is_some());
+        assert!(registry.get("db_execute").is_some());
+        assert!(registry.get("task").is_none());
     }
 
     #[test]
