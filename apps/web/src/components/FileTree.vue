@@ -13,6 +13,7 @@ import {
   type TreeState,
 } from '../services/fileTree'
 import type { DirEntryDto } from '@lc-proto'
+import { resolveEditorStrategy } from '../services/largeFile'
 import { openTab } from '../services/tabs'
 
 // 一层树（docs/UI.md §3：按需加载，一次一层）。
@@ -74,7 +75,13 @@ async function onEntryClick(entry: DirEntryDto): Promise<void> {
   // 文件：读取成功才开页，内容进标签 store，由 CodeEditor 渲染并保存
   const res = await readFile(props.root, entry.path)
   if (res.ok) {
-    openTab({ id: entry.path, title: entry.name, path: entry.path, content: res.data.text })
+    openTab({
+      id: entry.path,
+      title: entry.name,
+      path: entry.path,
+      content: res.data.text,
+      strategy: resolveEditorStrategy(entry.size ?? 0),
+    })
   } else {
     fileError.value = res.error
   }

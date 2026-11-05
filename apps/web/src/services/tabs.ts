@@ -2,6 +2,7 @@
 // 关闭保护：dirty 标签的 closeTab 不真正关闭、不弹窗，只返回 needsConfirm，
 // 由视图层决定确认交互（UI.md §7：不用模态框打断流程）。
 // 框架无关：按 services/store.ts 的模式只暴露纯函数与 subscribe()（UI.md §8）。
+import { resolveEditorStrategy, type EditorFileStrategy } from './largeFile'
 import { createStore, type Store } from './store'
 
 export interface Tab {
@@ -13,6 +14,8 @@ export interface Tab {
   path: string | null
   /** 当前缓冲区内容（保存时直接取这里，避免视图层与 store 双份状态） */
   content: string
+  /** 大文件分级策略（ARCHITECTURE.md §5.1）：能力裁剪与只读 */
+  strategy: EditorFileStrategy
   dirty: boolean
 }
 
@@ -47,7 +50,14 @@ fn main() {
  */
 export const INITIAL_TABS_STATE: TabsState = {
   tabs: [
-    { id: 'sample', title: 'main.rs', path: null, content: SAMPLE_CONTENT, dirty: false },
+    {
+      id: 'sample',
+      title: 'main.rs',
+      path: null,
+      content: SAMPLE_CONTENT,
+      strategy: resolveEditorStrategy(0),
+      dirty: false,
+    },
   ],
   activeId: 'sample',
 }
@@ -60,9 +70,11 @@ export interface OpenTabInput {
   /** 缺省为 id（真实文件）；样例缓冲区显式传 null */
   path?: string | null
   content?: string
+  /** 缺省按完整能力（样例/未知大小） */
+  strategy?: EditorFileStrategy
 }
 
-/** 打开标签：已存在同 id 时不重复创建，只激活（保留原内容与 dirty 状态）。 */
+/** 打开标签：已存在同 id 时不重复创建，只激活（保留原内容、策略与 dirty 状态）。 */
 export function openTab(tab: OpenTabInput): void {
   const state = tabsStore.get()
   if (state.tabs.some(t => t.id === tab.id)) {
@@ -77,6 +89,7 @@ export function openTab(tab: OpenTabInput): void {
         title: tab.title,
         path: tab.path === undefined ? tab.id : tab.path,
         content: tab.content ?? '',
+        strategy: tab.strategy ?? resolveEditorStrategy(0),
         dirty: false,
       },
     ],

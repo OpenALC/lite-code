@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { resolveEditorStrategy } from './largeFile'
 import {
   activateTab,
   activeTab,
@@ -120,6 +121,18 @@ describe('内容与保存', () => {
     openTab({ id: 'a.rs', title: 'a.rs', content: 'fn a() {}' })
     const tab = tabsStore.get().tabs.find(t => t.id === 'a.rs')
     expect(tab).toMatchObject({ path: 'a.rs', content: 'fn a() {}', dirty: false })
+  })
+
+  it('openTab 可携带大文件只读策略', () => {
+    openTab({
+      id: 'big.txt',
+      title: 'big.txt',
+      content: 'x',
+      strategy: resolveEditorStrategy(25 * 1024 * 1024),
+    })
+    const tab = tabsStore.get().tabs.find(t => t.id === 'big.txt')
+    expect(tab?.strategy.tier).toBe('readonly')
+    expect(tab?.strategy.readOnly).toBe(true)
   })
 
   it('updateContent 更新内容并置 dirty；同值不通知', () => {

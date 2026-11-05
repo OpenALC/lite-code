@@ -5,6 +5,7 @@ import type * as monacoNs from 'monaco-editor'
 
 import { writeFile } from '../services/bridge'
 import { languageForPath } from '../services/editorLanguage'
+import type { EditorFileStrategy } from '../services/largeFile'
 import { activeTab, markSaved, tabsStore, updateContent } from '../services/tabs'
 import type { Tab, TabsState } from '../services/tabs'
 
@@ -18,11 +19,22 @@ let currentTabId: string | null = null
 /** setValue 触发的 onDidChangeModelContent 不应回写 store */
 let applying = false
 
-type SaveState = { kind: 'saved' | 'demo' | 'error' | 'sample'; text: string }
+type SaveState = { kind: 'saved' | 'demo' | 'error' | 'sample' | 'readonly'; text: string }
 const saveState = ref<SaveState | null>(null)
+const activeStrategy = ref<EditorFileStrategy | null>(null)
 
 function currentTab(): Tab | null {
   return activeTab(tabsStore.get())
+}
+
+function applyStrategy(strategy: EditorFileStrategy): void {
+  activeStrategy.value = strategy
+  editor?.updateOptions({
+    readOnly: strategy.readOnly,
+    occurrencesHighlight: strategy.occurrences ? 'singleFile' : 'off',
+    folding: strategy.folding,
+    minimap: { enabled: strategy.minimap },
+  })
 }
 
 function syncFromStore(state: TabsState): void {
@@ -37,7 +49,10 @@ function syncFromStore(state: TabsState): void {
   }
   const changedTab = tab.id !== currentTabId
   if (!changedTab && tab.content === editor.getValue()) return
-  if (changedTab) saveState.value = null
+  if (changedTab) {
+    saveState.value = null
+    applyStrategy(tab.strategy)
+  }
   const model = editor.getModel()
   if (model) monacoRef?.editor.setModelLanguage(model, languageForPath(tab.path ?? tab.title))
   currentTabId = tab.id
@@ -51,6 +66,10 @@ async function saveActive(): Promise<void> {
   if (!tab) return
   if (!tab.path) {
     saveState.value = { kind: 'sample', text: t('editor.sampleNotSaveable') }
+    return
+  }
+  if (tab.strategy.readOnly) {
+    saveState.value = { kind: 'readonly', text: t('editor.readOnlyPreview') }
     return
   }
   if (!tab.dirty) {
@@ -108,14 +127,19 @@ onMounted(async () => {
   })
 
   const initial = currentTab()
+  const initialStrategy = initial?.strategy
   currentTabId = initial?.id ?? null
+  activeStrategy.value = initialStrategy ?? null
   editor = monaco.editor.create(host.value!, {
     value: initial?.content ?? '',
     language: languageForPath(initial?.path ?? initial?.title ?? null),
     theme: 'lite-code-dark',
     fontSize: 13,
     lineHeight: 21,
-    minimap: { enabled: false },
+    readOnly: initialStrategy?.readOnly ?? false,
+    occurrencesHighlight: initialStrategy?.occurrences === false ? 'off' : 'singleFile',
+    folding: initialStrategy?.folding ?? true,
+    minimap: { enabled: initialStrategy?.minimap ?? false },
     automaticLayout: true,
     renderWhitespace: 'selection',
     scrollBeyondLastLine: false,
@@ -146,6 +170,13 @@ onBeforeUnmount(() => {
       class="editor-host"
     />
     <div
+      v-if="activeStrategy?.readOnly"
+      class="readonly-banner"
+      role="note"
+    >
+      {{ t('editor.readOnlyPreview') }}
+    </div>
+    <div
       v-if="saveState"
       class="save-note"
       :class="`save-${saveState.kind}`"
@@ -167,6 +198,19 @@ onBeforeUnmount(() => {
 .editor-host {
   flex: 1;
   min-height: 0;
+}
+
+.readonly-banner {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, #d19a66 45%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, #d19a66 15%, var(--panel));
+  color: #d19a66;
+  font-size: 11px;
+  pointer-events: none;
 }
 
 .save-note {
@@ -191,7 +235,8 @@ onBeforeUnmount(() => {
   color: #e06c75;
 }
 
-.save-note.save-demo {
+.save-note.save-demo,
+.save-note.save-readonly {
   color: #d19a66;
 }
 </style>

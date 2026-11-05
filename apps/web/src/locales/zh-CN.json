@@ -17,7 +17,8 @@
     "saved": "已保存",
     "savedDemo": "已保存（浏览器演示，未写磁盘）",
     "saveFailed": "保存失败",
-    "sampleNotSaveable": "示例缓冲区不可保存"
+    "sampleNotSaveable": "示例缓冲区不可保存",
+    "readOnlyPreview": "大文件只读预览；请用系统编辑器打开"
   },
   "runtime": {
     "title": "Node 运行时",

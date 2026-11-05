@@ -17,7 +17,8 @@
     "saved": "Saved",
     "savedDemo": "Saved (browser demo, not written to disk)",
     "saveFailed": "Save failed",
-    "sampleNotSaveable": "Sample buffer is not saveable"
+    "sampleNotSaveable": "Sample buffer is not saveable",
+    "readOnlyPreview": "Large file read-only preview; open it in a system editor"
   },
   "runtime": {
     "title": "Node runtime",
