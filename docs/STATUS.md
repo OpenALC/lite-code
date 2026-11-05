@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`8b5df1d`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`d92fa8b`。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -33,6 +33,10 @@
 | P3 会话审批 | ✅ 模式/yolo 确认、轮次上限、取消、审批队列、AllowOnce/AllowSession/Deny |
 | P3 工具执行 | ✅ read/write/edit/glob/grep（根内校验、输出截断）；shell 待 PTY lane |
 | P3 LLM 解析 | ✅ SSE 增量解析 + OpenAI Responses 事件归一化（文本/思考/工具/usage/停止原因） |
+| P3 LLM 传输 | ✅ provider/model 配置校验、Responses 请求体、可注入客户端 + ureq 流式传输 |
+| P3 契约 v0.3 | ✅ session_create/agent_send/agent_cancel/approval_resolve + thinking/tool_result/approval/session_state 事件 |
+| P3 事件聚合 | ✅ TurnCollector：文本/思考、工具参数拼装、usage、stop reason |
+| P3 Anthropic | ✅ Messages SSE 映射 + 状态化解码器；ureq loopback 传输测试 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ 3f4531a 之前的提交全绿；最新提交 CI 进行中 |
 
@@ -92,6 +96,18 @@
    - `SseParser`：增量 chunk、CRLF、多行 data、注释、finish 兜底。
    - OpenAI Responses 映射：text/thinking、tool start/args、usage、stop reason、failed。
    - 8 个协议/映射单测；网络传输与 Anthropic Messages 留后续 lane。
+19. **P3 LLM 传输**（`438452e`）
+   - provider/model 配置（camelCase、预算/重复/引用校验）。
+   - `LlmRequest` → Responses body；`OpenAiResponsesClient` + 可注入 `HttpSseTransport`；ureq 真流式读取。
+20. **P3 契约 v0.3**（`72326e0`）
+   - session/agent/approval 命令；thinking/tool_result/approval_required/session_state 事件。
+   - DTO 绑定与 golden 同步，命令数 14。
+21. **P3 事件聚合**（`1844e71`）
+   - `TurnCollector`：assistant/thinking、工具 start+args、usage、stop reason，单测覆盖错误路径。
+22. **P3 Anthropic / loopback**（`d92fa8b`，subagent 交付）
+   - `AnthropicDecoder`：message/content_block/message_delta/stop 关联，tool id 状态化。
+   - `ProviderKind::AnthropicMessages`；ureq 本地 loopback（Content-Length + chunked）测试。
+   - 14 个新增测试；真实 Anthropic 端点未做外网集成。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -104,8 +120,9 @@
 ## 待办（按序）
 
 1. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-2. P3 下一块：LLM 网络传输 + 供应商配置 + Agent Loop 串联。
-3. P3 后续：shell 执行、Agent UI（会话流/工具卡片/内联审批/composer）。
+2. 并行 subagent 收口：shell 执行、Agent UI 状态层（各自 worktree 分支）。
+3. 主 agent 下一步：AgentLoop 串联（LLM 流 → 工具授权/执行 → 结果回填）+ Tauri/CLI 命令。
+4. 之后：Agent UI 视图接线（会话流/工具卡片/内联审批/composer）。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -132,5 +149,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 102 · lc-cli 16 · lc-proto 9 · lc-desktop 12 · web 100（10 文件）· 合计 **239**。
+lc-core 128 · lc-cli 16 · lc-proto 10 · lc-desktop 12 · web 100（10 文件）· 合计 **266**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
