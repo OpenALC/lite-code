@@ -16,6 +16,9 @@ import type {
   CoreEvent,
   ErrorBody,
   ErrorCode,
+  GitCommit,
+  GitFileStatus,
+  GitStatus,
   SessionInfo,
   SessionMode,
 } from '@lc-proto'
@@ -35,6 +38,7 @@ import {
   type UiCoreEvent,
 } from './dbTypes'
 import {
+  isChangeStatus,
   isFileChangeDto,
   isTaskCheck,
   isTaskInfo,
@@ -51,6 +55,9 @@ export type NodeStatusResult = Extract<CommandResult, { kind: 'node_status' }>
 export type WorkspaceRootResult = Extract<CommandResult, { kind: 'workspace_root' }>
 export type SessionResult = Extract<CommandResult, { kind: 'session' }>
 export type AckResult = Extract<CommandResult, { kind: 'ack' }>
+export type GitStatusResult = Extract<CommandResult, { kind: 'git_status' }>
+export type GitDiffResult = Extract<CommandResult, { kind: 'git_diff' }>
+export type GitLogResult = Extract<CommandResult, { kind: 'git_log' }>
 
 // Task 结果类型用 taskTypes 的镜像 DTO 表达：契约 d.ts 的 CommandResult
 // 引用了尚未导出的 TaskInfo，直接 Extract 会退化为 any（见 taskTypes.ts 头注释）。
@@ -920,6 +927,169 @@ function asDbExplain(
   return {
     ok: true,
     data: { kind: 'db_explain', result: data.result },
+    fallback: false,
+  }
+}
+
+// ==== Git 面板命令（契约 v0.7） ====
+
+/** 浏览器 dev 的空仓库状态：不伪造真实工作区，面板显示 clean。 */
+function placeholderGitStatus(): GitStatus {
+  return {
+    branch: 'main',
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    clean: true,
+    merge_in_progress: false,
+    rebase_in_progress: false,
+    files: [],
+  }
+}
+
+function isGitFileStatus(value: unknown): value is GitFileStatus {
+  if (!isRecord(value)) return false
+  return (
+    isString(value.path) &&
+    isChangeStatus(value.status) &&
+    typeof value.staged === 'boolean' &&
+    isFiniteNumber(value.added) &&
+    Number.isInteger(value.added) &&
+    value.added >= 0 &&
+    isFiniteNumber(value.removed) &&
+    Number.isInteger(value.removed) &&
+    value.removed >= 0
+  )
+}
+
+function isGitStatus(value: unknown): value is GitStatus {
+  if (!isRecord(value)) return false
+  const branch = value.branch
+  const upstream = value.upstream
+  return (
+    (branch === null || branch === undefined || isString(branch)) &&
+    (upstream === null || upstream === undefined || isString(upstream)) &&
+    isFiniteNumber(value.ahead) &&
+    Number.isInteger(value.ahead) &&
+    value.ahead >= 0 &&
+    isFiniteNumber(value.behind) &&
+    Number.isInteger(value.behind) &&
+    value.behind >= 0 &&
+    typeof value.clean === 'boolean' &&
+    typeof value.merge_in_progress === 'boolean' &&
+    typeof value.rebase_in_progress === 'boolean' &&
+    Array.isArray(value.files) &&
+    value.files.every(isGitFileStatus)
+  )
+}
+
+function isGitCommit(value: unknown): value is GitCommit {
+  if (!isRecord(value)) return false
+  return (
+    isString(value.sha) &&
+    isString(value.short_sha) &&
+    isString(value.author) &&
+    isString(value.message) &&
+    isFiniteNumber(value.timestamp) &&
+    value.timestamp >= 0
+  )
+}
+
+/** 工作区状态；浏览器 dev 返回空仓库占位。 */
+export async function gitStatus(): Promise<BridgeResult<GitStatusResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { kind: 'git_status', status: placeholderGitStatus() },
+      fallback: true,
+    }
+  }
+  const res = await call('git_status', {})
+  if (!res.ok) return res
+  if (res.data.kind !== 'git_status') {
+    return { ok: false, error: internalError(`git_status 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  if (!isGitStatus(res.data.status)) {
+    return { ok: false, error: internalError('git_status 返回了非法 GitStatus'), fallback: false }
+  }
+  return { ok: true, data: res.data, fallback: false }
+}
+
+/** 单文件（或整棵树 path=null）的 unified patch；staged 决定读 index 还是工作区。 */
+export async function gitDiff(
+  path: string | null,
+  staged: boolean,
+): Promise<BridgeResult<GitDiffResult>> {
+  if (!isTauri()) {
+    const target = path ?? '(working tree)'
+    return {
+      ok: true,
+      data: {
+        kind: 'git_diff',
+        patch: `# 浏览器 dev 占位 diff
+# ${target} (${staged ? 'staged' : 'unstaged'})
+`,
+        files: [],
+      },
+      fallback: true,
+    }
+  }
+  const res = await call('git_diff', { path, staged })
+  if (!res.ok) return res
+  if (res.data.kind !== 'git_diff') {
+    return { ok: false, error: internalError(`git_diff 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  if (
+    !isString(res.data.patch) ||
+    !Array.isArray(res.data.files) ||
+    !res.data.files.every(isGitFileStatus)
+  ) {
+    return { ok: false, error: internalError('git_diff 返回了非法载荷'), fallback: false }
+  }
+  return {
+    ok: true,
+    data: {
+      kind: 'git_diff',
+      patch: res.data.patch,
+      files: res.data.files as GitFileStatus[],
+    },
+    fallback: false,
+  }
+}
+
+export async function gitStage(paths: string[]): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
+  return asAck(await call('git_stage', { paths }), 'git_stage')
+}
+
+export async function gitUnstage(paths: string[]): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
+  return asAck(await call('git_unstage', { paths }), 'git_unstage')
+}
+
+export async function gitCommit(message: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
+  return asAck(await call('git_commit', { message }), 'git_commit')
+}
+
+/** 最近提交；limit=null 表示不设上限（契约 Option<u32>）。 */
+export async function gitLog(
+  limit: number | null = null,
+): Promise<BridgeResult<GitLogResult>> {
+  if (!isTauri()) {
+    return { ok: true, data: { kind: 'git_log', commits: [] }, fallback: true }
+  }
+  const res = await call('git_log', { limit })
+  if (!res.ok) return res
+  if (res.data.kind !== 'git_log') {
+    return { ok: false, error: internalError(`git_log 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  if (!Array.isArray(res.data.commits) || !res.data.commits.every(isGitCommit)) {
+    return { ok: false, error: internalError('git_log 返回了非法 GitCommit 列表'), fallback: false }
+  }
+  return {
+    ok: true,
+    data: { kind: 'git_log', commits: res.data.commits as GitCommit[] },
     fallback: false,
   }
 }

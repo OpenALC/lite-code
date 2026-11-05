@@ -6,6 +6,7 @@ import AgentPanel from './components/AgentPanel.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import DbPanel from './components/DbPanel.vue'
 import FileTree from './components/FileTree.vue'
+import GitPanel from './components/GitPanel.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
 import RuntimeSettings from './components/RuntimeSettings.vue'
 import TabBar from './components/TabBar.vue'
@@ -25,6 +26,12 @@ import {
   dbQuery,
   dbSaveConnection,
   dbSchema,
+  gitCommit,
+  gitDiff,
+  gitLog,
+  gitStage,
+  gitStatus,
+  gitUnstage,
   isTauri,
   onCoreEvent,
   openWorkspace,
@@ -41,6 +48,7 @@ import {
   workspaceRoot,
 } from './services/bridge'
 import { createDbController } from './services/dbStore'
+import { createGitController } from './services/gitStore'
 import {
   LAYOUT_LIMITS,
   NARROW_WIDTH_PX,
@@ -97,13 +105,35 @@ const dbSession = createDbController({
 })
 const dbOpen = ref(false)
 
+// P5 Git 面板：与数据库面板互斥占用中央区域，打开时并行拉取 status 与最近提交。
+const gitSession = createGitController({
+  gitStatus,
+  gitDiff,
+  gitStage,
+  gitUnstage,
+  gitCommit,
+  gitLog,
+})
+const gitOpen = ref(false)
+
 async function toggleDatabase(): Promise<void> {
   if (dbOpen.value) {
     dbOpen.value = false
     return
   }
+  gitOpen.value = false
   dbOpen.value = true
   await dbSession.refresh()
+}
+
+async function toggleGit(): Promise<void> {
+  if (gitOpen.value) {
+    gitOpen.value = false
+    return
+  }
+  dbOpen.value = false
+  gitOpen.value = true
+  await Promise.all([gitSession.refresh(), gitSession.loadLog()])
 }
 
 // 工作台挂载点保持稳定：任务切换只更新 controller，组件不随 activeTaskId 重建。
@@ -251,6 +281,7 @@ onBeforeUnmount(() => {
   agentSession.dispose()
   taskSession.dispose()
   dbSession.dispose()
+  gitSession.dispose()
   window.removeEventListener('resize', onResize)
   window.removeEventListener('keydown', onKey)
 })
@@ -266,6 +297,14 @@ onBeforeUnmount(() => {
         {{ t('app.title') }}
       </div>
       <div class="spacer" />
+      <button
+        type="button"
+        class="runtime-btn"
+        :class="{ active: gitOpen }"
+        @click="toggleGit"
+      >
+        {{ t('git.open') }}
+      </button>
       <button
         type="button"
         class="runtime-btn"
@@ -372,8 +411,13 @@ onBeforeUnmount(() => {
       />
 
       <section class="center">
+        <GitPanel
+          v-if="gitOpen"
+          :controller="gitSession"
+          @close="gitOpen = false"
+        />
         <DbPanel
-          v-if="dbOpen"
+          v-else-if="dbOpen"
           :controller="dbSession"
           @close="dbOpen = false"
         />

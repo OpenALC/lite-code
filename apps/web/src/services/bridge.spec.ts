@@ -17,6 +17,12 @@ import {
   dbSchema,
   detectNode,
   downloadNodePortable,
+  gitCommit,
+  gitDiff,
+  gitLog,
+  gitStage,
+  gitStatus,
+  gitUnstage,
   isTauri,
   onCoreEvent,
   openWorkspace,
@@ -43,6 +49,9 @@ import {
   type DbQueryCommandResult,
   type DbSchemaResult,
   type DirListingResult,
+  type GitDiffResult,
+  type GitLogResult,
+  type GitStatusResult,
   type TaskDiffResult,
   type TaskListResult,
 } from './bridge'
@@ -829,6 +838,186 @@ describe('数据库命令', () => {
     const badShape = await dbSaveConnection(config())
     expect(badShape.ok).toBe(false)
     if (!badShape.ok) expect(badShape.error.code).toBe('internal')
+  })
+})
+
+describe('Git 面板命令', () => {
+  function gitStatusPayload(overrides: Record<string, unknown> = {}): GitStatusResult {
+    return {
+      kind: 'git_status',
+      status: {
+        branch: 'agent/git-ui',
+        upstream: 'origin/main',
+        ahead: 2,
+        behind: 1,
+        clean: false,
+        merge_in_progress: false,
+        rebase_in_progress: false,
+        files: [
+          {
+            path: 'apps/web/src/App.vue',
+            status: 'modified',
+            staged: true,
+            added: 12,
+            removed: 3,
+          },
+        ],
+        ...overrides,
+      },
+    }
+  }
+
+  it('浏览器 dev：status/log 为空，diff 为占位 patch，写操作返回 fallback ack', async () => {
+    const status = await gitStatus()
+    expect(status.ok).toBe(true)
+    expect(status.fallback).toBe(true)
+    if (status.ok) {
+      expect(status.data.kind).toBe('git_status')
+      expect(status.data.status.files).toEqual([])
+      expect(status.data.status.clean).toBe(true)
+    }
+
+    const diff = await gitDiff('src/main.ts', false)
+    expect(diff.ok).toBe(true)
+    expect(diff.fallback).toBe(true)
+    if (diff.ok) {
+      expect(diff.data.kind).toBe('git_diff')
+      expect(diff.data.patch).toContain('浏览器 dev 占位 diff')
+      expect(diff.data.patch).toContain('unstaged')
+      expect(diff.data.files).toEqual([])
+    }
+
+    const log = await gitLog()
+    expect(log.ok).toBe(true)
+    expect(log.fallback).toBe(true)
+    if (log.ok) expect(log.data.commits).toEqual([])
+
+    for (const res of [
+      await gitStage(['a.ts']),
+      await gitUnstage(['a.ts']),
+      await gitCommit('demo'),
+    ]) {
+      expect(res.ok).toBe(true)
+      expect(res.fallback).toBe(true)
+      if (res.ok) expect(res.data.kind).toBe('ack')
+    }
+  })
+
+  it('Tauri：git_status 以空参数调用并校验 GitStatus', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const payload = gitStatusPayload()
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return payload
+      },
+    })
+    const res = await gitStatus()
+    expect(calls).toEqual([{ cmd: 'git_status', args: {} }])
+    expect(res).toEqual({ ok: true, data: payload, fallback: false })
+  })
+
+  it('Tauri：git_diff 透传 path/staged 并校验 patch 与文件列表', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const payload: GitDiffResult = {
+      kind: 'git_diff',
+      patch: '--- a.ts\n+++ b.ts\n',
+      files: [
+        { path: 'b.ts', status: 'added', staged: true, added: 1, removed: 0 },
+      ],
+    }
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return payload
+      },
+    })
+    const res = await gitDiff(null, true)
+    expect(calls).toEqual([{ cmd: 'git_diff', args: { path: null, staged: true } }])
+    expect(res).toEqual({ ok: true, data: payload, fallback: false })
+  })
+
+  it('Tauri：stage/unstage/commit 的命令名与 paths/message 参数对应契约', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'ack' } satisfies CommandResult
+      },
+    })
+    await gitStage(['a.ts', 'b.ts'])
+    await gitUnstage(['a.ts'])
+    await gitCommit('feat: demo')
+    expect(calls).toEqual([
+      { cmd: 'git_stage', args: { paths: ['a.ts', 'b.ts'] } },
+      { cmd: 'git_unstage', args: { paths: ['a.ts'] } },
+      { cmd: 'git_commit', args: { message: 'feat: demo' } },
+    ])
+  })
+
+  it('Tauri：git_log 缺省 limit 以 null 下发，显式 limit 原样透传', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const payload: GitLogResult = {
+      kind: 'git_log',
+      commits: [
+        {
+          sha: 'abcdef1234567890',
+          short_sha: 'abcdef1',
+          author: 'Dev',
+          message: 'feat: demo',
+          timestamp: 1_700_000_000,
+        },
+      ],
+    }
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return payload
+      },
+    })
+    const all = await gitLog()
+    const limited = await gitLog(5)
+    expect(calls).toEqual([
+      { cmd: 'git_log', args: { limit: null } },
+      { cmd: 'git_log', args: { limit: 5 } },
+    ])
+    expect(all).toEqual({ ok: true, data: payload, fallback: false })
+    expect(limited).toEqual({ ok: true, data: payload, fallback: false })
+  })
+
+  it('Tauri：畸形 GitStatus / diff 文件 / commit 列表归入 internal', async () => {
+    installTauri({
+      invoke: async cmd => {
+        if (cmd === 'git_status') {
+          return gitStatusPayload({
+            files: [{ path: 'x', status: 'bogus', staged: false, added: 0, removed: 0 }],
+          })
+        }
+        if (cmd === 'git_diff') {
+          return { kind: 'git_diff', patch: 42, files: [] }
+        }
+        return {
+          kind: 'git_log',
+          commits: [{ sha: 'x', short_sha: 'x', author: 'a', message: 'm' }],
+        }
+      },
+    })
+    for (const res of [
+      await gitStatus(),
+      await gitDiff('x', false),
+      await gitLog(),
+    ]) {
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.error.code).toBe('internal')
+    }
+  })
+
+  it('Tauri：Git 命令返回错误 kind 时归入 internal', async () => {
+    installTauri({ invoke: async () => ({ kind: 'ack' }) satisfies CommandResult })
+    for (const res of [await gitStatus(), await gitDiff('x', false), await gitLog()]) {
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.error.code).toBe('internal')
+    }
   })
 })
 
