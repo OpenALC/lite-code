@@ -6,6 +6,7 @@ pub mod client;
 pub mod openai;
 pub mod provider;
 pub mod request;
+pub mod runtime;
 pub mod sse;
 pub mod types;
 
@@ -13,5 +14,6 @@ pub use anthropic::AnthropicDecoder;
 pub use client::{HttpSseTransport, OpenAiResponsesClient, UreqSseTransport};
 pub use provider::{ModelConfig, ProviderConfig, ProviderError, ProviderKind, ProvidersFile};
 pub use request::{LlmInput, LlmRequest};
+pub use runtime::{AgentRuntime, RuntimeError, load_default, load_from, providers_path};
 pub use sse::{SseEvent, SseParser};
 pub use types::{LlmError, LlmEvent, StopReason};

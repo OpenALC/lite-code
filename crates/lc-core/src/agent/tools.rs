@@ -54,6 +54,27 @@ impl ToolRegistry {
         Self::default()
     }
 
+    /// Responses API 的工具定义（与 [`crate::agent::exec::LocalToolExecutor`]
+    /// 当前支持的 6 个工具一致）。CLI 与 Tauri 共用，避免两处手写 schema。
+    pub fn llm_tools(&self) -> Vec<serde_json::Value> {
+        let supported = [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "glob",
+            "grep",
+            "shell",
+        ];
+        builtin_tool_definitions()
+            .into_iter()
+            .filter(|tool| {
+                tool.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|name| supported.contains(&name) && self.get(name).is_some())
+            })
+            .collect()
+    }
+
     /// 默认工具集，恰好 12 个；MCP 工具后续替换 `mcp_tool` 占位。
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
@@ -106,6 +127,92 @@ impl ToolRegistry {
     }
 }
 
+/// Responses API 的 6 个内置工具定义。名称/参数必须与 `LocalToolExecutor`
+/// 的分支保持一致；新增执行器时同步这里。
+pub fn builtin_tool_definitions() -> Vec<serde_json::Value> {
+    use serde_json::json;
+
+    vec![
+        json!({
+            "type": "function",
+            "name": "read_file",
+            "description": "Read a UTF-8 text file inside the workspace. Paths are relative to the workspace root.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "File path inside the workspace"}},
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "type": "function",
+            "name": "write_file",
+            "description": "Write a UTF-8 text file inside the workspace, creating parent directories as needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path inside the workspace"},
+                    "content": {"type": "string", "description": "Full file content"}
+                },
+                "required": ["path", "content"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "type": "function",
+            "name": "edit_file",
+            "description": "Replace an exact string in a workspace file. By default the old string must be unique; set replace_all to replace every occurrence.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match"}
+                },
+                "required": ["path", "old_string", "new_string"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "type": "function",
+            "name": "glob",
+            "description": "List workspace files whose path or name matches a glob pattern (supports **).",
+            "parameters": {
+                "type": "object",
+                "properties": {"pattern": {"type": "string", "description": "Glob pattern, e.g. src/**/*.rs"}},
+                "required": ["pattern"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "type": "function",
+            "name": "grep",
+            "description": "Search workspace text files with a regular expression; returns matching lines with paths.",
+            "parameters": {
+                "type": "object",
+                "properties": {"pattern": {"type": "string", "description": "Rust regex pattern"}},
+                "required": ["pattern"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "type": "function",
+            "name": "shell",
+            "description": "Run a shell command in the workspace (PowerShell 7 on Windows, bash elsewhere). Long commands time out.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "timeout_ms": {"type": "integer", "description": "Optional timeout in milliseconds (default 30000, max 120000)"}
+                },
+                "required": ["command"],
+                "additionalProperties": false
+            }
+        }),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +248,42 @@ mod tests {
             registry.register(ToolSpec::new("overflow", Risk::Read)),
             Err(ToolRegistryError::TooMany { max: MAX_TOOLS })
         );
+    }
+
+    #[test]
+    fn builtin_definitions_cover_executor_tools() {
+        let registry = ToolRegistry::with_builtins();
+        let tools = registry.llm_tools();
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "read_file",
+                "write_file",
+                "edit_file",
+                "glob",
+                "grep",
+                "shell"
+            ]
+        );
+        for tool in &tools {
+            assert_eq!(tool["type"], "function");
+            assert_eq!(tool["parameters"]["type"], "object");
+            assert!(tool["description"].as_str().is_some_and(|d| !d.is_empty()));
+        }
+    }
+
+    #[test]
+    fn definitions_are_filtered_by_registry() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(ToolSpec::new("read_file", Risk::Read))
+            .expect("register");
+        let tools = registry.llm_tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "read_file");
     }
 }
