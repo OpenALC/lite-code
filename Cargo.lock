@@ -2193,6 +2193,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
+ "ureq",
 ]
 
 [[package]]

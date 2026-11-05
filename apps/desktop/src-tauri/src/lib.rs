@@ -14,6 +14,7 @@ mod agent;
 mod db;
 mod git;
 mod task;
+mod updater;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -216,6 +217,28 @@ fn contract_info() -> CommandResult {
     }
 }
 
+/// 更新检查（docs/RELEASE-GATES.md A 类第 6 项，通道细节见 docs/UPDATER.md）。
+///
+/// 只拉取静态 `latest.json` 并比较版本，返回下载 URL / sha256 / 签名状态；
+/// **不下载、不安装、不自动降级**。网络请求走阻塞线程，启动时不会触发。
+/// 清单地址默认是滚动 release 资产，可用 `LC_UPDATE_MANIFEST_URL` 覆盖。
+#[tauri::command]
+async fn update_check() -> Result<updater::UpdateInfo, ErrorBody> {
+    let platform = updater::current_platform_key().ok_or_else(|| {
+        ErrorBody::new(
+            ErrorCode::NotImplemented,
+            "当前平台不支持更新检查（仅 Windows x64 / Linux x64 / Linux arm64）",
+        )
+    })?;
+    let url = updater::manifest_url();
+    tauri::async_runtime::spawn_blocking(move || {
+        updater::check_url(&url, env!("CARGO_PKG_VERSION"), platform)
+    })
+    .await
+    .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("更新检查任务失败：{e}")))?
+    .map_err(updater::UpdateError::body)
+}
+
 /// 目录按层返回（docs/ARCHITECTURE.md §5.2：不整树序列化）。
 /// 契约的 `CoreCommand::FsReadDir { path }` 只带 path，root 由传输层注入；
 /// 前端传入的路径必须落在 workspace 根内（docs/PLAN.md R3）。
@@ -380,6 +403,7 @@ pub fn run() {
             node_download_portable,
             shell_detect,
             contract_info,
+            update_check,
             workspace_root,
             workspace_open,
             fs_read_dir,

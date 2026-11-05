@@ -28,6 +28,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 # 单实例（docs/ARCHITECTURE.md §6 生命周期第一步）。v2 系与 tauri 2.12 匹配。
 tauri-plugin-single-instance = "2.5"
+# 更新检查只拉取静态 JSON；复用 lc-core 已锁定的 ureq 版本，不新增第三方包。
+ureq = "3.5.1"
 lc-core = { workspace = true }
 lc-proto = { workspace = true }
 serde = { workspace = true }
