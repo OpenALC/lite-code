@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { resolveProfile } from './layoutProfile'
+import {
+  DEFAULT_LAYOUT,
+  LAYOUT_LIMITS,
+  normalizeLayout,
+  resolveProfile,
+} from './layoutProfile'
 
 describe('resolveProfile', () => {
   it('editor 模式宽窗口：Monaco 居中，Agent 面板停靠', () => {
@@ -31,5 +36,36 @@ describe('resolveProfile', () => {
 
   it('agent 模式窄窗口：Agent 面板仍按宽度收图标', () => {
     expect(resolveProfile('agent', 800).agentPanel).toBe('icon')
+  })
+})
+
+describe('布局偏好', () => {
+  it('默认尺寸进入 profile', () => {
+    const p = resolveProfile('editor', 1600)
+    expect(p.sidebarWidth).toBe(DEFAULT_LAYOUT.sidebarWidth)
+    expect(p.agentWidth).toBe(DEFAULT_LAYOUT.agentWidth)
+    expect(p.bottomHeight).toBe(DEFAULT_LAYOUT.bottomHeight)
+    expect(p.sidebarVisible).toBe(true)
+  })
+
+  it('用户折叠 Agent / 底部面板', () => {
+    const p = resolveProfile('editor', 1600, {
+      ...DEFAULT_LAYOUT,
+      agentCollapsed: true,
+      bottomCollapsed: true,
+    })
+    expect(p.agentPanel).toBe('icon')
+    expect(p.bottomPanelVisible).toBe(false)
+  })
+
+  it('尺寸越界被 clamp，NaN 回落最小值', () => {
+    const layout = normalizeLayout({
+      sidebarWidth: 9999,
+      agentWidth: 1,
+      bottomHeight: Number.NaN,
+    })
+    expect(layout.sidebarWidth).toBe(LAYOUT_LIMITS.sidebar[1])
+    expect(layout.agentWidth).toBe(LAYOUT_LIMITS.agent[0])
+    expect(layout.bottomHeight).toBe(LAYOUT_LIMITS.bottom[0])
   })
 })

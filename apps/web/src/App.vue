@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AgentPlaceholder from './components/AgentPlaceholder.vue'
@@ -9,7 +9,14 @@ import ModeSwitcher from './components/ModeSwitcher.vue'
 import RuntimeSettings from './components/RuntimeSettings.vue'
 import TabBar from './components/TabBar.vue'
 import { isTauri, workspaceRoot } from './services/bridge'
-import { resolveProfile } from './services/layoutProfile'
+import {
+  LAYOUT_LIMITS,
+  NARROW_WIDTH_PX,
+  clamp,
+  resolveProfile,
+  type LayoutPrefs,
+} from './services/layoutProfile'
+import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { setMode, setWindowWidth, uiStore } from './services/uiStore'
 
 const { t } = useI18n()
@@ -20,7 +27,65 @@ const unsub = uiStore.subscribe(s => {
   ui.value = s
 })
 
-const profile = computed(() => resolveProfile(ui.value.mode, ui.value.windowWidth))
+const layout = ref<LayoutPrefs>(loadLayoutPrefs())
+const profile = computed(() =>
+  resolveProfile(ui.value.mode, ui.value.windowWidth, layout.value),
+)
+watch(layout, prefs => saveLayoutPrefs(prefs), { deep: true })
+
+type ResizeTarget = 'sidebar' | 'agent' | 'bottom'
+
+function startResize(target: ResizeTarget, event: PointerEvent): void {
+  event.preventDefault()
+  const startX = event.clientX
+  const startY = event.clientY
+  const start = { ...layout.value }
+
+  const move = (e: PointerEvent): void => {
+    if (target === 'sidebar') {
+      layout.value = {
+        ...layout.value,
+        sidebarWidth: clamp(
+          start.sidebarWidth + e.clientX - startX,
+          LAYOUT_LIMITS.sidebar[0],
+          LAYOUT_LIMITS.sidebar[1],
+        ),
+      }
+    } else if (target === 'agent') {
+      layout.value = {
+        ...layout.value,
+        agentWidth: clamp(
+          start.agentWidth - (e.clientX - startX),
+          LAYOUT_LIMITS.agent[0],
+          LAYOUT_LIMITS.agent[1],
+        ),
+      }
+    } else {
+      layout.value = {
+        ...layout.value,
+        bottomHeight: clamp(
+          start.bottomHeight - (e.clientY - startY),
+          LAYOUT_LIMITS.bottom[0],
+          LAYOUT_LIMITS.bottom[1],
+        ),
+      }
+    }
+  }
+  const up = (): void => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+function toggleAgent(): void {
+  layout.value = { ...layout.value, agentCollapsed: !layout.value.agentCollapsed }
+}
+
+function toggleBottom(): void {
+  layout.value = { ...layout.value, bottomCollapsed: !layout.value.bottomCollapsed }
+}
 
 // 工作区根由 Rust 侧经 workspace_root 注入（传输层安全边界，docs/PLAN.md R3）；
 // 浏览器 dev 无 Tauri，可用 ?root=<路径> 作为占位数据前缀。
@@ -81,10 +146,11 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="main">
-      <!-- 编辑器模式：可折叠文件树面板（docs/UI.md §3）；Agent 模式保留占位 rail -->
+      <!-- 编辑器模式：可折叠、可拖宽的文件树面板（docs/UI.md §3） -->
       <aside
-        v-if="profile.mode === 'editor'"
+        v-if="profile.sidebarVisible"
         class="side"
+        :style="{ width: `${profile.sidebarWidth}px` }"
       >
         <div class="side-head">
           <button
@@ -106,6 +172,13 @@ onBeforeUnmount(() => {
           :root="projectRoot"
         />
       </aside>
+      <div
+        v-if="profile.sidebarVisible"
+        class="resizer v"
+        role="separator"
+        aria-orientation="vertical"
+        @pointerdown="startResize('sidebar', $event)"
+      />
       <aside
         v-else
         class="rail"
@@ -120,12 +193,28 @@ onBeforeUnmount(() => {
         <AgentPlaceholder v-else />
         <div
           v-if="profile.bottomPanelVisible"
+          class="resizer h"
+          role="separator"
+          aria-orientation="horizontal"
+          @pointerdown="startResize('bottom', $event)"
+        />
+        <div
+          v-if="profile.bottomPanelVisible"
           class="bottom-panel"
+          :style="{ height: `${profile.bottomHeight}px` }"
         >
           <div class="bottom-tabs">
             <span class="bottom-tab active">{{ t('bottom.terminal') }}</span>
             <span class="bottom-tab">{{ t('bottom.output') }}</span>
             <span class="bottom-tab">{{ t('bottom.problems') }}</span>
+            <button
+              type="button"
+              class="bottom-collapse"
+              :title="t('bottom.collapse')"
+              @click="toggleBottom"
+            >
+              ▾
+            </button>
           </div>
           <div class="bottom-body">
             —
@@ -133,20 +222,42 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <div
+        v-if="profile.agentPanel === 'docked'"
+        class="resizer v"
+        role="separator"
+        aria-orientation="vertical"
+        @pointerdown="startResize('agent', $event)"
+      />
       <aside
         class="agent-panel"
         :class="profile.agentPanel"
+        :style="profile.agentPanel === 'docked' ? { width: `${profile.agentWidth}px` } : undefined"
       >
         <template v-if="profile.agentPanel === 'docked'">
+          <div class="agent-head">
+            <span>{{ t('agent.placeholderTitle') }}</span>
+            <button
+              type="button"
+              class="agent-toggle"
+              :title="t('agent.collapse')"
+              @click="toggleAgent"
+            >
+              ×
+            </button>
+          </div>
           <AgentPlaceholder />
         </template>
         <template v-else>
-          <div
+          <button
+            type="button"
             class="agent-icon"
-            :title="t('agent.placeholderTitle')"
+            :title="t('agent.expand')"
+            :disabled="ui.windowWidth < NARROW_WIDTH_PX"
+            @click="toggleAgent"
           >
             A
-          </div>
+          </button>
         </template>
       </aside>
     </div>
@@ -161,6 +272,14 @@ onBeforeUnmount(() => {
       <span class="item dim">Node —</span>
       <span class="item dim">MCP 0</span>
       <span class="item dim">{{ t('status.sessions') }}</span>
+      <button
+        v-if="profile.mode === 'editor' && !profile.bottomPanelVisible"
+        type="button"
+        class="status-btn"
+        @click="toggleBottom"
+      >
+        {{ t('bottom.show') }}
+      </button>
     </footer>
   </div>
 </template>
@@ -229,12 +348,31 @@ onBeforeUnmount(() => {
 }
 
 .side {
-  width: 220px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border-right: 1px solid var(--border);
+}
+
+.resizer {
+  flex: 0 0 auto;
+  z-index: 5;
+  background: transparent;
+}
+
+.resizer.v {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resizer.h {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.resizer:hover {
+  background: var(--accent);
 }
 
 .side-head {
@@ -276,7 +414,6 @@ onBeforeUnmount(() => {
 }
 
 .bottom-panel {
-  height: 180px;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border);
@@ -290,6 +427,16 @@ onBeforeUnmount(() => {
   height: 26px;
   align-items: center;
   border-bottom: 1px solid var(--border);
+}
+
+.bottom-collapse {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+
+.bottom-collapse:hover {
+  color: var(--fg);
 }
 
 .bottom-tab {
@@ -313,11 +460,8 @@ onBeforeUnmount(() => {
   background: var(--panel);
   border-left: 1px solid var(--border);
   display: flex;
+  flex-direction: column;
   min-width: 0;
-}
-
-.agent-panel.docked {
-  width: 400px;
 }
 
 .agent-panel.icon {
@@ -326,9 +470,43 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
+.agent-head {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.agent-head span {
+  flex: 1;
+}
+
+.agent-toggle {
+  width: 20px;
+  height: 20px;
+  color: var(--fg-faint);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.agent-toggle:hover {
+  color: var(--fg);
+}
+
 .agent-icon {
   color: var(--accent);
   font-weight: 600;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.agent-icon:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .statusbar {
@@ -345,5 +523,15 @@ onBeforeUnmount(() => {
 
 .item.dim {
   color: var(--fg-faint);
+}
+
+.status-btn {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.status-btn:hover {
+  text-decoration: underline;
 }
 </style>

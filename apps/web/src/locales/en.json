@@ -58,12 +58,16 @@
   },
   "agent": {
     "placeholderTitle": "Agent mode",
-    "placeholderDesc": "P0 placeholder. Session stream, tool cards and inline approvals land in P3."
+    "placeholderDesc": "P0 placeholder. Session stream, tool cards and inline approvals land in P3.",
+    "collapse": "Collapse Agent panel",
+    "expand": "Expand Agent panel"
   },
   "bottom": {
     "terminal": "Terminal",
     "output": "Output",
-    "problems": "Problems"
+    "problems": "Problems",
+    "collapse": "Collapse bottom panel",
+    "show": "Show bottom panel"
   },
   "status": {
     "branch": "main",

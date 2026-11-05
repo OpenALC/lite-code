@@ -58,12 +58,16 @@
   },
   "agent": {
     "placeholderTitle": "Agent 模式",
-    "placeholderDesc": "P0 占位。会话流、工具卡片与内联审批在 P3（Agent 模式可用）落地。"
+    "placeholderDesc": "P0 占位。会话流、工具卡片与内联审批在 P3（Agent 模式可用）落地。",
+    "collapse": "折叠 Agent 面板",
+    "expand": "展开 Agent 面板"
   },
   "bottom": {
     "terminal": "终端",
     "output": "输出",
-    "problems": "问题"
+    "problems": "问题",
+    "collapse": "折叠底部面板",
+    "show": "显示底部面板"
   },
   "status": {
     "branch": "main",
