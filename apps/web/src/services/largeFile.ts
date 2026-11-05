@@ -67,6 +67,18 @@ const STRATEGY_READONLY: EditorFileStrategy = Object.freeze({
   suggestOpenWithSystemEditor: true,
 })
 
+/** 档位 → 策略单例（持久化恢复时使用）。 */
+export function strategyForTier(tier: LargeFileTier): EditorFileStrategy {
+  switch (tier) {
+    case 'full':
+      return STRATEGY_FULL
+    case 'reduced':
+      return STRATEGY_REDUCED
+    case 'readonly':
+      return STRATEGY_READONLY
+  }
+}
+
 /** 按文件字节数解析编辑器降级策略。非负有限数字以外的输入抛 TypeError。 */
 export function resolveEditorStrategy(sizeBytes: number): EditorFileStrategy {
   if (!Number.isFinite(sizeBytes) || sizeBytes < 0) {

@@ -314,13 +314,23 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 唤回主窗口：显示 + 取消最小化 + 聚焦（单实例二次启动与托盘共用）。
+/// 唤回主窗口：存在则显示，已销毁则按配置重建（单实例与托盘共用）。
 #[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        return;
+    }
+    let Some(config) = app.config().app.windows.first().cloned() else {
+        return;
+    };
+    match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
+        Ok(window) => {
+            let _ = window.set_focus();
+        }
+        Err(e) => eprintln!("recreate main window: {e}"),
     }
 }
 
@@ -356,15 +366,23 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 关闭请求 → 隐藏窗口、核心常驻（§6 起步版：窗口销毁语义 +
-            // 托盘常驻；"退出"只经托盘菜单）。
+            // 关闭请求 → 销毁 WebView（释放渲染进程内存），核心与托盘常驻；
+            // 托盘/单实例唤回时按配置重建窗口。无窗口时的 ExitRequested
+            // 被阻止，"退出"只经托盘菜单的 app.exit(0)。
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
+                let _ = window.destroy();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running lite-code");
+        .build(tauri::generate_context!())
+        .expect("error while building lite-code")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event
+                && code.is_none()
+            {
+                api.prevent_exit();
+            }
+        });
 }
 
 // ==== 单测：纯逻辑层不碰 Tauri 运行时，临时目录与 lc-core fs/tests.rs 同策略 ====
