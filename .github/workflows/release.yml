@@ -106,15 +106,18 @@ jobs:
           if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
             pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
           else
-            cargo build --release --locked
+            cargo build --release --locked --target x86_64-pc-windows-msvc
             echo "::notice::Tauri 壳未就绪，仅产出二进制"
           fi
+      - name: build lc-cli
+        shell: bash
+        run: cargo build --release --locked -p lc-cli --target x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
         with:
           name: win-x64
           path: |
-            target/release/bundle/**
-            target/release/lc-cli.exe
+            target/x86_64-pc-windows-msvc/release/bundle/**
+            target/x86_64-pc-windows-msvc/release/lc-cli.exe
           if-no-files-found: warn
           retention-days: 7
 
@@ -154,6 +157,9 @@ jobs:
             cargo build --release --locked
             echo "::notice::Tauri 壳未就绪，仅产出二进制"
           fi
+      - name: build lc-cli
+        shell: bash
+        run: cargo build --release --locked -p lc-cli
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x64
