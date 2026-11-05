@@ -80,6 +80,32 @@ fn node_set_manual_missing_path_fails_with_json_report() {
 }
 
 #[test]
+fn fs_read_dir_json_lists_entries() {
+    let root = std::env::temp_dir().join(format!("lc-cli-fs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), "a").unwrap();
+
+    let root_arg = root.to_str().unwrap();
+    let (code, stdout, stderr) =
+        run_cli(&["fs", "read-dir", root_arg, "--root", root_arg, "--json"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("必须是契约 JSON");
+    assert_eq!(v.get("kind").and_then(|k| k.as_str()), Some("dir_listing"));
+    let entries = v
+        .get("entries")
+        .and_then(|e| e.as_array())
+        .expect("entries");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.get("name").and_then(|n| n.as_str()) == Some("a.txt"))
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn node_info_json_outputs_node_field_and_exits_zero() {
     // 无配置 → {"node": null}，仍是合法输出且退出 0
     let (code, stdout, stderr) = run_cli(&["node", "info", "--json"]);

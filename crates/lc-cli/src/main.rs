@@ -10,14 +10,15 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use lc_cli::{
-    contract_meta_json, node_info_human, node_info_json, node_status_human, node_status_json,
-    set_manual_report_json, shell_report_json,
+    command_result_json, contract_meta_json, node_info_human, node_info_json, node_status_human,
+    node_status_json, set_manual_report_json, shell_report_json,
 };
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_node_runtime};
+use lc_core::fs::{RealPathResolver, read_dir_level};
 use lc_core::runtime::manual::{self, ManualError};
 use lc_core::runtime::portable::{self, VersionSpec};
 use lc_core::runtime::{detect_shell_real, probe_real};
-use lc_proto::ContractMeta;
+use lc_proto::{CommandResult, ContractMeta};
 
 #[derive(Parser)]
 #[command(
@@ -46,6 +47,11 @@ enum Cmd {
     Contract {
         #[command(subcommand)]
         cmd: ContractCmd,
+    },
+    /// 文件系统（headless 验证与性能基线）
+    Fs {
+        #[command(subcommand)]
+        cmd: FsCmd,
     },
 }
 
@@ -108,6 +114,21 @@ enum ContractCmd {
     /// 契约版本、命令、事件、错误码清单
     Info {
         /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum FsCmd {
+    /// 按层列目录（与 UI 文件树同一实现）
+    ReadDir {
+        /// 目录路径；缺省为 --root
+        path: Option<PathBuf>,
+        /// 安全边界根（缺省当前目录）
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// 输出 JSON（契约 CommandResult）
         #[arg(long)]
         json: bool,
     },
@@ -210,6 +231,36 @@ fn main() {
                     None => println!(
                         "shell detect: 未找到可用 shell。Lite Code 的终端与命令执行依赖 PowerShell 7：\n  winget install --id Microsoft.PowerShell -e --source winget"
                     ),
+                }
+            }
+        }
+        Cmd::Fs {
+            cmd: FsCmd::ReadDir { path, root, json },
+        } => {
+            let target = path.unwrap_or_else(|| root.clone());
+            match read_dir_level(&root, &target, &RealPathResolver) {
+                Ok(level) => {
+                    if json {
+                        let result = CommandResult::DirListing {
+                            path: level.path,
+                            entries: level.entries,
+                            generation: 0,
+                        };
+                        print!("{}", command_result_json(&result));
+                    } else {
+                        println!("fs read-dir: {}", level.path);
+                        for entry in level.entries {
+                            let size = entry
+                                .size
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "-".into());
+                            println!("  {:?}\t{}\t{}", entry.kind, entry.name, size);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("fs read-dir: {e}");
+                    std::process::exit(1);
                 }
             }
         }

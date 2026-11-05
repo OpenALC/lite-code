@@ -3,7 +3,7 @@
 
 use lc_core::config::NodeRuntime;
 use lc_core::runtime::manual::ManualError;
-use lc_proto::{ContractMeta, NodeFailureReason, NodeStatus, ShellInfo};
+use lc_proto::{CommandResult, ContractMeta, NodeFailureReason, NodeStatus, ShellInfo};
 
 /// `node detect --json`：输出契约的 [`NodeStatus`]。
 /// 无 Node 也是合法输出（kind=need_manual），永远不报错。
@@ -24,6 +24,11 @@ pub fn shell_report_json(shell: Option<&ShellInfo>) -> String {
 /// `contract info --json`：契约元信息，内容完全确定，适合 golden。
 pub fn contract_meta_json(meta: &ContractMeta) -> String {
     pretty(meta)
+}
+
+/// fs 命令的 JSON 输出：直接序列化契约 `CommandResult`，与 Tauri 形状一致。
+pub fn command_result_json(result: &CommandResult) -> String {
+    pretty(result)
 }
 
 /// `node info --json`：`{"node": {...} | null}`，即 config 里的 node_runtime 段
