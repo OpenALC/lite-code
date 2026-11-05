@@ -2,12 +2,14 @@
 //! 会话循环 / LLM 网关 / 压缩 / MCP 由后续 lane 接入。
 
 pub mod approval;
+pub mod collector;
 pub mod exec;
 pub mod policy;
 pub mod session;
 pub mod tools;
 
 pub use approval::{ApprovalCache, ApprovalDecision, ApprovalId, ApprovalQueue, ApprovalRequest};
+pub use collector::{CollectedTurn, CollectorError, TurnCollector};
 pub use exec::{LocalToolExecutor, ToolCall, ToolError, ToolExecutor, ToolOutput};
 pub use policy::{Policy, PolicyDecision, PolicyError, PolicyMode, PolicyRequest, PolicySource};
 pub use session::{
