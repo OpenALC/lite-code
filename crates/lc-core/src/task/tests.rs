@@ -565,6 +565,17 @@ fn apply_conflict_keeps_worktree_and_marks_review() {
     assert!(git(&repo, &["status", "--porcelain"]).contains("UU"));
     git(&repo, &["rev-parse", "--verify", &branch]);
 
+    // 冲突未解决时再次 apply：仍返回 MergeConflict，不自动选边，任务保持 Review。
+    let again = store.apply(&task.task_id).unwrap_err();
+    assert!(matches!(again, TaskError::MergeConflict { .. }));
+    assert_eq!(store.get(&task.task_id).unwrap().status, TaskStatus::Review);
+    assert!(wt.is_dir());
+
+    // 失败不丢数据：worktree 仍可 diff，冲突后写入的改动可见。
+    write_file(&wt, "after-conflict.txt", "still editable\n");
+    let diff = store.diff(&task.task_id).unwrap();
+    assert!(diff.patch.contains("after-conflict.txt"));
+
     drop(store);
     let reloaded = TaskStore::new(&persist, &repo);
     let after_reload = reloaded.get(&task.task_id).unwrap();
@@ -595,6 +606,200 @@ fn apply_reports_base_drift_and_still_merges() {
     assert_eq!(outcome.base_drift, 1);
     assert!(repo.join("feature.txt").is_file());
     assert!(repo.join("main.txt").is_file());
+    assert_eq!(store.get(&task.task_id).unwrap().status, TaskStatus::Done);
+}
+
+#[test]
+fn apply_after_conflict_resolved_and_committed_finishes_task() {
+    let td = TestDir::new("apply-conflict-committed");
+    let repo = init_repo(&td.repo());
+    let mut store = td.store(&repo);
+    let task = store.create("resolve conflict", None).unwrap();
+    store.start(&task.task_id).unwrap();
+    let wt = worktree_path(&task);
+    let branch = task.branch.clone().expect("branch");
+
+    write_file(&wt, "README.md", "task side\n");
+    commit_all(&wt, "task side");
+    write_file(&repo, "README.md", "main side\n");
+    commit_all(&repo, "main side");
+
+    assert!(matches!(
+        store.apply(&task.task_id).unwrap_err(),
+        TaskError::MergeConflict { .. }
+    ));
+    assert_eq!(store.get(&task.task_id).unwrap().status, TaskStatus::Review);
+
+    // 模拟编辑器解决冲突：写最终内容、暂存并提交（MERGE_HEAD 存在时 git 生成 merge commit）。
+    write_file(&repo, "README.md", "merged side\n");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "resolve conflict"]);
+    assert!(
+        !git_quiet(&repo, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+            .status
+            .success(),
+        "manual commit should conclude the merge"
+    );
+
+    let outcome = store.apply(&task.task_id).unwrap();
+    assert!(!outcome.commit.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "merged side\n"
+    );
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+
+    let done = store.get(&task.task_id).unwrap();
+    assert_eq!(done.status, TaskStatus::Done);
+    assert!(done.worktree_path.is_none());
+    assert!(done.branch.is_none());
+    assert!(done.port.is_none());
+    assert!(!wt.exists());
+    assert!(
+        !git_quiet(&repo, &["rev-parse", "--verify", "--quiet", &branch])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn apply_commits_merge_resolved_but_only_staged() {
+    let td = TestDir::new("apply-conflict-staged");
+    let repo = init_repo(&td.repo());
+    let persist = td.data().join("tasks.json");
+    let mut store = TaskStore::new(&persist, &repo);
+    let task = store.create("staged resolution", None).unwrap();
+    store.start(&task.task_id).unwrap();
+    let wt = worktree_path(&task);
+    let branch = task.branch.clone().expect("branch");
+
+    write_file(&wt, "README.md", "task side\n");
+    commit_all(&wt, "task side");
+    write_file(&repo, "README.md", "main side\n");
+    commit_all(&repo, "main side");
+
+    assert!(matches!(
+        store.apply(&task.task_id).unwrap_err(),
+        TaskError::MergeConflict { .. }
+    ));
+
+    // 只解决 + 暂存，不手动提交：apply 应识别 MERGE_HEAD 并代为提交 merge。
+    write_file(&repo, "README.md", "merged side\n");
+    git(&repo, &["add", "README.md"]);
+    assert!(
+        git_quiet(&repo, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+            .status
+            .success(),
+        "staged resolution should keep MERGE_HEAD"
+    );
+
+    // 模拟用户中途重启应用：Review 状态与主工作区 merge 状态都应保留。
+    drop(store);
+    let mut store = TaskStore::new(&persist, &repo);
+    assert_eq!(store.get(&task.task_id).unwrap().status, TaskStatus::Review);
+
+    let outcome = store.apply(&task.task_id).unwrap();
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("resolved merge committed")),
+        "warnings should record the pending merge: {:?}",
+        outcome.warnings
+    );
+    let head = git(&repo, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+    assert_eq!(
+        head.split_whitespace().count(),
+        3,
+        "HEAD should be a merge commit: {head}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "merged side\n"
+    );
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+
+    let done = store.get(&task.task_id).unwrap();
+    assert_eq!(done.status, TaskStatus::Done);
+    assert!(!wt.exists());
+    assert!(
+        !git_quiet(&repo, &["rev-parse", "--verify", "--quiet", &branch])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn parallel_tasks_merge_same_file_different_parts() {
+    let td = TestDir::new("parallel-same-file");
+    let repo = init_repo(&td.repo());
+    let base: String = (1..=20).map(|line| format!("line {line}\n")).collect();
+    write_file(&repo, "shared.txt", &base);
+    commit_all(&repo, "shared base");
+
+    let mut store = td.store(&repo);
+    let top = store.create("top change", None).unwrap();
+    let bottom = store.create("bottom change", None).unwrap();
+    store.start(&top.task_id).unwrap();
+    store.start(&bottom.task_id).unwrap();
+    let wt_top = worktree_path(&top);
+    let wt_bottom = worktree_path(&bottom);
+
+    write_file(
+        &wt_top,
+        "shared.txt",
+        &base.replace("line 2\n", "line 2 changed by top\n"),
+    );
+    commit_all(&wt_top, "top hunk");
+    write_file(
+        &wt_bottom,
+        "shared.txt",
+        &base.replace("line 19\n", "line 19 changed by bottom\n"),
+    );
+    commit_all(&wt_bottom, "bottom hunk");
+
+    let first = store.apply(&top.task_id).unwrap();
+    assert_eq!(first.base_drift, 0);
+    let second = store.apply(&bottom.task_id).unwrap();
+    assert!(
+        second.base_drift >= 1,
+        "top apply should advance main: {}",
+        second.base_drift
+    );
+
+    let merged = std::fs::read_to_string(repo.join("shared.txt")).unwrap();
+    assert!(merged.contains("line 2 changed by top"));
+    assert!(merged.contains("line 19 changed by bottom"));
+    assert!(merged.contains("line 11\n"));
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+    assert_eq!(store.get(&top.task_id).unwrap().status, TaskStatus::Done);
+    assert_eq!(store.get(&bottom.task_id).unwrap().status, TaskStatus::Done);
+    assert!(!wt_top.exists());
+    assert!(!wt_bottom.exists());
+}
+
+#[test]
+fn apply_base_drift_counts_multiple_main_commits() {
+    let td = TestDir::new("apply-drift-multi");
+    let repo = init_repo(&td.repo());
+    let mut store = td.store(&repo);
+    let task = store.create("drift multi", None).unwrap();
+    store.start(&task.task_id).unwrap();
+    let wt = worktree_path(&task);
+
+    write_file(&wt, "feature.txt", "feature\n");
+    commit_all(&wt, "feature");
+    write_file(&repo, "main-a.txt", "a\n");
+    commit_all(&repo, "main a");
+    write_file(&repo, "main-b.txt", "b\n");
+    commit_all(&repo, "main b");
+
+    let outcome = store.apply(&task.task_id).unwrap();
+    assert_eq!(outcome.base_drift, 2);
+    assert!(repo.join("feature.txt").is_file());
+    assert!(repo.join("main-a.txt").is_file());
+    assert!(repo.join("main-b.txt").is_file());
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
     assert_eq!(store.get(&task.task_id).unwrap().status, TaskStatus::Done);
 }
 

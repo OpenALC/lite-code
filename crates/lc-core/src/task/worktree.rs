@@ -5,7 +5,8 @@
 //!   再次校验不落在项目目录内（数据目录被配置到项目里时退到系统临时目录）；
 //! - 分支名 `lc/<task-id>-<slug>`；
 //! - 主工作区 dirty 时不合并、不自动 stash；冲突时不 abort，保留 merge 状态
-//!   供用户在编辑器里解决；
+//!   供用户在编辑器里解决；再次 apply 时若 `MERGE_HEAD` 仍在且冲突已全部解决，
+//!   则提交该 merge 后继续收尾（绝不自动选边）；
 //! - 删除 worktree 前由调用方确认干净（`discard` 的 DirtyWorktree 拒绝）。
 
 use std::path::{Path, PathBuf};
@@ -270,6 +271,90 @@ pub(crate) fn merge_branch(repo_root: &Path, branch: &str, task_id: &str) -> Res
     } else {
         Err(git_failure(&["merge", "--no-ff", branch], &out))
     }
+}
+
+/// 主工作区是否停在一次未完成的 merge（存在 `MERGE_HEAD`）。
+pub(crate) fn merge_in_progress(repo_root: &Path) -> Result<bool, TaskError> {
+    let out = run_git(
+        repo_root,
+        &["rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        GIT_TIMEOUT,
+    )?;
+    Ok(out.success())
+}
+
+/// index 中仍未合并的路径（stage 1/2/3），用于判断冲突是否已全部解决。
+pub(crate) fn unmerged_paths(repo_root: &Path) -> Result<Vec<String>, TaskError> {
+    let out = git_ok(
+        repo_root,
+        &["diff", "--name-only", "--diff-filter=U", "-z"],
+        GIT_TIMEOUT,
+    )?;
+    Ok(out
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// 收尾上一次 `apply` 冲突后留在主工作区的 merge。
+///
+/// - 没有进行中的 merge：`Ok(None)`；
+/// - 冲突已全部解决（无 unmerged path）：提交 merge，返回 `Some(提交 sha)`；
+/// - 仍有未合并路径：返回 [`TaskError::MergeConflict`]，绝不自动选边；
+/// - `MERGE_HEAD` 不属于任务分支：返回 [`TaskError::DirtyMainWorktree`]，
+///   避免误提交用户自己的 merge。
+pub(crate) fn finish_pending_merge(
+    repo_root: &Path,
+    branch: &str,
+    task_id: &str,
+) -> Result<Option<String>, TaskError> {
+    if !merge_in_progress(repo_root)? {
+        return Ok(None);
+    }
+
+    let merge_head = git_ok(repo_root, &["rev-parse", "MERGE_HEAD"], GIT_TIMEOUT)?
+        .stdout
+        .trim()
+        .to_string();
+    let ancestor = run_git(
+        repo_root,
+        &["merge-base", "--is-ancestor", &merge_head, branch],
+        GIT_TIMEOUT,
+    )?;
+    if !ancestor.success() {
+        return Err(TaskError::DirtyMainWorktree {
+            detail: format!(
+                "main worktree has an unfinished merge ({merge_head}) that does not belong to {branch}"
+            ),
+        });
+    }
+
+    let unmerged = unmerged_paths(repo_root)?;
+    if !unmerged.is_empty() {
+        return Err(TaskError::MergeConflict {
+            task_id: task_id.to_string(),
+            detail: format!("unresolved conflicts remain: {}", unmerged.join(", ")),
+        });
+    }
+
+    // 用户可能只 `git add` 了冲突文件而没有提交；这里用与 auto_commit 相同的
+    // 兜底身份提交 merge，消息沿用 git 生成的 MERGE_MSG。
+    let args = [
+        "-c",
+        "user.name=Lite Code",
+        "-c",
+        "user.email=lc@lite-code.local",
+        "commit",
+        "--no-edit",
+        "--no-verify",
+    ];
+    let out = run_git(repo_root, &args, MERGE_TIMEOUT)?;
+    if !out.success() {
+        return Err(git_failure(&["commit", "--no-edit"], &out));
+    }
+    head_sha(repo_root).map(Some)
 }
 
 /// 合并后的 HEAD（即合并提交）。

@@ -403,11 +403,16 @@ impl TaskStore {
     }
 
     /// 应用任务到主工作区：
+    /// 0. 若主工作区停在本任务上一次冲突留下的 merge 且冲突已解决，先提交该 merge；
+    ///    仍冲突则保持 `Review` 并返回 [`TaskError::MergeConflict`]（不自动选边）；
     /// 1. 主工作区必须 clean；
     /// 2. 计算 base drift（不阻止合并）；
     /// 3. worktree 的未提交改动先提交到任务分支（避免 merge 后删除 worktree 丢数据）；
     /// 4. `git merge --no-ff`；冲突保留 merge 状态、任务置 `Review` 并返回错误；
     /// 5. 成功则记录合并提交、删除 worktree/分支、状态 `Done`。
+    ///
+    /// 用户手动解决了冲突并已提交 merge 时，第 4 步的 `git merge` 是
+    /// “Already up to date”，同样走第 5 步收尾。
     pub fn apply(&mut self, task_id: impl AsRef<str>) -> Result<ApplyOutcome, TaskError> {
         let task_id = task_id.as_ref();
         let index = self.index_of(task_id).ok_or_else(|| TaskError::NotFound {
@@ -454,6 +459,27 @@ impl TaskStore {
                 task_id: task_id.to_string(),
                 path: path.to_string(),
             });
+        }
+
+        // 上一次 apply 冲突后，用户可能已经在主工作区解决并暂存（或提交）了冲突。
+        // 这里只收尾本任务分支留下的 merge：仍有冲突则保持 Review，绝不自动选边。
+        match worktree::finish_pending_merge(&self.repo_root, &branch, task_id) {
+            Ok(Some(commit)) => {
+                warnings.push(format!("resolved merge committed before apply: {commit}"))
+            }
+            Ok(None) => {}
+            Err(TaskError::MergeConflict { detail, .. }) => {
+                self.tasks[index].task.status = TaskStatus::Review;
+                self.tasks[index].task.port = None;
+                warnings.push(format!("merge conflict left in main worktree: {detail}"));
+                self.tasks[index].notes = warnings;
+                self.persist()?;
+                return Err(TaskError::MergeConflict {
+                    task_id: task_id.to_string(),
+                    detail,
+                });
+            }
+            Err(error) => return Err(error),
         }
 
         worktree::ensure_main_clean(&self.repo_root)?;
