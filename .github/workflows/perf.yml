@@ -53,8 +53,19 @@ jobs:
         with:
           key: perf-${{ hashFiles('rust-toolchain.toml') }}
 
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: install frontend deps
+        run: pnpm install --frozen-lockfile
+      - name: build frontend
+        run: pnpm --filter @lite-code/web build
+
       - name: build release
-        run: cargo build --release --locked
+        # custom-protocol 把 frontendDist 嵌入二进制；裸 cargo build 会得到空 WebView。
+        run: cargo build --release --locked -p lc-desktop --features custom-protocol
 
       # scripts/perf/run.ps1 输出 scripts/perf/out/metrics.json：
       #   { trayRssMb, activeRssMb, coldStartMs, warmStartMs, residualProcs }

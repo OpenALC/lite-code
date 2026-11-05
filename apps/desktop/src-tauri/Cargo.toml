@@ -14,6 +14,11 @@ description = "Lite Code Tauri 薄壳：窗口、命令注册与转发"
 name = "lc_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# 生产构建启用：把 frontendDist 嵌入二进制，避免加载 devUrl 得到空 WebView。
+# 标准 Tauri 模板同名 feature；`pnpm tauri build` 会自动启用。
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
