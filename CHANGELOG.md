@@ -27,3 +27,9 @@
 - 上下文压缩：工具输出瘦身 → 早期摘要 → 激进压缩；切点保证 `function_call`/`output` 配对，压缩后继续当前任务
 - MCP Host：stdio JSON-RPC、`.mcp.json`/用户配置合并、动态工具注册与执行、超时/进程树回收
 - 会话 instructions：注入平台/shell/工作区环境契约，以及全局/项目 memory.md、AGENTS.md/CLAUDE.md 记忆
+- Task 工作台：`Planning/Running/Blocked/Review/Done/Failed/Queued` 状态机、并发 2 队列、端口与任务持久化
+- worktree 隔离：数据目录下 `worktrees/<project>/<task>`，分支 `lc/<task>-<slug>`，主工作区保持 clean
+- 合并协议：主工作区 clean / 基线漂移 / `--no-ff` / 冲突保留与解决后收尾；同文件不同行并行合并
+- Tauri task 命令与 `task:*` 事件；`session_create` 绑定任务后在 worktree 内运行 Agent
+- 工作台 UI：任务列表、变更/检查/Diff/预览标签、应用/丢弃、后台审批待确认计数
+- 预览与标签恢复：iframe 随任务销毁/重建，工作台标签按任务记忆

@@ -1,7 +1,9 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`774e7dd`；契约 v0.4。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`4b600a1`；版本 `0.4.1-preview.1`；契约 v0.5。
+> P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
+> P4 发布：version bump 已提交，tag 与 release 构建进行中（draft）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -46,8 +48,15 @@
 | P3 上下文压缩 | ✅ 预算/阈值、工具输出瘦身、早期摘要、激进压缩、`agent:compacted` 记录；工具配对安全 |
 | P3 MCP | ✅ `.mcp.json`/用户配置、stdio JSON-RPC、握手/工具列表/调用、动态工具注册与执行 |
 | P3 环境契约/记忆 | ✅ 平台/shell/工作区 XML 注入；全局+项目 memory.md、AGENTS.md/CLAUDE.md 读取 |
+| P3 发布 | ✅ `v0.3.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 资产） |
+| P4 契约 v0.5 | ✅ Task DTO、8 个 task 命令、`task:*` 事件；`session_create` 可绑定 task |
+| P4 Task 核心 | ✅ 持久化状态机、队列（默认 2）、端口、worktree、changes/diff/apply/discard |
+| P4 合并协议 | ✅ 主工作区 clean、基线漂移、`--no-ff`、冲突保留、解决后再次 apply 收尾 |
+| P4 Tauri 命令层 | ✅ 8 个 task 命令与事件；session 在 worktree 内运行；后台审批转 Blocked + needs_input |
+| P4 工作台 UI | ✅ 任务列表、三栏布局、变更/检查/Diff/预览标签、应用/丢弃、状态栏待确认 |
+| P4 预览/标签 | ✅ 标签组按任务恢复；iframe 切换销毁、回到任务用原 URL 重建 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `958d4fe` 全绿；`774e7dd` 由后台 watcher 验证 |
+| main CI | ✅ `25360a9` 全绿；P4 提交待推送后由后台 watcher 验证 |
 
 ## 本轮完成
 
@@ -148,6 +157,17 @@
 31. **环境契约与记忆**（`774e7dd`）
    - system prompt 注入 `<environment>`（平台/架构/shell 方言/路径分隔符/工作区/PATH 工具）。
    - 全局 `~/.lite-code/memory.md`、项目 `.lite-code/memory.md`、`AGENTS.md`/`CLAUDE.md` 读取并注入；追加写入走 `.bak` + 原子替换。
+32. **P3 发布**（`v0.3.1-preview.1`）
+   - 6 个 draft 资产：Windows NSIS、Linux AppImage/deb、两个 `lc-cli`、SHA256SUMS。
+33. **P4 契约与 Task 核心**（`3b69c26` / `e064d99`）
+   - 契约 v0.5：Task DTO、8 个 task 命令、`task:*` 事件；`session_create` 支持 task 绑定。
+   - TaskStore：持久化、并发 2、端口、worktree、changes/diff/apply/discard、队列提升。
+34. **P4 Tauri 与工作台 UI**（`a8a0c92` / `40473bd`）
+   - 8 个 task 命令与事件；session 在任务 worktree 内运行；后台审批 → Blocked + `task:needs_input`。
+   - 任务列表、三栏工作台、变更/检查/Diff/预览、应用/丢弃、状态栏待确认。
+35. **P4 冲突收尾与预览存活**（`cd9b782` / `cfde355` / `853d605`）
+   - 冲突解决/仅暂存后再次 apply 可收尾；同文件不同行并行合并；基线漂移计数。
+   - 工作台标签按任务恢复；iframe 切换销毁、回到任务用原 URL 重建。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -159,10 +179,11 @@
 
 ## 待办（按序）
 
-1. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-2. P3 出口验收：用真实 provider key 完成一次「读文件 → 改文件 → 跑测试 → 汇报」多轮任务；验证审批三按钮、yolo 每次启动确认、编辑器↔Agent 切换无损。
-3. P3 发布准备：版本号升 `0.3.1-preview.1`，打 tag 发 draft（真实任务验收通过后再打）。
-4. 已知限制：取消不强制中断已发出的 HTTP 流；审批挂起期间取消会留下 pending 审批（UI 正常路径不触发）；MCP 仅支持 stdio 与单工具槽位（保留 task/db_query 占位）。
+1. P4 release draft 产出后核对 6 个资产；已知缺口见下。
+2. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
+3. P4 后续：`ViewTarget` code/web/term/doc 完整化、独立系统 WebView 预览、检查 Runner、按项目拆分 `tasks.json`。
+4. P5：数据库/周边与 `db_query` 审批闭环。
+5. 已知限制：取消不强制中断已发出的 HTTP 流；审批挂起期间取消会留下 pending 审批（UI 正常路径不触发）；MCP 仅 stdio 与单工具槽位；真实 OpenAI/Anthropic 端点兼容性未覆盖。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -189,5 +210,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 204 · lc-cli 33 · lc-proto 10 · lc-desktop 28 · web 166（12 文件）· 合计 **441**。
+lc-core 233 · lc-cli 33 · lc-proto 10 · lc-desktop 45 · web 215（13 文件）· 合计 **536**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
