@@ -2152,7 +2152,7 @@ dependencies = [
 
 [[package]]
 name = "lc-cli"
-version = "0.4.1-preview.1"
+version = "0.4.1-preview.2"
 dependencies = [
  "clap",
  "lc-core",
@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "lc-core"
-version = "0.4.1-preview.1"
+version = "0.4.1-preview.2"
 dependencies = [
  "dirs",
  "globset",
@@ -2184,7 +2184,7 @@ dependencies = [
 
 [[package]]
 name = "lc-desktop"
-version = "0.4.1-preview.1"
+version = "0.4.1-preview.2"
 dependencies = [
  "lc-core",
  "lc-proto",
@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "lc-proto"
-version = "0.4.1-preview.1"
+version = "0.4.1-preview.2"
 dependencies = [
  "serde",
  "serde_json",

@@ -1,9 +1,9 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`4b600a1`；版本 `0.4.1-preview.1`；契约 v0.5。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`88424b5`；版本 `0.4.1-preview.2`；契约 v0.5。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
-> P4 发布：version bump 已提交，tag 与 release 构建进行中（draft）。
+> P4 发布：`v0.4.1-preview.1` 因 Windows 路径断言失败；修复后重建 `preview.2`，tag 与 release 构建进行中。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -56,7 +56,7 @@
 | P4 工作台 UI | ✅ 任务列表、三栏布局、变更/检查/Diff/预览标签、应用/丢弃、状态栏待确认 |
 | P4 预览/标签 | ✅ 标签组按任务恢复；iframe 切换销毁、回到任务用原 URL 重建 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `25360a9` 全绿；P4 提交待推送后由后台 watcher 验证 |
+| main CI | ✅ `25360a9` 全绿；P4 `preview.2` 提交与 tag 由后台 watcher 验证 |
 
 ## 本轮完成
 
