@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod config;
 pub mod fs;
+pub mod llm;
 pub mod process;
 pub mod runtime;
 
