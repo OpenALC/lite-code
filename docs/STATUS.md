@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`2c19d60`。
+> MILESTONES.md。快照时间：2026-11-05，main HEAD：`28e86b6`；契约 v0.4。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
@@ -39,10 +39,13 @@
 | P3 Anthropic | ✅ Messages SSE 映射 + 状态化解码器；ureq loopback 传输测试 |
 | P3 AgentLoop | ✅ user → LLM 流 → TurnCollector → 授权 → 工具执行 → function_call_output 回填；审批 resume |
 | P3 shell | ✅ PowerShell 7 / bash、超时杀进程树、stdout/stderr 截断、Job/进程组回收 |
-| P3 Agent UI 状态 | ✅ agentStore reducer（文本/思考/工具/审批/usage/done/session_state）+ 23 个单测 |
-| P3 开工面 | ⏳ Tauri session registry/命令、provider 配置加载、CLI `agent run`、UI 视图接线 |
+| P3 Agent UI 状态 | ✅ agentStore reducer（文本/思考/工具/审批/usage/done/compacted）+ 测试 |
+| P3 Tauri 命令层 | ✅ 每会话 worker 线程、四条命令、`core:event` 信封、取消/审批 resume |
+| P3 CLI | ✅ `lc-cli agent run --prompt ... --json/--yes`，headless 审批与退出码 |
+| P3 Agent UI 视图 | ✅ 会话流、工具卡、内联审批三按钮、composer、yolo 确认、上下文刻度条 |
+| P3 上下文压缩 | ✅ 预算/阈值、工具输出瘦身、早期摘要、激进压缩、`agent:compacted` 记录；工具配对安全 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `ecf31e0` 及之前全绿；`2c19d60` 与 STATUS 提交推送后由后台 watcher 验证 |
+| main CI | ✅ `e83e1d7` 已绿；`28e86b6` 与后续 docs 提交由后台 watcher 验证 |
 
 ## 本轮完成
 
@@ -121,6 +124,21 @@
 25. **P3 Agent UI 状态层**（`8b53b75`，subagent 交付）
    - agentStore reducer：文本/思考 delta、工具卡片、审批、usage、done、session_state。
    - 23 个 reducer 单测；尚未接 React 组件。
+26. **provider 运行时与工具定义**（`b85fe64`）
+   - `providers.json` + `LC_PROVIDERS_FILE`/`LC_API_KEY`/`LC_BASE_URL`/`LC_MODEL` 兜底。
+   - `ToolRegistry::llm_tools()` 输出 Responses API 的 6 个工具 schema，CLI/Tauri 共用。
+27. **事件映射与工具失败恢复**（`56b698a` / `659d99f`）
+   - `permission_denied` 错误码；`llm_event`/`loop_outcome`/`session_info` 统一映射。
+   - 工具失败回填 `function_call_output` 并继续，observer 暴露 call id 供 `agent:tool_result`。
+28. **Tauri 命令层 + CLI + UI 接线**（`0c222a3` / `3dab4cb` / `5318535`）
+   - 每会话 worker 线程；`session_create`/`agent_send`/`agent_cancel`/`approval_resolve`；`core:event` 信封。
+   - `lc-cli agent run`：JSON 事件流、`--yes`、退出码 0/1/2。
+   - AgentPanel：模式栏、工具卡、审批三按钮、composer、yolo 确认、浏览器 fallback。
+29. **契约 v0.4 与上下文压缩**（`058840e` / `f33f516` / `81abd8d` / `28e86b6`）
+   - `SessionInfo.context_k/compress_at_k`、`agent:compacted`。
+   - 压缩顺序：旧工具输出瘦身 → 早期摘要 → 激进压缩；切点保证 call/output 配对。
+   - UI 阈值刻度、超阈值变黄、压缩后闪烁与可展开记录；CLI/Tauri 均发射压缩事件。
+   - 本地 mock Responses 二轮闭环：读两个 12KB 文件 → 压缩 6572→3583 tokens → 继续并 done。
 
 ## 已知 P1 缺口（审查结果，按优先级）
 
@@ -133,11 +151,9 @@
 ## 待办（按序）
 
 1. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
-2. P3 开工面：Tauri session registry + `session_create`/`agent_send`/`agent_cancel`/`approval_resolve` 命令与 `agent:*` 事件映射。
-3. provider 配置加载（配置文件 + 环境变量 API key 兜底）与 `lc-cli agent run --headless`。
-4. Agent UI 视图接线（会话流/工具卡片/内联审批/composer），基于 `agentStore`。
-5. P3 出口验收：真实多轮任务、审批三按钮、yolo 启动确认、编辑器↔Agent 无损切换、上下文压缩条、headless CLI。
-6. P3 发布准备：版本号升 `0.3.1-preview.1`，打 tag 发 draft。
+2. P3 出口验收：用真实 provider key 完成一次「读文件 → 改文件 → 跑测试 → 汇报」多轮任务；验证审批三按钮、yolo 每次启动确认、编辑器↔Agent 切换无损。
+3. P3 发布准备：版本号升 `0.3.1-preview.1`，打 tag 发 draft（真实任务验收通过后再打）。
+4. 已知限制：取消不强制中断已发出的 HTTP 流；审批挂起期间取消会留下 pending 审批（UI 正常路径不触发）。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -164,5 +180,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 145 · lc-cli 16 · lc-proto 10 · lc-desktop 12 · web 123（11 文件）· 合计 **306**。
+lc-core 175 · lc-cli 33 · lc-proto 10 · lc-desktop 28 · web 166（12 文件）· 合计 **412**。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
