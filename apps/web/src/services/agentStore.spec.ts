@@ -5,6 +5,7 @@ import {
   applyAgentEvent,
   appendUserMessage,
   APPROVAL_DENIED_TEXT,
+  beyondCompressThreshold,
   contextRatio,
   createAgentState,
   resolveApproval,
@@ -17,7 +18,29 @@ function session(overrides: Partial<SessionInfo> = {}): SessionInfo {
     mode: 'auto',
     turn: 0,
     max_turns: 12,
+    context_k: 400,
+    compress_at_k: 300,
     cancelled: false,
+    ...overrides,
+  }
+}
+
+interface CompactionOverrides {
+  before_tokens?: number
+  after_tokens?: number
+  removed_messages?: number
+  summary?: string
+}
+
+function compacted(recordId: number, overrides: CompactionOverrides = {}) {
+  return {
+    type: 'agent:compacted' as const,
+    session_id: 's1',
+    record_id: recordId,
+    before_tokens: 12300,
+    after_tokens: 4100,
+    removed_messages: 7,
+    summary: '早期对话已摘要',
     ...overrides,
   }
 }
@@ -60,9 +83,38 @@ describe('createAgentState', () => {
       tools: [],
       approvals: [],
       usage: { input: 0, output: 0, cached: 0 },
+      compactions: [],
+      compactionPulse: 0,
       done: null,
       error: null,
     })
+  })
+
+  it('从 SessionInfo 读取上下文预算', () => {
+    const state = createAgentState(session({ context_k: 128, compress_at_k: 96 }))
+    expect(state.contextK).toBe(128)
+    expect(state.compressAtK).toBe(96)
+  })
+
+  it('预算缺失或非法时回退 400/300；阈值不小于窗口时收敛到窗口内', () => {
+    const legacy = {
+      ...session(),
+      context_k: undefined,
+      compress_at_k: undefined,
+    } as unknown as SessionInfo
+    for (const bad of [
+      legacy,
+      session({ context_k: Number.NaN, compress_at_k: Number.POSITIVE_INFINITY }),
+      session({ context_k: -1, compress_at_k: 0 }),
+    ]) {
+      const state = createAgentState(bad)
+      expect(state.contextK).toBe(400)
+      expect(state.compressAtK).toBe(300)
+    }
+
+    const small = createAgentState(session({ context_k: 100, compress_at_k: 300 }))
+    expect(small.contextK).toBe(100)
+    expect(small.compressAtK).toBe(100)
   })
 })
 
@@ -219,6 +271,52 @@ describe('审批', () => {
   })
 })
 
+describe('上下文压缩', () => {
+  it('agent:compacted 追加本会话记录，pulse 每次 +1', () => {
+    let state = createAgentState(session())
+    state = applyAgentEvent(state, compacted(1))
+    state = applyAgentEvent(
+      state,
+      compacted(2, {
+        before_tokens: 9000,
+        after_tokens: 3000,
+        removed_messages: 3,
+        summary: '第二次压缩',
+      }),
+    )
+
+    expect(state.compactions).toEqual([
+      {
+        recordId: 1,
+        beforeTokens: 12300,
+        afterTokens: 4100,
+        removedMessages: 7,
+        summary: '早期对话已摘要',
+      },
+      {
+        recordId: 2,
+        beforeTokens: 9000,
+        afterTokens: 3000,
+        removedMessages: 3,
+        summary: '第二次压缩',
+      },
+    ])
+    expect(state.compactionPulse).toBe(2)
+  })
+
+  it('重复 record_id 不追加记录、不增加 pulse', () => {
+    let state = createAgentState(session())
+    const event = compacted(1)
+    state = applyAgentEvent(state, event)
+    expect(applyAgentEvent(state, event)).toBe(state)
+  })
+
+  it('其他会话的压缩事件不影响本会话', () => {
+    const state = createAgentState(session())
+    expect(applyAgentEvent(state, { ...compacted(1), session_id: 's2' })).toBe(state)
+  })
+})
+
 describe('usage、done、session_state', () => {
   it('agent:usage 覆盖三项计数', () => {
     let state = createAgentState(session())
@@ -261,6 +359,51 @@ describe('usage、done、session_state', () => {
     expect(contextRatio(state, Number.NaN)).toBe(0)
   })
 
+  it('contextRatio 默认使用 state.contextK，显式参数仍可覆盖预算', () => {
+    let state = createAgentState(session())
+    state = applyAgentEvent(state, {
+      type: 'agent:usage',
+      session_id: 's1',
+      input: 200000,
+      output: 0,
+      cached: 0,
+    })
+    expect(contextRatio(state)).toBe(0.5)
+    expect(contextRatio(state, 100)).toBe(1)
+  })
+
+  it('beyondCompressThreshold 在占用达到 compressAtK/contextK 时为 true', () => {
+    let state = createAgentState(session())
+    expect(beyondCompressThreshold(state)).toBe(false)
+
+    state = applyAgentEvent(state, {
+      type: 'agent:usage',
+      session_id: 's1',
+      input: 299999,
+      output: 0,
+      cached: 0,
+    })
+    expect(beyondCompressThreshold(state)).toBe(false)
+
+    state = applyAgentEvent(state, {
+      type: 'agent:usage',
+      session_id: 's1',
+      input: 300000,
+      output: 0,
+      cached: 0,
+    })
+    expect(beyondCompressThreshold(state)).toBe(true)
+
+    state = applyAgentEvent(state, {
+      type: 'agent:usage',
+      session_id: 's1',
+      input: 500000,
+      output: 0,
+      cached: 0,
+    })
+    expect(beyondCompressThreshold(state)).toBe(true)
+  })
+
   it('agent:done 记录停止原因', () => {
     let state = createAgentState(session())
     state = applyAgentEvent(state, {
@@ -271,13 +414,27 @@ describe('usage、done、session_state', () => {
     expect(state.done).toEqual({ stopReason: 'max_turns' })
   })
 
-  it('agent:session_state 同步 mode/turn/maxTurns，不改 sessionId', () => {
+  it('agent:session_state 同步 mode/turn/maxTurns 与上下文预算，不改 sessionId', () => {
     let state = createAgentState(session())
     state = applyAgentEvent(state, {
       type: 'agent:session_state',
-      session: session({ session_id: 's1', mode: 'yolo', turn: 3, max_turns: 30 }),
+      session: session({
+        session_id: 's1',
+        mode: 'yolo',
+        turn: 3,
+        max_turns: 30,
+        context_k: 200,
+        compress_at_k: 150,
+      }),
     })
-    expect(state).toMatchObject({ sessionId: 's1', mode: 'yolo', turn: 3, maxTurns: 30 })
+    expect(state).toMatchObject({
+      sessionId: 's1',
+      mode: 'yolo',
+      turn: 3,
+      maxTurns: 30,
+      contextK: 200,
+      compressAtK: 150,
+    })
   })
 
   it('error 置错误，appendUserMessage 开启新一轮并清空 done/error', () => {

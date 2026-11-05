@@ -4,13 +4,12 @@ import { useI18n } from 'vue-i18n'
 
 import type { ApprovalDecision, ApprovalSource, SessionMode } from '@lc-proto'
 import {
+  beyondCompressThreshold,
   contextRatio,
+  type CompactionRecord,
   type ToolCard,
 } from '../services/agentStore'
-import {
-  DEFAULT_CONTEXT_K,
-  type AgentSessionController,
-} from '../services/agentSession'
+import type { AgentSessionController } from '../services/agentSession'
 import { isTauri } from '../services/bridge'
 
 const props = defineProps<{ controller: AgentSessionController }>()
@@ -19,18 +18,19 @@ const { t } = useI18n()
 const MODES: SessionMode[] = ['plan', 'chat', 'auto', 'yolo']
 const TOOL_PREVIEW_CHARS = 600
 const TOOL_PREVIEW_LINES = 8
+const COMPACTION_FLASH_MS = 600
 
 const state = ref(props.controller.getState())
 const unsubscribe = props.controller.subscribe(next => {
   state.value = next
 })
-onBeforeUnmount(unsubscribe)
 
 const tauri = isTauri()
 const agent = computed(() => state.value.agent)
 const messages = computed(() => agent.value?.messages ?? [])
 const tools = computed(() => agent.value?.tools ?? [])
 const approvals = computed(() => agent.value?.approvals ?? [])
+const compactions = computed(() => agent.value?.compactions ?? [])
 const streaming = computed(() => state.value.streaming)
 const approvalPending = computed(() => approvals.value.length > 0)
 const switchDisabled = computed(
@@ -48,19 +48,28 @@ const expandedTools = ref<Set<string>>(new Set())
 const streamEl = ref<HTMLElement | null>(null)
 
 const usedTokens = computed(() => {
+  // input + output 是下一次请求要带上的上下文；cached 是 input 子集，不重复计。
   const usage = agent.value?.usage
   return usage ? usage.input + usage.output : 0
 })
-const ratio = computed(() =>
-  agent.value ? contextRatio(agent.value, DEFAULT_CONTEXT_K) : 0,
-)
+const ratio = computed(() => (agent.value ? contextRatio(agent.value) : 0))
 const contextPct = computed(() => Math.round(ratio.value * 100))
-const contextWarn = computed(() => ratio.value >= 0.8)
-const contextText = computed(() => {
-  const used = usedTokens.value
-  const usedLabel = used >= 1000 ? `${(used / 1000).toFixed(1)}K` : String(used)
-  return `${usedLabel} / ${DEFAULT_CONTEXT_K}K`
+const contextBeyond = computed(() =>
+  agent.value ? beyondCompressThreshold(agent.value) : false,
+)
+const contextK = computed(() => agent.value?.contextK ?? 0)
+const compressAtK = computed(() => agent.value?.compressAtK ?? 0)
+const thresholdPct = computed(() => {
+  if (!Number.isFinite(contextK.value) || contextK.value <= 0) return 0
+  if (!Number.isFinite(compressAtK.value) || compressAtK.value <= 0) return 0
+  return Math.min(100, (compressAtK.value / contextK.value) * 100)
 })
+const contextThresholdTitle = computed(() =>
+  t('agent.contextThreshold', { threshold: compressAtK.value }),
+)
+const contextText = computed(() =>
+  agent.value ? `${formatTokens(usedTokens.value)} / ${contextK.value}k` : '—',
+)
 const turnText = computed(() =>
   agent.value ? `${agent.value.turn}/${agent.value.maxTurns}` : '—',
 )
@@ -90,6 +99,7 @@ const streamSignature = computed(() => {
     current?.tools.length ?? 0,
     lastTool?.text?.length ?? 0,
     current?.approvals.length ?? 0,
+    current?.compactions.length ?? 0,
   ].join(':')
 })
 watch(
@@ -100,6 +110,39 @@ watch(
   },
   { flush: 'post' },
 )
+
+/** 每次压缩让用量条闪一次；600ms 后移除 class（组件卸载时清理计时器）。 */
+const compactionFlash = ref(false)
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => agent.value?.compactionPulse ?? 0,
+  (pulse, previous) => {
+    if (pulse <= previous) return
+    compactionFlash.value = true
+    if (flashTimer !== null) clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => {
+      compactionFlash.value = false
+      flashTimer = null
+    }, COMPACTION_FLASH_MS)
+  },
+)
+onBeforeUnmount(() => {
+  unsubscribe()
+  if (flashTimer !== null) clearTimeout(flashTimer)
+})
+
+function formatTokens(tokens: number): string {
+  if (!Number.isFinite(tokens)) return '—'
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(Math.round(tokens))
+}
+
+function compactionTitle(record: CompactionRecord): string {
+  return t('agent.compactionTitle', {
+    count: record.removedMessages,
+    before: formatTokens(record.beforeTokens),
+    after: formatTokens(record.afterTokens),
+  })
+}
 
 function toolStatusLabel(status: ToolCard['status']): string {
   return t(`agent.tool.${status}`)
@@ -210,18 +253,29 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
     <div
       class="context-row"
-      :title="t('agent.contextHint', { k: DEFAULT_CONTEXT_K })"
+      :title="t('agent.contextHint', { k: contextK })"
     >
-      <span class="context-label">{{ t('agent.context') }}</span>
+      <span class="context-label">{{ t('agent.contextLabel') }}</span>
       <span class="context-track">
         <span
           class="context-fill"
-          :class="{ warn: contextWarn }"
+          :class="{ warn: contextBeyond, flash: compactionFlash }"
           :style="{ width: `${contextPct}%` }"
+        />
+        <span
+          v-if="agent && thresholdPct > 0"
+          class="context-threshold"
+          role="img"
+          :aria-label="contextThresholdTitle"
+          :title="contextThresholdTitle"
+          :style="{ left: `${thresholdPct}%` }"
         />
       </span>
       <span class="context-text">{{ contextText }}</span>
-      <span class="context-note">{{ t('agent.contextAssumed', { k: DEFAULT_CONTEXT_K }) }}</span>
+      <span
+        v-if="agent"
+        class="context-note"
+      >{{ contextThresholdTitle }}</span>
     </div>
 
     <div
@@ -265,6 +319,26 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           </div>
         </div>
       </template>
+
+      <section
+        v-if="compactions.length > 0"
+        class="compactions"
+        :aria-label="t('agent.compactionLabel')"
+      >
+        <div class="compactions-head">
+          {{ t('agent.compactionLabel') }}
+        </div>
+        <details
+          v-for="record in compactions"
+          :key="record.recordId"
+          class="compaction"
+        >
+          <summary class="compaction-title">
+            {{ compactionTitle(record) }}
+          </summary>
+          <pre class="compaction-summary">{{ record.summary }}</pre>
+        </details>
+      </section>
 
       <div
         v-for="tool in tools"
@@ -497,21 +571,63 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 .context-track {
+  position: relative;
   flex: 0 1 96px;
-  height: 3px;
+  height: 4px;
   background: var(--panel-3);
   border-radius: 2px;
-  overflow: hidden;
 }
 
 .context-fill {
   display: block;
   height: 100%;
+  border-radius: 2px;
   background: var(--accent);
+  transition: background-color 160ms ease, width 160ms ease;
 }
 
 .context-fill.warn {
   background: var(--yellow);
+}
+
+/* 压缩阈值刻度：绝对定位在 compressAtK / contextK 处，颜色与轨道区分。 */
+.context-threshold {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--fg-2);
+  box-shadow: 0 0 0 1px var(--bg);
+  pointer-events: none;
+  transform: translateX(-1px);
+}
+
+.context-fill.flash {
+  animation: context-flash 600ms ease-out;
+}
+
+@keyframes context-flash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  40% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-fill {
+    transition: none;
+  }
+
+  .context-fill.flash {
+    animation: none;
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+  }
 }
 
 .context-text {
@@ -521,6 +637,45 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 .context-note {
   margin-left: auto;
+}
+
+.compactions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px dashed var(--yellow);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+}
+
+.compactions-head {
+  color: var(--yellow);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.compaction {
+  padding-left: 8px;
+  border-left: 2px solid var(--yellow);
+}
+
+.compaction-title {
+  cursor: pointer;
+  color: var(--fg-2);
+  font-size: 11px;
+  user-select: none;
+}
+
+.compaction-summary {
+  margin: 4px 0 0;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .stream {

@@ -56,15 +56,31 @@ export interface AgentError {
   message: string
 }
 
+/** 一次上下文压缩的 UI 记录（docs/AGENT.md §6：每次压缩都必须留痕）。 */
+export interface CompactionRecord {
+  recordId: number
+  beforeTokens: number
+  afterTokens: number
+  removedMessages: number
+  summary: string
+}
+
 export interface AgentState {
   sessionId: string
   mode: SessionMode
   turn: number
   maxTurns: number
+  /** 模型上下文窗口（k token），用量条分母。 */
+  contextK: number
+  /** 压缩阈值（k token），用量条刻度线。 */
+  compressAtK: number
   messages: AgentMessage[]
   tools: ToolCard[]
   approvals: ApprovalCard[]
   usage: AgentUsage
+  compactions: CompactionRecord[]
+  /** 每次压缩 +1；视图层据此短暂闪烁一次，不影响记录内容。 */
+  compactionPulse: number
   done: null | { stopReason: string }
   error: null | AgentError
 }
@@ -72,16 +88,40 @@ export interface AgentState {
 /** 审批被拒绝后写入工具卡的说明文本（视图层可按需改用 i18n 文案）。 */
 export const APPROVAL_DENIED_TEXT = '已拒绝：用户未批准该工具调用'
 
+/** 契约缺失/非法时的保守预算，与 Rust 侧 Session 默认值一致。 */
+const DEFAULT_CONTEXT_K = 400
+const DEFAULT_COMPRESS_AT_K = 300
+
+function positiveK(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+/**
+ * 归一上下文预算。压缩阈值必须严格小于窗口；不满足时回落到默认值
+ * （窗口本身小于默认阈值时取窗口值，避免刻度落在条外）。
+ */
+function contextBudget(session: SessionInfo): Pick<AgentState, 'contextK' | 'compressAtK'> {
+  const contextK = positiveK(session.context_k) ? session.context_k : DEFAULT_CONTEXT_K
+  const compressAtK =
+    positiveK(session.compress_at_k) && session.compress_at_k < contextK
+      ? session.compress_at_k
+      : Math.min(DEFAULT_COMPRESS_AT_K, contextK)
+  return { contextK, compressAtK }
+}
+
 export function createAgentState(session: SessionInfo): AgentState {
   return {
     sessionId: session.session_id,
     mode: session.mode,
     turn: session.turn,
     maxTurns: session.max_turns,
+    ...contextBudget(session),
     messages: [],
     tools: [],
     approvals: [],
     usage: { input: 0, output: 0, cached: 0 },
+    compactions: [],
+    compactionPulse: 0,
     done: null,
     error: null,
   }
@@ -199,6 +239,24 @@ export function applyAgentEvent(state: AgentState, event: CoreEvent): AgentState
         mode: event.session.mode,
         turn: event.session.turn,
         maxTurns: event.session.max_turns,
+        ...contextBudget(event.session),
+      }
+    }
+
+    case 'agent:compacted': {
+      if (event.session_id !== state.sessionId) return state
+      if (state.compactions.some(record => record.recordId === event.record_id)) return state
+      const record: CompactionRecord = {
+        recordId: event.record_id,
+        beforeTokens: event.before_tokens,
+        afterTokens: event.after_tokens,
+        removedMessages: event.removed_messages,
+        summary: event.summary,
+      }
+      return {
+        ...state,
+        compactions: [...state.compactions, record],
+        compactionPulse: state.compactionPulse + 1,
       }
     }
 
@@ -277,11 +335,19 @@ export function resolveApproval(
 
 /**
  * 上下文占用比例（0..1）。input + output 是下一次请求要带上的上下文；
- * cached 是 input 的子集，不重复计入。contextK 单位为千 token，0/非法值安全返回 0。
+ * cached 是 input 的子集，不重复计入。默认用会话自身的 contextK，
+ * 显式参数保留给「按其他预算预览」的调用方。0/非法预算安全返回 0。
  */
-export function contextRatio(state: AgentState, contextK: number): number {
+export function contextRatio(state: AgentState, contextK: number = state.contextK): number {
   if (!Number.isFinite(contextK) || contextK <= 0) return 0
   const used = state.usage.input + state.usage.output
   if (!Number.isFinite(used) || used <= 0) return 0
   return Math.min(1, used / (contextK * 1000))
+}
+
+/** 占用是否已达压缩阈值；UI 用它决定用量条变黄。 */
+export function beyondCompressThreshold(state: AgentState): boolean {
+  if (!Number.isFinite(state.contextK) || state.contextK <= 0) return false
+  if (!Number.isFinite(state.compressAtK) || state.compressAtK <= 0) return false
+  return contextRatio(state) >= state.compressAtK / state.contextK
 }

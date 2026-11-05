@@ -16,6 +16,8 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
     mode: 'auto',
     turn: 0,
     max_turns: 12,
+    context_k: 400,
+    compress_at_k: 300,
     cancelled: false,
     ...overrides,
   }
@@ -220,6 +222,34 @@ describe('核心事件归并', () => {
     expect(state.agent?.usage).toEqual({ input: 120, output: 30, cached: 10 })
     expect(state.agent?.turn).toBe(2)
     expect(state.agent?.maxTurns).toBe(20)
+    expect(state.streaming).toBe(true)
+  })
+
+  it('agent:compacted 透传到 reducer：记录追加且 pulse +1，不结束本轮', async () => {
+    const h = harness()
+    await h.controller.send('hi')
+
+    h.emit({
+      type: 'agent:compacted',
+      session_id: 's1',
+      record_id: 3,
+      before_tokens: 12300,
+      after_tokens: 4100,
+      removed_messages: 7,
+      summary: '早期对话已摘要',
+    })
+
+    const state = h.controller.getState()
+    expect(state.agent?.compactions).toEqual([
+      {
+        recordId: 3,
+        beforeTokens: 12300,
+        afterTokens: 4100,
+        removedMessages: 7,
+        summary: '早期对话已摘要',
+      },
+    ])
+    expect(state.agent?.compactionPulse).toBe(1)
     expect(state.streaming).toBe(true)
   })
 

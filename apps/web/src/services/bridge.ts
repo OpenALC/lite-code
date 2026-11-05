@@ -176,6 +176,8 @@ export async function sessionCreate(mode: SessionMode): Promise<BridgeResult<Ses
           mode,
           turn: 0,
           max_turns: 25,
+          context_k: 400,
+          compress_at_k: 300,
           cancelled: false,
         },
       },
@@ -186,6 +188,10 @@ export async function sessionCreate(mode: SessionMode): Promise<BridgeResult<Ses
   if (!res.ok) return res
   if (res.data.kind !== 'session') {
     return { ok: false, error: internalError(`session_create 返回 kind=${String(res.data.kind)}`), fallback: false }
+  }
+  // 旧形状（缺上下文预算）不进入 reducer：视图层按无效会话显示错误，而不是用错误的预算。
+  if (!isSessionInfo(res.data.session)) {
+    return { ok: false, error: internalError('session_create 返回了非法 session 载荷'), fallback: false }
   }
   return { ok: true, data: res.data, fallback: false }
 }
@@ -342,6 +348,10 @@ function isSessionInfo(value: unknown): value is SessionInfo {
     isSessionMode(value.mode) &&
     isFiniteNumber(value.turn) &&
     isFiniteNumber(value.max_turns) &&
+    isFiniteNumber(value.context_k) &&
+    value.context_k >= 0 &&
+    isFiniteNumber(value.compress_at_k) &&
+    value.compress_at_k >= 0 &&
     typeof value.cancelled === 'boolean'
   )
 }
@@ -393,6 +403,15 @@ function isAgentEvent(value: unknown): value is CoreEvent {
         isFiniteNumber(value.input) &&
         isFiniteNumber(value.output) &&
         isFiniteNumber(value.cached)
+      )
+    case 'agent:compacted':
+      return (
+        isString(value.session_id) &&
+        isFiniteNumber(value.record_id) &&
+        isFiniteNumber(value.before_tokens) &&
+        isFiniteNumber(value.after_tokens) &&
+        isFiniteNumber(value.removed_messages) &&
+        isString(value.summary)
       )
     case 'agent:done':
       return isString(value.session_id) && isString(value.stop_reason)

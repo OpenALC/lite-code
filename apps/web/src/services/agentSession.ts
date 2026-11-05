@@ -12,12 +12,6 @@ import {
 } from './agentStore'
 import type { AckResult, BridgeResult, SessionResult } from './bridge'
 
-/**
- * 契约 v0.3 的 SessionInfo 不携带模型上下文大小；进度条暂按 200K 估算，
- * UI 上必须显式标注（见 AgentPanel 的 contextAssumed 文案）。
- */
-export const DEFAULT_CONTEXT_K = 200
-
 export interface AgentSessionState {
   /** 当前（或下一次创建会话时使用的）模式；会话建立后以 SessionInfo 为准。 */
   mode: SessionMode

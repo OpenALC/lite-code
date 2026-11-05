@@ -281,6 +281,8 @@ describe('Agent 会话命令', () => {
     mode: 'auto',
     turn: 0,
     max_turns: 25,
+    context_k: 400,
+    compress_at_k: 300,
     cancelled: false,
   }
 
@@ -290,7 +292,12 @@ describe('Agent 会话命令', () => {
     expect(created.fallback).toBe(true)
     if (created.ok) {
       expect(created.data.kind).toBe('session')
-      expect(created.data.session).toMatchObject({ mode: 'plan', turn: 0 })
+      expect(created.data.session).toMatchObject({
+        mode: 'plan',
+        turn: 0,
+        context_k: 400,
+        compress_at_k: 300,
+      })
     }
 
     for (const res of [
@@ -341,6 +348,27 @@ describe('Agent 会话命令', () => {
     const created = await sessionCreate('auto')
     expect(created.ok).toBe(false)
     if (!created.ok) expect(created.error.code).toBe('internal')
+  })
+
+  it('Tauri：旧形状 session（缺 context_k/compress_at_k）被拒绝', async () => {
+    const legacy = {
+      session_id: 's1',
+      mode: 'auto',
+      turn: 0,
+      max_turns: 25,
+      cancelled: false,
+    }
+    installTauri({
+      invoke: async () => ({ kind: 'session', session: legacy }) as unknown as CommandResult,
+    })
+
+    const created = await sessionCreate('auto')
+    expect(created.ok).toBe(false)
+    if (!created.ok) {
+      expect(created.error.code).toBe('internal')
+      expect(created.error.message).toContain('session')
+      expect(created.fallback).toBe(false)
+    }
   })
 
   it('Tauri：ack 命令收到非 ack 载荷时归入 internal', async () => {
@@ -460,6 +488,54 @@ describe('onCoreEvent', () => {
     callback?.('not-an-event')
 
     expect(seen).toHaveLength(0)
+  })
+
+  it('转发 agent:compacted；缺字段的压缩事件与旧形状 session_state 被丢弃', () => {
+    const fake = installEventTauri()
+    const seen: CoreEvent[] = []
+    onCoreEvent(event => seen.push(event))
+    const callback = fake.callbacks.get(1)
+
+    callback?.(
+      tauriEvent({
+        type: 'agent:compacted',
+        session_id: 's1',
+        record_id: 3,
+        before_tokens: 12300,
+        after_tokens: 4100,
+        removed_messages: 7,
+        summary: '早期对话已摘要',
+      }),
+    )
+    callback?.(
+      tauriEvent({
+        type: 'agent:compacted',
+        session_id: 's1',
+        record_id: 4,
+        before_tokens: 9000,
+        after_tokens: 3000,
+        removed_messages: 3,
+      }),
+    )
+    callback?.(
+      tauriEvent({
+        type: 'agent:session_state',
+        session: {
+          session_id: 's1',
+          mode: 'auto',
+          turn: 1,
+          max_turns: 25,
+          cancelled: false,
+        },
+      }),
+    )
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({
+      type: 'agent:compacted',
+      record_id: 3,
+      summary: '早期对话已摘要',
+    })
   })
 
   it('取消订阅：unlisten + unregisterListener，回调不再触发', async () => {
