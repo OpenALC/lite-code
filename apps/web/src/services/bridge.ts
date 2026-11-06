@@ -103,6 +103,34 @@ export interface DbExplainCommandResult {
   result: DbExplainResult
 }
 
+// 工作区全文搜索（fs_search）。不是契约 CommandResult：搜索结果是 UI 专用载荷，
+// 由薄壳直接返回、前端镜像同一形状（后端 `rename_all = "camelCase"`）。
+export interface SearchMatch {
+  line: number
+  column: number
+  length: number
+  preview: string
+  matchStart: number
+}
+
+export interface SearchFileResult {
+  path: string
+  matches: SearchMatch[]
+}
+
+export interface SearchResult {
+  files: SearchFileResult[]
+  totalMatches: number
+  truncated: boolean
+  scannedFiles: number
+}
+
+export interface SearchRequestOptions {
+  caseSensitive?: boolean
+  regex?: boolean
+  maxResults?: number
+}
+
 /** Tauri webview 注入的 IPC 内部入口（@tauri-apps/api 的 invoke 底层）。 */
 interface TauriInternals {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>
@@ -228,8 +256,42 @@ export async function readFile(root: string, path: string): Promise<BridgeResult
   return { ok: true, data: res.data, fallback: false }
 }
 
-/** 保存文本文件；真实根由 Rust 传输层注入，浏览器 dev 只返回 fallback ack。 */
-export async function writeFile(
+/**
+ * 工作区全文搜索。默认大小写不敏感、字面量匹配；`regex` 开启按正则解释。
+ * 结果由 Rust 侧遍历（尊重 .gitignore/.ignore），浏览器 dev 返回空结果并标注 fallback。
+ */
+export async function searchWorkspace(
+  query: string,
+  options: SearchRequestOptions = {},
+): Promise<BridgeResult<SearchResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { files: [], totalMatches: 0, truncated: false, scannedFiles: 0 },
+      fallback: true,
+    }
+  }
+  const tauri = internals()
+  if (!tauri) {
+    return { ok: false, error: internalError('searchWorkspace 需要 Tauri 运行时'), fallback: false }
+  }
+  try {
+    const raw = await tauri.invoke<SearchResult>('fs_search', {
+      query,
+      case_sensitive: options.caseSensitive ?? false,
+      regex: options.regex ?? false,
+      max_results: options.maxResults ?? 500,
+    })
+    if (typeof raw !== 'object' || raw === null || !Array.isArray(raw.files)) {
+      return { ok: false, error: internalError('fs_search 返回了非预期载荷'), fallback: false }
+    }
+    return { ok: true, data: raw, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
+/** 保存文本文件；真实根由 Rust 传输层注入，浏览器 dev 只返回 fallback ack。 */export async function writeFile(
   path: string,
   content: string,
 ): Promise<BridgeResult<AckResult>> {

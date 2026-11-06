@@ -8,6 +8,7 @@ import CodeEditor from './components/CodeEditor.vue'
 import DbPanel from './components/DbPanel.vue'
 import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
+import SearchView from './components/SearchView.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import TabBar from './components/TabBar.vue'
 import TaskList from './components/TaskList.vue'
@@ -52,9 +53,10 @@ import { createGitController } from './services/gitStore'
 import { LAYOUT_LIMITS, clamp } from './services/layoutProfile'
 import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { createTaskController } from './services/taskStore'
-import { activateTab, closeTab, tabsStore } from './services/tabs'
+import { activateTab, closeTab, openTab, renameTab, tabsStore } from './services/tabs'
 import {
   initUiPrefs,
+  setLocale,
   setZoom,
   subscribePrefs,
   toggleTheme,
@@ -169,8 +171,11 @@ function startResize(target: ResizeTarget, event: PointerEvent): void {
 
 // 工作区与项目名
 const projectRoot = ref(new URLSearchParams(window.location.search).get('root') ?? '')
+const treeRefresh = ref(0)
 const projectName = computed(() => {
   if (!projectRoot.value) return t('explorer.project')
+  // 浏览器演示用占位根 'workspace'，不应把它当成项目名展示。
+  if (!isTauri() && projectRoot.value === 'workspace') return t('explorer.project')
   const parts = projectRoot.value.replace(/\\/g, '/').split('/').filter(Boolean)
   return parts.length > 0 ? parts[parts.length - 1] : projectRoot.value
 })
@@ -200,6 +205,7 @@ function activateEditor(id: string): void {
 
 // 顶部快速打开 / 命令面板
 const quickQuery = ref('')
+const searchSeed = ref('')
 const quickInput = ref<HTMLInputElement | null>(null)
 const quickOpen = ref(false)
 const quickIndex = ref(0)
@@ -213,7 +219,7 @@ interface QuickItem {
 
 const commands = computed<QuickItem[]>(() => [
   { id: 'cmd:workspace', label: t('menu.openWorkspace'), detail: 'Ctrl+O', action: openWorkspaceDialog },
-  { id: 'cmd:settings', label: t('activity.settings'), detail: 'Ctrl+,', action: () => { sidebarView.value = 'settings' } },
+  { id: 'cmd:settings', label: t('activity.settings'), detail: 'Ctrl+,', action: openSettings },
   { id: 'cmd:git', label: t('activity.git'), detail: '', action: () => { rightTab.value = 'git'; rightVisible.value = true; void refreshGit() } },
   { id: 'cmd:db', label: t('activity.db'), detail: '', action: () => { rightTab.value = 'db'; rightVisible.value = true; void dbSession.refresh() } },
   { id: 'cmd:agent', label: t('activity.agent'), detail: '', action: () => { rightTab.value = 'agent'; rightVisible.value = true } },
@@ -233,7 +239,18 @@ const quickResults = computed<QuickItem[]>(() => {
       action: () => activateEditor(tab.id),
     }))
   const cmds = commands.value.filter(cmd => cmd.label.toLowerCase().includes(query))
-  return [...files, ...cmds].slice(0, 8)
+  const queryText = quickQuery.value.trim()
+  const searchInFiles: QuickItem = {
+    id: 'cmd:searchFiles',
+    label: t('search.searchInFiles', { query: queryText }),
+    detail: '',
+    action: () => {
+      searchSeed.value = queryText
+      sidebarVisible.value = true
+      sidebarView.value = 'search'
+    },
+  }
+  return [...files, ...cmds, searchInFiles].slice(0, 8)
 })
 
 watch(quickResults, list => {
@@ -304,10 +321,27 @@ function runMenu(action: () => void | Promise<void>): void {
   void action()
 }
 
+// 设置作为编辑器区的独立页签（VS Code 行为），不在窄侧栏里硬塞表单。
+const SETTINGS_TAB_ID = '__settings__'
+function openSettings(): void {
+  openTab({
+    id: SETTINGS_TAB_ID,
+    title: t('activity.settings'),
+    path: null,
+    content: '',
+  })
+}
+
+watch(locale, () => {
+  renameTab(SETTINGS_TAB_ID, t('activity.settings'))
+})
+
 // 主题 / 缩放 / 语言
 function changeLocale(): void {
-  locale.value = prefs.value.locale
-  document.documentElement.lang = prefs.value.locale
+  const next = prefs.value.locale === 'zh-CN' ? 'en' : 'zh-CN'
+  setLocale(next)
+  locale.value = next
+  document.documentElement.lang = next
 }
 
 function refreshGit(): Promise<void> {
@@ -374,6 +408,7 @@ onMounted(() => {
   document.documentElement.dataset.theme = prefs.value.theme
   locale.value = prefs.value.locale
   document.documentElement.lang = prefs.value.locale
+  renameTab(SETTINGS_TAB_ID, t('activity.settings'))
   window.addEventListener('keydown', onKey)
   window.addEventListener('click', () => { openMenu.value = null })
   void taskSession.refresh()
@@ -597,9 +632,9 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="act-btn"
-          :class="{ active: sidebarView === 'settings' && sidebarVisible }"
+          :class="{ active: activeTabId === '__settings__' }"
           :title="t('activity.settings')"
-          @click="selectSidebar('settings')"
+          @click="openSettings"
         >
           <AppIcon name="settings" />
         </button>
@@ -637,7 +672,7 @@ onBeforeUnmount(() => {
               type="button"
               class="icon-btn"
               :title="t('explorer.refresh')"
-              @click="openWorkspaceDialog"
+              @click="treeRefresh += 1"
             >
               <AppIcon
                 name="refresh"
@@ -690,41 +725,19 @@ onBeforeUnmount(() => {
               {{ t('explorer.noEditors') }}
             </div>
           </div>
-          <div class="section-title tree-title">
-            <span>{{ projectName }}</span>
-          </div>
           <div class="tree-body">
-            <FileTree :root="projectRoot" />
+            <FileTree
+              :root="projectRoot"
+              :refresh-token="treeRefresh"
+            />
           </div>
         </div>
 
-        <div
+        <SearchView
           v-else-if="sidebarView === 'search'"
-          class="view search-view"
-        >
-          <div class="section-title">
-            {{ t('activity.search') }}
-          </div>
-          <div class="search-hint">
-            {{ t('search.hint') }}
-          </div>
-          <button
-            v-for="item in quickResults"
-            :key="item.id"
-            type="button"
-            class="search-result"
-            @click="runQuick(item)"
-          >
-            <span>{{ item.label }}</span>
-            <small>{{ item.detail }}</small>
-          </button>
-          <div
-            v-if="quickQuery && quickResults.length === 0"
-            class="empty-line"
-          >
-            {{ t('search.noResults') }}
-          </div>
-        </div>
+          :root="projectRoot"
+          :seed="searchSeed"
+        />
 
         <div
           v-else-if="sidebarView === 'tasks'"
@@ -734,13 +747,6 @@ onBeforeUnmount(() => {
             :controller="taskSession"
             @created="selectRight('workbench')"
           />
-        </div>
-
-        <div
-          v-else
-          class="view settings-view"
-        >
-          <SettingsPanel />
         </div>
       </aside>
 
@@ -755,7 +761,8 @@ onBeforeUnmount(() => {
       <main class="editor-col">
         <TabBar />
         <div class="editor-card">
-          <CodeEditor v-if="openTabs.length > 0" />
+          <SettingsPanel v-if="activeTabId === '__settings__'" />
+          <CodeEditor v-else-if="openTabs.length > 0" />
           <div
             v-else
             class="welcome"
@@ -880,7 +887,7 @@ onBeforeUnmount(() => {
     </div>
 
     <footer class="statusbar">
-      <span class="status-item">{{ t('status.branch') }} main</span>
+      <span class="status-item">⎇ {{ t('status.branch') }}</span>
       <span class="status-item dim">Node —</span>
       <span class="status-item dim">MCP 0</span>
       <TaskStatusBar
@@ -1206,10 +1213,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 .sidebar-actions {
@@ -1310,6 +1316,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   overflow: hidden;
+  border-top: 1px solid var(--border);
 }
 
 .tree-body :deep(.tree) {
@@ -1320,39 +1327,6 @@ onBeforeUnmount(() => {
   padding: 8px 10px;
   color: var(--fg-faint);
   font-size: 11px;
-}
-
-.search-view {
-  padding: 0 10px 10px;
-}
-
-.search-hint {
-  color: var(--fg-faint);
-  font-size: 11px;
-  line-height: 1.5;
-  margin-bottom: 8px;
-}
-
-.search-result {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  padding: 7px 8px;
-  border-radius: var(--r-sm);
-  text-align: left;
-  font-size: 12px;
-}
-
-.search-result:hover {
-  background: var(--panel-3);
-}
-
-.search-result small {
-  color: var(--fg-faint);
-  font-family: var(--font-mono);
-  font-size: 10px;
 }
 
 .tasks-view,

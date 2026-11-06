@@ -484,6 +484,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 <style scoped>
 .agent-body {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -493,15 +494,19 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .agent-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px 6px;
   flex-wrap: wrap;
+  min-width: 0;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
 
 .mode-group {
   display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   gap: 2px;
+  min-width: 0;
   padding: 2px;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -513,6 +518,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   border-radius: 3px;
   color: var(--fg-dim);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .mode-btn:hover:not(:disabled) {
@@ -540,12 +546,15 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 .bar-meta {
+  flex: 0 0 auto;
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
   color: var(--fg-faint);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .stop {
@@ -564,7 +573,9 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .context-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
   padding: 0 8px 6px;
   color: var(--fg-faint);
   font-size: 10px;
@@ -573,6 +584,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .context-track {
   position: relative;
   flex: 0 1 96px;
+  min-width: 40px;
   height: 4px;
   background: var(--panel-3);
   border-radius: 2px;
@@ -633,10 +645,12 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .context-text {
   color: var(--fg-dim);
   font-family: var(--font-mono);
+  white-space: nowrap;
 }
 
 .context-note {
   margin-left: auto;
+  white-space: nowrap;
 }
 
 .compactions {

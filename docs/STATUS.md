@@ -1,12 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-06，main HEAD：`db15b4f`；版本 `0.6.1-preview.4`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-06，main HEAD：preview.5 发布提交（见 `git log`）；版本 `0.6.1-preview.5`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`v0.6.1-preview.5` 构建/发布中。
 
 ## 当前位置一览
 
@@ -21,8 +22,8 @@
 | 大文件分级 | ✅ >5MB 降级能力、>20MB 只读预览并阻止保存 |
 | per-tab model | ✅ 每标签独立 Monaco model，undo/光标/滚动保留；关闭即释放 |
 | dirty 基线 | ✅ `savedContent` 差异推导 dirty；撤销回已保存内容自动变干净 |
-| 布局 | ✅ 侧栏/Agent/底部可拖拽、可折叠，localStorage 持久化；dockview 留 P4 |
-| 打开工作区 | ✅ 契约 v0.2 `workspace_open`；根由 Rust 状态持有并持久化；当前为路径输入，原生选择器待 P2 |
+| 布局 | ✅ 活动栏 + 侧栏 + 编辑器 + 右侧功能栏 + 底部面板；分隔条可拖拽、可折叠；localStorage 持久化 |
+| 打开工作区 | ✅ 契约 v0.2 `workspace_open`；根由 Rust 状态持有并持久化；`workspace_pick` 原生文件夹选择器；侧栏显示项目名 |
 | 窗口生命周期 | ✅ 关闭销毁 WebView、托盘/单实例按配置重建；标签内容在销毁前持久化并在重建后恢复 |
 | 构建正确性 | ✅ `lc-desktop` 启用 `tauri/custom-protocol`；perf.yml 先构建前端 dist，避免空 WebView |
 | 性能 | ✅ 托盘 RSS 29.5MB / 冷启动 48ms / 热启动 47ms / 20 次开关残留 0；activeRss 无脚本入口未测 |
@@ -71,12 +72,14 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `v0.6.1-preview.3` 已发布；`v0.6.1-preview.4` 将包含 UI 重构与多数据库驱动 |
-| UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
+| P6 发布 | ✅ `v0.6.1-preview.4` 已发布（10 资产）；`v0.6.1-preview.5` 发布中 |
+| UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
+| 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限）+ 搜索侧栏 + 命中跳转编辑器行 |
+| 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `4780f68` 全绿（含 audit / updater manifest / arm64 release） |
+| main CI | ✅ 上一轮 `4780f68` 全绿；preview.5 本地门禁全绿，等待推送后 CI |
 
 ## 本轮完成
 
@@ -223,6 +226,21 @@
 - 依赖：`dompurify` 覆盖至 3.4.17，`pnpm audit --prod` 清零。
 - 仍待 tag 验证：arm64 runner、release 资产命名、`latest.json` 上传、签名关闭时的 `signed:false` 提示。
 
+## preview.5：UI 打磨与工作区搜索
+
+1. **全文搜索**：`fs_search`（lc-core `fs::search` + Tauri 命令 + bridge + `SearchView`）。
+   - 字面量/正则、大小写开关；`ignore` 遍历尊重 `.gitignore` / `.ignore`。
+   - 2 MiB / 二进制跳过，单文件 100 行、总计 500 行；预览按字符窗口截取并补省略号。
+   - 侧栏分组、命中高亮、行号；点击打开文件并通过 `editorReveal` 定位到命中行。
+   - 顶部快速打开新增“在文件中搜索”，把关键词带入搜索侧栏（`seed` 立即生效）。
+2. **设置页**：从窄侧栏移到编辑器区独立页签（`__settings__`），关闭/切换行为与普通标签一致。
+   - 字号 11–20、Tab 2/4/8、自动换行；`CodeEditor` 实时应用，已有 model 同步 tabSize。
+   - 语言切换同步设置页签标题；版本号由 Vite `__APP_VERSION__` 注入。
+3. **修复**：刷新按钮误开工作区弹窗、语言按钮无效、状态栏 “main main”、项目名大写/重复、
+   Agent 头部裁切、中文界面残留英文、minimap 视觉噪声。
+4. **验证**：Tauri/WebView2 真机通过原生选择器打开工作区、搜索命中跳转、右键菜单、
+   拖拽移动、主题/语言/缩放、设置页；Git/DB 在右栏不遮挡编辑器。
+
 ## P6 外部依赖（阻塞项）
 
 P6 出口要求包含无法在本会话/本机完成的项，需维护者或外部环境：
@@ -242,7 +260,7 @@ P6 出口要求包含无法在本会话/本机完成的项，需维护者或外�
 2. P5 出口验收：真实 SQLite 项目「schema → 查询 → 审批更新 → 再查验证」；10 万行样本/handle；同连接写串行。
 3. 干净 Win11 无 Node 的人工验收（代码路径已有 core/UI 测试覆盖）。
 4. P6：稳定化、鸿蒙与正式包。
-5. 已知限制：pg/mysql/mssql 驱动未打包；db_query 仅 SQLite 且无分页 handle；MCP 仅 stdio 与单工具槽位；真实 OpenAI/Anthropic 端点兼容性未覆盖。
+5. 已知限制：pg/mysql/mssql 驱动已打包但未做真实服务器端到端；db_query 无分页 handle；搜索不支持替换；MCP 仅 stdio 与单工具槽位；真实 OpenAI/Anthropic 端点兼容性未覆盖。
 
 ## 本地验证命令（与 CI 等价）
 
@@ -269,5 +287,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 405 · lc-cli 33 · lc-proto 10 · lc-desktop 82 · web 298（15 文件）· 合计 **830**（含 `db_agent` 集成 2 项）。
+lc-core 414 · lc-cli 33 · lc-proto 10 · lc-desktop 82 · web 315（17 文件）· 合计 **856**（含 `db_agent` 集成 2 项、`fs::search` 9 项）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。

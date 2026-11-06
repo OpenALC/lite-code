@@ -4,10 +4,11 @@ import { useI18n } from 'vue-i18n'
 import type * as monacoNs from 'monaco-editor'
 
 import { writeFile } from '../services/bridge'
+import { currentReveal, subscribeReveal } from '../services/editorReveal'
 import { languageForPath } from '../services/editorLanguage'
 import type { EditorFileStrategy } from '../services/largeFile'
 import { activeTab, markSaved, tabsStore, updateContent } from '../services/tabs'
-import { subscribePrefs, uiPrefs } from '../services/themeStore'
+import { subscribePrefs, uiPrefs, type UiPrefs } from '../services/themeStore'
 import type { Tab, TabsState } from '../services/tabs'
 
 const { t } = useI18n()
@@ -16,7 +17,8 @@ const host = ref<HTMLElement | null>(null)
 let editor: monacoNs.editor.IStandaloneCodeEditor | null = null
 let monacoRef: typeof monacoNs | null = null
 let unsubTabs: (() => void) | null = null
-let unsubTheme: (() => void) | null = null
+let unsubPrefs: (() => void) | null = null
+let unsubReveal: (() => void) | null = null
 let removeContext: (() => void) | null = null
 let currentTabId: string | null = null
 /** setValue 触发的 onDidChangeContent 不应回写 store */
@@ -58,6 +60,7 @@ function ensureModel(tab: Tab): monacoNs.editor.ITextModel {
     languageForPath(tab.path ?? tab.title),
     modelUri(tab),
   )
+  model.updateOptions({ tabSize: uiPrefs().tabSize })
   modelDisposables.set(
     tab.id,
     model.onDidChangeContent(() => {
@@ -75,8 +78,36 @@ function applyStrategy(strategy: EditorFileStrategy): void {
     readOnly: strategy.readOnly,
     occurrencesHighlight: strategy.occurrences ? 'singleFile' : 'off',
     folding: strategy.folding,
-    minimap: { enabled: strategy.minimap },
+    minimap: {
+      enabled: strategy.minimap,
+      renderCharacters: false,
+      maxColumn: 60,
+      showSlider: 'mouseover',
+    },
   })
+}
+
+/** 搜索/问题面板的"打开到某行"：只对当前激活标签生效，行号做模型边界收敛。 */
+function applyReveal(): void {
+  const target = currentReveal()
+  if (!editor || !target || target.tabId !== currentTabId) return
+  const model = editor.getModel()
+  if (!model) return
+  const line = Math.min(Math.max(1, target.line), model.getLineCount())
+  const column = Math.min(Math.max(1, target.column), model.getLineMaxColumn(line))
+  editor.setPosition({ lineNumber: line, column })
+  editor.revealLineInCenter(line)
+  editor.focus()
+}
+
+/** 字体/换行是编辑器级选项；Tab 宽度是 model 级选项，需覆盖已有与后续 model。 */
+function applyEditorPrefs(prefs: UiPrefs): void {
+  editor?.updateOptions({
+    fontSize: prefs.fontSize,
+    lineHeight: Math.round(prefs.fontSize * 1.6),
+    wordWrap: prefs.wordWrap,
+  })
+  for (const model of models.values()) model.updateOptions({ tabSize: prefs.tabSize })
 }
 
 function disposeMissingModels(state: TabsState): void {
@@ -204,11 +235,14 @@ onMounted(async () => {
     },
   })
 
+  const initialPrefs = uiPrefs()
   editor = monaco.editor.create(host.value!, {
     model: null,
-    theme: uiPrefs().theme === 'light' ? 'lite-code-light' : 'lite-code-dark',
-    fontSize: 13,
-    lineHeight: 21,
+    theme: initialPrefs.theme === 'light' ? 'lite-code-light' : 'lite-code-dark',
+    fontSize: initialPrefs.fontSize,
+    lineHeight: Math.round(initialPrefs.fontSize * 1.6),
+    wordWrap: initialPrefs.wordWrap,
+    tabSize: initialPrefs.tabSize,
     minimap: { enabled: false },
     automaticLayout: true,
     renderWhitespace: 'selection',
@@ -218,8 +252,10 @@ onMounted(async () => {
   // 窗口级监听：焦点在文件树/标签栏时 Ctrl+S 也生效。
   window.addEventListener('keydown', onSaveKeydown)
   unsubTabs = tabsStore.subscribe(syncFromStore)
-  unsubTheme = subscribePrefs(prefs => {
+  unsubReveal = subscribeReveal(() => applyReveal())
+  unsubPrefs = subscribePrefs(prefs => {
     monacoRef?.editor.setTheme(prefs.theme === 'light' ? 'lite-code-light' : 'lite-code-dark')
+    applyEditorPrefs(prefs)
   })
 
   // 自定义中文右键菜单：capture 阶段拦截 Monaco 默认英文菜单。
@@ -236,12 +272,14 @@ onMounted(async () => {
   removeContext = () => host.value?.removeEventListener('contextmenu', openMenu, true)
 
   syncFromStore(tabsStore.get())
+  applyReveal()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onSaveKeydown)
   unsubTabs?.()
-  unsubTheme?.()
+  unsubPrefs?.()
+  unsubReveal?.()
   removeContext?.()
   editor?.dispose()
   editor = null

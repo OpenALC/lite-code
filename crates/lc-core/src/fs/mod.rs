@@ -14,6 +14,7 @@
 
 pub mod listing;
 pub mod paths;
+pub mod search;
 pub mod walk;
 pub mod watch;
 pub mod write;
@@ -23,6 +24,10 @@ mod tests;
 
 pub use listing::{DirLevel, read_dir_level};
 pub use paths::{PathResolver, RealPathResolver, display_path, ensure_within_root};
+pub use search::{
+    DEFAULT_MAX_RESULTS, SearchFileResult, SearchMatch, SearchOptions, SearchResult,
+    search_workspace,
+};
 pub use walk::walk_tree;
 pub use watch::{DEBOUNCE, FileWatcher, WatchEvent, WatchSink};
 pub use write::write_file_text;
@@ -42,6 +47,9 @@ pub enum FsError {
     NotFound { path: String },
     #[error("io error on {path}: {message}")]
     Io { path: String, message: String },
+    /// 调用参数非法（如无效的搜索正则），映射契约 `InvalidArgument`。
+    #[error("invalid argument: {message}")]
+    InvalidArgument { message: String },
 }
 
 impl FsError {
@@ -52,6 +60,7 @@ impl FsError {
             FsError::PathOutsideRoot { .. } => ErrorCode::PathOutsideRoot,
             FsError::NotFound { .. } => ErrorCode::NotFound,
             FsError::Io { .. } => ErrorCode::Io,
+            FsError::InvalidArgument { .. } => ErrorCode::InvalidArgument,
         }
     }
 

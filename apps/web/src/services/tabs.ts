@@ -155,8 +155,19 @@ export function activateTab(id: string): boolean {
   return true
 }
 
-/** dirty 跟踪：编辑内容变化置 true，保存后置 false。id 不存在返回 false。值不变时不发通知。 */
-export function setDirty(id: string, dirty: boolean): boolean {
+/** 仅更新展示标题（语言切换等）；路径、内容、dirty 不变。 */
+export function renameTab(id: string, title: string): boolean {
+  const state = tabsStore.get()
+  const tab = state.tabs.find(t => t.id === id)
+  if (!tab || tab.title === title) return false
+  tabsStore.set({
+    ...state,
+    tabs: state.tabs.map(t => (t.id === id ? { ...t, title } : t)),
+  })
+  return true
+}
+
+/** dirty 跟踪：编辑内容变化置 true，保存后置 false。id 不存在返回 false。值不变时不发通知。 */export function setDirty(id: string, dirty: boolean): boolean {
   const state = tabsStore.get()
   const index = state.tabs.findIndex(t => t.id === id)
   if (index < 0) return false

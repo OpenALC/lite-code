@@ -34,6 +34,7 @@ import {
   readFile,
   readDir,
   resolveApproval,
+  searchWorkspace,
   sessionCreate,
   setNodeManual,
   taskApply,
@@ -172,6 +173,72 @@ describe('fallback 占位（浏览器 dev）', () => {
         expect(res.data.status.kind).toBe('need_manual')
       }
     }
+  })
+
+  it('searchWorkspace 返回空结果并标注 fallback', async () => {
+    const res = await searchWorkspace('needle')
+    expect(res.ok).toBe(true)
+    expect(res.fallback).toBe(true)
+    if (res.ok) {
+      expect(res.data.files).toEqual([])
+      expect(res.data.totalMatches).toBe(0)
+      expect(res.data.truncated).toBe(false)
+    }
+  })
+})
+
+describe('工作区搜索（fs_search）', () => {
+  it('Tauri 路径传 snake_case 参数并原样返回结果', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return {
+          files: [
+            {
+              path: 'D:/proj/a.txt',
+              matches: [{ line: 2, column: 3, length: 5, preview: 'xxneedle', matchStart: 2 }],
+            },
+          ],
+          totalMatches: 1,
+          truncated: false,
+          scannedFiles: 3,
+        }
+      },
+    })
+    const res = await searchWorkspace('needle', { caseSensitive: true, regex: true, maxResults: 20 })
+    expect(res.ok).toBe(true)
+    expect(calls[0].cmd).toBe('fs_search')
+    expect(calls[0].args).toEqual({
+      query: 'needle',
+      case_sensitive: true,
+      regex: true,
+      max_results: 20,
+    })
+    if (res.ok) {
+      expect(res.data.totalMatches).toBe(1)
+      expect(res.data.files[0].matches[0].line).toBe(2)
+    }
+  })
+
+  it('命令错误转成 ErrorBody 分支', async () => {
+    installTauri({
+      invoke: async () => {
+        throw { code: 'invalid_argument', message: '无效的搜索正则' }
+      },
+    })
+    const res = await searchWorkspace('(')
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.error.code).toBe('invalid_argument')
+    }
+  })
+
+  it('畸形载荷视为 internal 错误', async () => {
+    installTauri({ invoke: async () => ({ nope: true }) })
+    const res = await searchWorkspace('needle')
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error.code).toBe('internal')
   })
 })
 

@@ -3,15 +3,23 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import {
+  FONT_SIZE_DEFAULT,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  TAB_SIZES,
   resetZoom,
+  setFontSize,
   setLocale,
+  setTabSize,
   setTheme,
+  setWordWrap,
   subscribePrefs,
   toggleTheme,
   uiPrefs,
   zoomBy,
 } from '../services/themeStore'
 
+const appVersion = __APP_VERSION__
 const { t, locale } = useI18n()
 const prefs = ref(uiPrefs())
 const unsub = subscribePrefs(next => {
@@ -20,6 +28,7 @@ const unsub = subscribePrefs(next => {
 onBeforeUnmount(unsub)
 
 const zoomLabel = computed(() => `${Math.round(prefs.value.zoom * 100)}%`)
+const fontSizeLabel = computed(() => `${prefs.value.fontSize} px`)
 
 function changeLocale(value: string): void {
   const next = value === 'en' ? 'en' : 'zh-CN'
@@ -106,15 +115,63 @@ function changeLocale(value: string): void {
       <h3>{{ t('settings.editor') }}</h3>
       <div class="row">
         <span>{{ t('settings.font') }}</span>
-        <code>JetBrains Mono / 13px</code>
+        <div class="stepper">
+          <button
+            type="button"
+            :disabled="prefs.fontSize <= FONT_SIZE_MIN"
+            @click="setFontSize(prefs.fontSize - 1)"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            class="stepper-value"
+            :title="t('settings.resetFontSize')"
+            @click="setFontSize(FONT_SIZE_DEFAULT)"
+          >
+            {{ fontSizeLabel }}
+          </button>
+          <button
+            type="button"
+            :disabled="prefs.fontSize >= FONT_SIZE_MAX"
+            @click="setFontSize(prefs.fontSize + 1)"
+          >
+            +
+          </button>
+        </div>
       </div>
       <div class="row">
         <span>{{ t('settings.tabSize') }}</span>
-        <code>2</code>
+        <div class="segmented compact">
+          <button
+            v-for="size in TAB_SIZES"
+            :key="size"
+            type="button"
+            :class="{ active: prefs.tabSize === size }"
+            @click="setTabSize(size)"
+          >
+            {{ size }}
+          </button>
+        </div>
       </div>
       <div class="row">
         <span>{{ t('settings.wordWrap') }}</span>
-        <code>off</code>
+        <div class="segmented">
+          <button
+            type="button"
+            :class="{ active: prefs.wordWrap === 'off' }"
+            @click="setWordWrap('off')"
+          >
+            {{ t('settings.off') }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: prefs.wordWrap === 'on' }"
+            @click="setWordWrap('on')"
+          >
+            {{ t('settings.on') }}
+          </button>
+        </div>
       </div>
     </section>
 
@@ -138,7 +195,7 @@ function changeLocale(value: string): void {
       <h3>{{ t('settings.about') }}</h3>
       <div class="row">
         <span>Lite Code</span>
-        <code>{{ t('settings.version') }} 0.6.1-preview.3</code>
+        <code>{{ t('settings.version') }} {{ appVersion }}</code>
       </div>
       <p class="hint">
         {{ t('settings.aboutHint') }}
@@ -151,10 +208,13 @@ function changeLocale(value: string): void {
 .settings {
   height: 100%;
   overflow: auto;
-  padding: 12px;
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
 }
 
 .card {
@@ -215,7 +275,8 @@ code {
 }
 
 .segmented,
-.zoom {
+.zoom,
+.stepper {
   display: flex;
   align-items: center;
   padding: 2px;
@@ -225,7 +286,8 @@ code {
 }
 
 .segmented button,
-.zoom button {
+.zoom button,
+.stepper button {
   height: 24px;
   min-width: 54px;
   padding: 0 8px;
@@ -234,14 +296,25 @@ code {
   font-size: 11px;
 }
 
-.zoom button {
+.zoom button,
+.stepper button {
   min-width: 26px;
 }
 
+.segmented.compact button {
+  min-width: 38px;
+}
+
 .segmented button.active,
-.zoom-value {
+.zoom-value,
+.stepper-value {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.stepper button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .ghost {

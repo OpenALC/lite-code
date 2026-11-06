@@ -36,7 +36,7 @@ import { openTab, relocateTabs, removeTabsUnder } from '../services/tabs'
 // 右键菜单与拖拽移动只改文件树；移动/删除成功后由 tabs 服务同步打开标签，
 // 避免标签继续指向旧路径。
 
-const props = defineProps<{ root: string }>()
+const props = defineProps<{ root: string; refreshToken?: number }>()
 const { t } = useI18n()
 
 const state = ref<TreeState>(createTreeState(props.root, false))
@@ -101,6 +101,22 @@ watch(
     actionError.value = null
     state.value = reRoot(state.value, next)
     fileError.value = null
+    void loadRoot()
+  },
+)
+
+// 外部改动（新建/删除文件、生成产物）后由工具栏刷新：丢弃层缓存并重新读根，
+// 展开状态一并重置，避免显示已删除目录的陈旧内容。
+watch(
+  () => props.refreshToken,
+  () => {
+    if (props.refreshToken === undefined) return
+    closeMenu()
+    dragSource.value = null
+    dropTargetPath.value = null
+    actionError.value = null
+    fileError.value = null
+    state.value = createTreeState(props.root, !isTauri())
     void loadRoot()
   },
 )

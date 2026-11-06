@@ -29,7 +29,8 @@ use db::{
 use git::{git_commit, git_diff, git_log, git_stage, git_status, git_unstage};
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_workspace_root, store_workspace_root};
 use lc_core::fs::{
-    DirLevel, FsError, RealPathResolver, ensure_within_root, read_dir_level, write_file_text,
+    DirLevel, FsError, RealPathResolver, SearchOptions, SearchResult, ensure_within_root,
+    read_dir_level, search_workspace, write_file_text,
 };
 use lc_core::runtime::manual::{self, ManualError};
 use lc_core::runtime::portable::{self, VersionSpec};
@@ -376,6 +377,29 @@ fn fs_reveal(
     Ok(CommandResult::Ack)
 }
 
+/// 工作区全文搜索（搜索侧栏）。默认大小写不敏感、字面量匹配；`regex=true`
+/// 时按正则解释，非法正则返回 `invalid_argument`。遍历与忽略规则在 lc-core，
+/// 薄壳只做参数收敛与错误映射。
+#[tauri::command]
+fn fs_search(
+    query: String,
+    case_sensitive: Option<bool>,
+    regex: Option<bool>,
+    max_results: Option<usize>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<SearchResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
+    let options = SearchOptions {
+        query,
+        case_sensitive: case_sensitive.unwrap_or(false),
+        regex: regex.unwrap_or(false),
+        max_results: max_results
+            .unwrap_or(lc_core::fs::DEFAULT_MAX_RESULTS)
+            .clamp(1, 5000),
+    };
+    search_workspace(&root, &RealPathResolver, &options).map_err(|e| fs_error_body(&e))
+}
+
 // ==== 纯逻辑层（无 Tauri 运行时依赖，单测直接覆盖） ====
 
 /// 列一层目录：lc-core 校验 + 列举，失败映射为契约 `ErrorBody`。
@@ -683,6 +707,7 @@ pub fn run() {
             fs_delete,
             fs_rename,
             fs_reveal,
+            fs_search,
             session_create,
             agent_send,
             agent_cancel,

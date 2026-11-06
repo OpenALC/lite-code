@@ -72,6 +72,7 @@ fn fs_error(error: FsError) -> ToolError {
         FsError::PathOutsideRoot { path } => ToolError::PathOutsideRoot(path),
         FsError::NotFound { path } => ToolError::NotFound(path),
         FsError::Io { path, message } => ToolError::Io(format!("{path}: {message}")),
+        FsError::InvalidArgument { message } => ToolError::InvalidArgs(message),
     }
 }
 

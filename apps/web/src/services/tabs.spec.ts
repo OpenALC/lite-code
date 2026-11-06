@@ -10,6 +10,7 @@ import {
   openTab,
   relocateTabs,
   removeTabsUnder,
+  renameTab,
   setDirty,
   tabsStore,
   updateContent,
@@ -93,8 +94,27 @@ describe('activateTab', () => {
   })
 })
 
-describe('setDirty', () => {
-  it('标记与清除', () => {
+describe('renameTab', () => {
+  it('只更新标题，内容与 dirty 不变', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'x' })
+    expect(renameTab('a.rs', '设置')).toBe(true)
+    const tab = tabsStore.get().tabs.find(t => t.id === 'a.rs')
+    expect(tab?.title).toBe('设置')
+    expect(tab?.content).toBe('x')
+    expect(tab?.dirty).toBe(false)
+  })
+
+  it('标题相同或 id 不存在时不发通知', () => {
+    const seen: TabsState[] = []
+    const unsub = tabsStore.subscribe(s => seen.push(s))
+    expect(renameTab('sample', 'main.rs')).toBe(false)
+    expect(renameTab('ghost.rs', 'x')).toBe(false)
+    expect(seen).toEqual([])
+    unsub()
+  })
+})
+
+describe('setDirty', () => {  it('标记与清除', () => {
     expect(setDirty('sample', true)).toBe(true)
     expect(tabsStore.get().tabs.find(t => t.id === 'sample')?.dirty).toBe(true)
     expect(setDirty('sample', false)).toBe(true)
