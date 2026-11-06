@@ -3,9 +3,10 @@
 //! [`DbService`] 把 [`DbSidecar`] 与连接配置组合在一起：
 //! - 配置持久化到 `data_dir()/db.json`，写入复用
 //!   [`crate::config::write_atomic`]（临时文件 + rename，并保留 `.bak`）；
-//! - 配置结构里没有密码字段，`secret_ref` 只是密钥引用，落盘内容不包含密码；
+//! - 配置结构里没有密码字段，`secret_ref` 只是密钥引用（`env:NAME`），
+//!   落盘内容不包含密码；密码由 sidecar 从环境变量解析；
 //! - 用户 SQL 一律先过 [`SqlGuard`]，再把 `guarded.sql` 交给 sidecar；
-//!   只读连接由 sidecar 的 SQLite `readOnly` 句柄再拒绝一次；
+//!   只读连接由 bridge 的驱动级只读设置再拒绝一次；
 //! - Node 不可用时 list/save/delete 仍然可用，connect/query 返回
 //!   [`DbServiceError::DbUnavailable`]。
 //!
@@ -22,7 +23,7 @@ use lc_proto::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{DbError, DbSidecar, SqlError, SqlGuard, SqlKind};
+use super::{DbError, DbSidecar, SqlError, SqlKind};
 
 /// 默认配置文件（`data_dir()/db.json`）。
 pub const CONFIG_FILE_NAME: &str = "db.json";
@@ -143,7 +144,7 @@ impl DbFile {
 
 /// 数据库连接服务。
 ///
-/// 一个 service 只启动一个 sidecar（内部可持有多个 SQLite 连接）。构造时
+/// 一个 service 只启动一个 sidecar（内部可持有多个数据库连接）。构造时
 /// 注入 `db.json` 路径与 Node 路径，便于测试隔离；生产入口是
 /// [`DbService::load_default`]。
 pub struct DbService {
@@ -277,7 +278,7 @@ impl DbService {
         Ok(())
     }
 
-    /// 建立连接（幂等）。Node 不可用、驱动未打包或 SQLite 打开失败时返回
+    /// 建立连接（幂等）。Node 不可用、驱动未打包或驱动连接失败时返回
     /// 错误，同时把连接状态标记为 `Error`（可通过 [`DbService::list`] 查看）。
     pub fn connect(&mut self, connection_id: &str) -> Result<DbConnectionInfo, DbServiceError> {
         let config = self
@@ -360,11 +361,14 @@ impl DbService {
         sql: &str,
         limit: Option<u32>,
     ) -> Result<DbQueryResult, DbServiceError> {
-        let read_only = self.connection(connection_id)?.read_only;
+        let (read_only, kind) = {
+            let config = self.connection(connection_id)?;
+            (config.read_only, config.kind)
+        };
         let limit = limit
             .map(|value| value.clamp(1, MAX_QUERY_LIMIT))
             .unwrap_or(DEFAULT_QUERY_LIMIT);
-        let guarded = SqlGuard::with_default_limit(limit as usize).check(sql, read_only)?;
+        let guarded = super::guard_for(kind, limit as usize).check(sql, read_only)?;
         if guarded.kind != SqlKind::Read {
             return Err(DbServiceError::DbRejected(format!(
                 "db_query 只接受只读语句（{:?}）",
@@ -387,8 +391,11 @@ impl DbService {
         connection_id: &str,
         sql: &str,
     ) -> Result<DbExecResult, DbServiceError> {
-        let read_only = self.connection(connection_id)?.read_only;
-        let guarded = SqlGuard::default().check(sql, read_only)?;
+        let (read_only, kind) = {
+            let config = self.connection(connection_id)?;
+            (config.read_only, config.kind)
+        };
+        let guarded = super::guard_for(kind, DEFAULT_QUERY_LIMIT as usize).check(sql, read_only)?;
 
         let Some(sidecar) = self.sidecar.as_mut() else {
             let error = DbServiceError::DbUnavailable("数据库 sidecar 未启动".to_string());
@@ -418,8 +425,11 @@ impl DbService {
         connection_id: &str,
         sql: &str,
     ) -> Result<DbExplainResult, DbServiceError> {
-        let read_only = self.connection(connection_id)?.read_only;
-        let guarded = SqlGuard::default().check(sql, read_only)?;
+        let (read_only, kind) = {
+            let config = self.connection(connection_id)?;
+            (config.read_only, config.kind)
+        };
+        let guarded = super::guard_for(kind, DEFAULT_QUERY_LIMIT as usize).check(sql, read_only)?;
 
         let Some(sidecar) = self.sidecar.as_mut() else {
             let error = DbServiceError::DbUnavailable("数据库 sidecar 未启动".to_string());

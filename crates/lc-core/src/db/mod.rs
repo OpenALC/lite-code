@@ -10,10 +10,11 @@
 //! - 静态黑名单（在去掉字符串与注释后的 token 上匹配）；
 //! - `SELECT` / `WITH` 读查询的 `LIMIT` 注入。
 //!
-//! `sidecar.rs` 是 Node `node:sqlite` 执行层（JSON-RPC 2.0 / NDJSON）：
-//! 安装 `assets/db-bridge.mjs`、管理子进程与超时、把结果转换为契约 DTO。
-//! 执行层在调用 sidecar 前仍会先过 [`SqlGuard`]，查询结果按 `limit` 强制
-//! 切片，并强制 `DbQueryResult::untrusted = true`。
+//! `sidecar.rs` 是 Node 执行层（JSON-RPC 2.0 / NDJSON）：安装
+//! `assets/db-bridge.mjs`（SQLite / PostgreSQL / MySQL / SQL Server 单文件
+//! bundle）、管理子进程与超时、把结果转换为契约 DTO。执行层在调用 sidecar
+//! 前仍会先过 [`SqlGuard`]，查询结果按 `limit` 强制切片，并强制
+//! `DbQueryResult::untrusted = true`。
 //!
 //! `service.rs` 负责连接配置持久化（`data_dir()/db.json`）与连接生命周期；
 //! `tools.rs` 把服务包装成 Agent 的 `db_*` 工具。库内数据（包括“忽略之前
@@ -24,9 +25,24 @@ mod sidecar;
 mod sql;
 mod tools;
 
+use lc_proto::DbKind;
+
 pub use service::{
     CONFIG_FILE_NAME, DEFAULT_QUERY_LIMIT, DbService, DbServiceError, MAX_QUERY_LIMIT,
 };
 pub use sidecar::{DbError, DbSidecar};
 pub use sql::{GuardedSql, SqlDialect, SqlError, SqlGuard, SqlKind};
 pub use tools::{DbExecutor, db_tool_definitions, db_tool_specs};
+
+/// 按连接种类选择 SQL 词法/`LIMIT` 策略。SQL Server 不注入 `LIMIT`，
+/// 由 bridge 按 `limit` 切片；MySQL 启用反斜杠转义，Postgres 启用 dollar
+/// quote / E-string 词法。
+pub(crate) fn guard_for(kind: DbKind, limit: usize) -> SqlGuard {
+    let guard = SqlGuard::with_default_limit(limit).with_truncation_probe(true);
+    match kind {
+        DbKind::Mysql => guard.with_dialect(SqlDialect::Mysql),
+        DbKind::Postgres => guard.with_dialect(SqlDialect::Postgres),
+        DbKind::Mssql => guard.with_dialect(SqlDialect::Mssql),
+        DbKind::Sqlite => guard,
+    }
+}

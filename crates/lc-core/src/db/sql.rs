@@ -2,11 +2,12 @@
 //!
 //! 解析是**词法级**的，不引数据库驱动或 SQL 解析依赖：
 //! - 扫描时跳过 `--` 行注释、`/* ... */` 块注释（SQLite/MySQL 不嵌套）、
-//!   单引号字符串、双引号/反引号/方括号标识符；`$` 按 SQLite 参数前缀
-//!   当作普通词 token，不启用 Postgres dollar-quoted 字符串；
+//!   单引号字符串、双引号/反引号/方括号标识符；Postgres 方言还识别
+//!   `$$...$$` / `$tag$...$tag$`、`E'...'` 与 `U&'...'`；
 //! - 默认按 SQLite 方言解析：单引号字符串只接受 `''` 转义，`\` 是普通
-//!   字符。MySQL 方言（显式选择时）才启用反斜杠转义；当前 sidecar 只执行
-//!   SQLite，方言默认值必须保持 SQLite；
+//!   字符，`$` 按参数前缀当作普通词；MySQL 方言启用反斜杠转义，
+//!   Postgres 方言启用 dollar quote/E-string，SQL Server 方言关闭 LIMIT
+//!   注入；
 //! - 关键字只在括号深度 0 上判定，`(SELECT ... WHERE ...)` 里的 `WHERE`
 //!   不会被当成外层条件；`WITH` / `EXPLAIN` 会继续看主语句或 CTE 体内的
 //!   数据修改，避免 `WITH ... DELETE` / `EXPLAIN ANALYZE DELETE` 被当成 Read；
@@ -23,7 +24,7 @@
 //! 已知边界（需要执行层兜底，见 `docs/MILESTONES.md` P5 出口标准）：
 //! MySQL `#` 行注释与 MSSQL `#temp`、MySQL 可执行注释 `/*! ... */` 存在
 //! 词法歧义，本模块直接拒绝（fail-closed）；`SELECT ... INTO OUTFILE/DUMPFILE`
-//! 已列入黑名单，但 `SELECT ... INTO 新表` 等方言写路径仍可能被归为 Read。
+//! 已列入黑名单，`SELECT ... INTO 新表` 归为 Write，不能走只读查询路径。
 //! 协议级只读事务/连接是最终防线，本模块的结果 `trust: untrusted` 由执行层
 //! 处理，不属于这里。
 
@@ -42,16 +43,25 @@ pub enum SqlKind {
     Unknown,
 }
 
-/// SQL 词法方言。当前 sidecar 只执行 SQLite，默认值必须是 [`SqlDialect::Sqlite`]。
+/// SQL 词法方言。默认值必须是 [`SqlDialect::Sqlite`]。
 ///
 /// MySQL 方言仅用于显式选择时的词法兼容：单引号/双引号里的反斜杠按转义
 /// 处理。SQLite 不把 `\` 当转义，若用 MySQL 方言解析 SQLite SQL，会把字符串
 /// 边界判断错，因此调用方不得在 SQLite 连接上切换方言。
+///
+/// Postgres 方言识别 dollar-quoted 字符串、`E'...'` 与 `U&'...'`，避免
+/// 字符串里的 `WHERE`/`;` 被当成顶层语句结构。
+///
+/// SQL Server 使用与 SQLite 相同的字符串/标识符词法（方括号标识符本来就
+/// 支持），但 T-SQL 没有 `LIMIT`；[`SqlDialect::Mssql`] 关闭自动 LIMIT
+/// 注入，由 bridge 按 `limit` 切片结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SqlDialect {
     #[default]
     Sqlite,
     Mysql,
+    Postgres,
+    Mssql,
 }
 
 /// 通过闸门的语句：改写后的 SQL、分类与是否注入过 `LIMIT`。
@@ -111,6 +121,9 @@ impl SqlError {
 pub struct SqlGuard {
     default_limit: usize,
     dialect: SqlDialect,
+    /// 注入 `LIMIT default_limit + 1`，让执行层能区分“恰好 limit 行”和
+    /// “还有更多行”。执行层会把多取的一行切掉。
+    probe_truncation: bool,
 }
 
 impl Default for SqlGuard {
@@ -118,6 +131,7 @@ impl Default for SqlGuard {
         Self {
             default_limit: 100,
             dialect: SqlDialect::Sqlite,
+            probe_truncation: false,
         }
     }
 }
@@ -134,6 +148,13 @@ impl SqlGuard {
     /// 切换词法方言。默认 SQLite；仅显式需要 MySQL 词法时使用。
     pub fn with_dialect(mut self, dialect: SqlDialect) -> Self {
         self.dialect = dialect;
+        self
+    }
+
+    /// 执行层需要判定 `truncated`：注入时多取一行（`limit + 1`），由执行层
+    /// 切片后再返回给调用方。默认关闭，避免纯闸门测试看到额外行。
+    pub fn with_truncation_probe(mut self, probe: bool) -> Self {
+        self.probe_truncation = probe;
         self
     }
 
@@ -209,7 +230,10 @@ impl SqlGuard {
             });
         }
 
+        // T-SQL 没有 LIMIT；SQL Server 的切片由 bridge 完成，闸门不能注入
+        // 非法语法（`SELECT TOP` 由现有检测识别，但这里统一关闭注入）。
         let inject_limit = classification.kind == SqlKind::Read
+            && self.dialect != SqlDialect::Mssql
             && matches!(classification.head.as_str(), "SELECT" | "WITH")
             && !has_top_level_limit_clause(tokens);
 
@@ -218,7 +242,12 @@ impl SqlGuard {
         let end = tokens.last().map_or(start, |token| token.end);
         let body = &sql[start..end];
         let sql = if inject_limit {
-            format!("{body} LIMIT {}", self.default_limit)
+            let fetch = if self.probe_truncation {
+                self.default_limit.saturating_add(1)
+            } else {
+                self.default_limit
+            };
+            format!("{body} LIMIT {fetch}")
         } else {
             body.to_string()
         };
@@ -323,6 +352,64 @@ fn lex(sql: &str, dialect: SqlDialect) -> Result<Vec<Token<'_>>, SqlError> {
                 });
             }
             continue;
+        }
+
+        // Postgres 的 dollar-quoted 字符串 / E-string / U& 字符串必须在
+        // 通用 `$` 参数和普通词分支之前识别，否则字符串里的 WHERE/`;`
+        // 会被当成顶层结构。
+        if dialect == SqlDialect::Postgres {
+            if byte == b'$' {
+                if let Some(end) = dollar_quote_end(bytes, i)? {
+                    tokens.push(Token {
+                        kind: TokenKind::StringLiteral,
+                        text: &sql[i..end],
+                        depth,
+                        start: i,
+                        end,
+                    });
+                    i = end;
+                    continue;
+                }
+            } else if (byte == b'E' || byte == b'e') && bytes.get(i + 1) == Some(&b'\'') {
+                let end = scan_quoted(bytes, i + 1, b'\'', "E-string", true)?;
+                tokens.push(Token {
+                    kind: TokenKind::StringLiteral,
+                    text: &sql[i..end],
+                    depth,
+                    start: i,
+                    end,
+                });
+                i = end;
+                continue;
+            } else if (byte == b'U' || byte == b'u')
+                && bytes.get(i + 1) == Some(&b'&')
+                && bytes.get(i + 2) == Some(&b'\'')
+            {
+                let end = scan_quoted(bytes, i + 2, b'\'', "U& string", true)?;
+                tokens.push(Token {
+                    kind: TokenKind::StringLiteral,
+                    text: &sql[i..end],
+                    depth,
+                    start: i,
+                    end,
+                });
+                i = end;
+                continue;
+            } else if (byte == b'U' || byte == b'u')
+                && bytes.get(i + 1) == Some(&b'&')
+                && bytes.get(i + 2) == Some(&b'"')
+            {
+                let end = scan_quoted(bytes, i + 2, b'"', "U& identifier", true)?;
+                tokens.push(Token {
+                    kind: TokenKind::QuotedIdentifier,
+                    text: &sql[i..end],
+                    depth,
+                    start: i,
+                    end,
+                });
+                i = end;
+                continue;
+            }
         }
 
         let start = i;
@@ -472,6 +559,49 @@ fn consume_word(bytes: &[u8], start: usize) -> usize {
     i
 }
 
+/// Postgres dollar-quoted 字符串：`$$...$$` 或 `$tag$...$tag$`。
+///
+/// 返回 `Ok(None)` 表示 `$` 后面不是合法 tag（例如 `$1` 参数），按普通词
+/// 处理；tag 合法但找不到闭合时返回 `Unterminated`，fail-closed。
+fn dollar_quote_end(bytes: &[u8], start: usize) -> Result<Option<usize>, SqlError> {
+    debug_assert_eq!(bytes.get(start), Some(&b'$'));
+    let mut tag_end = start + 1;
+    if bytes.get(tag_end) == Some(&b'$') {
+        tag_end += 1;
+    } else if bytes
+        .get(tag_end)
+        // 非 ASCII 字节也算 tag 字符：Postgres 允许带变音符号的标识符，
+        // 不能让 `$é$ ... $é$` 绕过字符串识别。
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_' || !byte.is_ascii())
+    {
+        tag_end += 1;
+        while bytes
+            .get(tag_end)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || !byte.is_ascii())
+        {
+            tag_end += 1;
+        }
+        if bytes.get(tag_end) != Some(&b'$') {
+            return Ok(None);
+        }
+        tag_end += 1;
+    } else {
+        return Ok(None);
+    }
+
+    let tag = &bytes[start..tag_end];
+    let mut cursor = tag_end;
+    while cursor + tag.len() <= bytes.len() {
+        if &bytes[cursor..cursor + tag.len()] == tag {
+            return Ok(Some(cursor + tag.len()));
+        }
+        cursor += 1;
+    }
+    Err(SqlError::Unterminated {
+        construct: "dollar-quoted string",
+    })
+}
+
 /// 扫描单引号/双引号/反引号/方括号包围的 token，返回闭合符之后的位置。
 /// `backslash_escapes` 只在 MySQL 方言为 true；SQLite 下 `\` 是普通字符。
 /// 双写闭合符（`''`、`""`、`` `` ``、`]]`）始终按转义处理。
@@ -554,11 +684,16 @@ fn classify(tokens: &[Token<'_>]) -> Classification {
         _ => Some(head.clone()),
     };
     // PRAGMA 不能只看首词：`PRAGMA user_version=42` 会写库。
-    let kind = if head == "PRAGMA" {
+    let mut kind = if head == "PRAGMA" {
         pragma_kind(tokens)
     } else {
         verb.as_deref().map_or(SqlKind::Unknown, kind_of)
     };
+    // `SELECT ... INTO` 会建表（PG/SQL Server）或写会话变量（MySQL）；
+    // 它不是只读查询。只检查顶层 token，字符串/子查询里的 INTO 不算。
+    if kind == SqlKind::Read && has_top_level_word(tokens, &["INTO"]) {
+        kind = SqlKind::Write;
+    }
     Classification {
         head,
         verb: verb.unwrap_or_default(),
@@ -1233,6 +1368,46 @@ mod tests {
     }
 
     #[test]
+    fn select_into_is_classified_as_write() {
+        let guarded = SqlGuard::default()
+            .check("SELECT * INTO new_table FROM users", false)
+            .expect("SELECT INTO");
+        assert_eq!(guarded.kind, SqlKind::Write);
+
+        let cte = SqlGuard::default()
+            .check(
+                "WITH recent AS (SELECT * FROM users) SELECT * INTO new_table FROM recent",
+                false,
+            )
+            .expect("WITH SELECT INTO");
+        assert_eq!(cte.kind, SqlKind::Write);
+
+        // 字符串里的 INTO 不改变分类。
+        let read = SqlGuard::default()
+            .check("SELECT 'INTO new_table' AS note", false)
+            .expect("string INTO");
+        assert_eq!(read.kind, SqlKind::Read);
+    }
+
+    #[test]
+    fn truncation_probe_injects_one_extra_row() {
+        let guarded = SqlGuard::with_default_limit(5)
+            .with_truncation_probe(true)
+            .check("SELECT * FROM users", false)
+            .expect("probe query");
+        assert!(guarded.injected_limit);
+        assert_eq!(guarded.sql, "SELECT * FROM users LIMIT 6");
+
+        // 已有 LIMIT 时保持用户原值，不额外放大。
+        let explicit = SqlGuard::with_default_limit(5)
+            .with_truncation_probe(true)
+            .check("SELECT * FROM users LIMIT 5", false)
+            .expect("explicit limit");
+        assert!(!explicit.injected_limit);
+        assert_eq!(explicit.sql, "SELECT * FROM users LIMIT 5");
+    }
+
+    #[test]
     fn default_limit_is_clamped_to_one_through_thousand() {
         assert_eq!(SqlGuard::default().default_limit(), 100);
         assert_eq!(SqlGuard::with_default_limit(0).default_limit(), 1);
@@ -1349,6 +1524,82 @@ mod tests {
             .check("SELECT 'a\\'b' AS note", false)
             .expect("MySQL 方言按反斜杠转义解析");
         assert_eq!(guarded.sql, "SELECT 'a\\'b' AS note LIMIT 100");
+    }
+
+    #[test]
+    fn postgres_dialect_handles_dollar_quotes_and_e_strings() {
+        let guard = SqlGuard::default().with_dialect(SqlDialect::Postgres);
+
+        let dollar = guard
+            .check("SELECT $$; DELETE FROM users$$ AS note", false)
+            .expect("dollar-quoted string");
+        assert_eq!(dollar.kind, SqlKind::Read);
+        assert_eq!(
+            dollar.sql,
+            "SELECT $$; DELETE FROM users$$ AS note LIMIT 100"
+        );
+
+        let tagged = guard
+            .check("SELECT $tag$ WHERE 1=1 $tag$ AS note", false)
+            .expect("tagged dollar quote");
+        assert_eq!(tagged.kind, SqlKind::Read);
+        assert_eq!(tagged.sql, "SELECT $tag$ WHERE 1=1 $tag$ AS note LIMIT 100");
+
+        let unicode_tag = guard
+            .check("SELECT $é$ WHERE 1=1 $é$ AS note", false)
+            .expect("non-ASCII dollar tag");
+        assert_eq!(unicode_tag.kind, SqlKind::Read);
+
+        let escaped = guard
+            .check("SELECT E'a\\'b' AS note", false)
+            .expect("E-string");
+        assert_eq!(escaped.kind, SqlKind::Read);
+
+        // `$1` 是位置参数，不是 dollar quote。
+        let positional = guard
+            .check("SELECT $1", false)
+            .expect("positional parameter");
+        assert_eq!(positional.sql, "SELECT $1 LIMIT 100");
+    }
+
+    #[test]
+    fn postgres_dollar_quote_cannot_hide_missing_where() {
+        let guard = SqlGuard::default().with_dialect(SqlDialect::Postgres);
+        let error = guard
+            .check("UPDATE users SET name = $$ WHERE 1=1 $$", false)
+            .expect_err("string 里的 WHERE 不是顶层 WHERE");
+        assert!(matches!(
+            error,
+            SqlError::MissingWhere { statement } if statement == "UPDATE"
+        ));
+
+        let unterminated = guard
+            .check("SELECT $tag$ never closes", false)
+            .expect_err("未闭合 dollar quote 必须拒绝");
+        assert!(matches!(
+            unterminated,
+            SqlError::Unterminated { construct } if construct.contains("dollar")
+        ));
+    }
+
+    #[test]
+    fn mssql_dialect_does_not_inject_invalid_limit_syntax() {
+        let guard = SqlGuard::default().with_dialect(SqlDialect::Mssql);
+        assert_eq!(guard.dialect(), SqlDialect::Mssql);
+
+        let guarded = guard
+            .check("SELECT * FROM users", false)
+            .expect("SQL Server 查询");
+        assert_eq!(guarded.kind, SqlKind::Read);
+        assert!(!guarded.injected_limit);
+        assert_eq!(guarded.sql, "SELECT * FROM users");
+
+        // TOP / OFFSET FETCH 仍被识别为已有行数限制。
+        let top = guard
+            .check("SELECT TOP 10 * FROM users", false)
+            .expect("TOP 查询");
+        assert!(!top.injected_limit);
+        assert_eq!(top.sql, "SELECT TOP 10 * FROM users");
     }
 
     #[test]

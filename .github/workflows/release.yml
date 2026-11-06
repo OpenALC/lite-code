@@ -118,6 +118,10 @@ jobs:
       - name: install frontend deps
         if: needs.prep.outputs.web == 'true'
         run: pnpm install --frozen-lockfile
+      # include_str! 在 cargo build 时读取该产物，必须先于 tauri/cargo 构建。
+      - name: build db-bridge bundle
+        if: needs.prep.outputs.web == 'true'
+        run: pnpm db:bridge:build
       - name: build bundles
         shell: bash
         run: |
@@ -168,6 +172,10 @@ jobs:
       - name: install frontend deps
         if: needs.prep.outputs.web == 'true'
         run: pnpm install --frozen-lockfile
+      # include_str! 在 cargo build 时读取该产物，必须先于 tauri/cargo 构建。
+      - name: build db-bridge bundle
+        if: needs.prep.outputs.web == 'true'
+        run: pnpm db:bridge:build
       - name: build bundles
         shell: bash
         run: |
@@ -220,6 +228,10 @@ jobs:
       - name: install frontend deps
         if: needs.prep.outputs.web == 'true'
         run: pnpm install --frozen-lockfile
+      # include_str! 在 cargo build 时读取该产物，必须先于 tauri/cargo 构建。
+      - name: build db-bridge bundle
+        if: needs.prep.outputs.web == 'true'
+        run: pnpm db:bridge:build
       - name: build bundles
         shell: bash
         run: |

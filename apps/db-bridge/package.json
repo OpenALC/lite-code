@@ -1,0 +1,21 @@
+{
+  "name": "@lite-code/db-bridge",
+  "private": true,
+  "version": "0.6.1-preview.3",
+  "type": "module",
+  "description": "lite-code database sidecar bundle (PostgreSQL / MySQL / SQL Server / SQLite)",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:check": "node scripts/build.mjs --check",
+    "check": "node --check src/index.mjs && node --check src/bridge.mjs && node --check src/config.mjs && node --check src/drivers.mjs && node --check src/errors.mjs && node --check src/format.mjs && node --check scripts/build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "mssql": "^12.7.14",
+    "mysql2": "^3.24.6",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

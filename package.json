@@ -11,6 +11,10 @@
     "typecheck": "pnpm --filter @lite-code/web typecheck",
     "test": "pnpm --filter @lite-code/web test",
     "build": "pnpm --filter @lite-code/web build",
+    "db:bridge:build": "pnpm --filter @lite-code/db-bridge build",
+    "db:bridge:build:check": "pnpm --filter @lite-code/db-bridge build:check",
+    "db:bridge:check": "pnpm --filter @lite-code/db-bridge check",
+    "db:bridge:test": "pnpm --filter @lite-code/db-bridge test",
     "tauri": "tauri",
     "contract:codegen": "cargo run --locked -p lc-proto --features codegen --bin codegen"
   },

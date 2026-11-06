@@ -1,13 +1,15 @@
-//! SQLite sidecar 客户端（P5 执行层）。
+//! 数据库 sidecar 客户端（P5 执行层）。
 //!
-//! Node 脚本 `assets/db-bridge.mjs` 由 [`DbSidecar::spawn`] 用 `include_str!`
-//! 安装到数据目录（`config::data_dir()/db-bridge.mjs`），再以
-//! `node <script>` 启动。stdin/stdout 走 NDJSON JSON-RPC 2.0，一条消息一行；
-//! stderr 由独立线程限长采集，只用于错误信息。
+//! Node 脚本 `assets/db-bridge.mjs` 是 `apps/db-bridge` 的 esbuild 单文件
+//! 产物（SQLite + PostgreSQL + MySQL + SQL Server 驱动），由
+//! [`DbSidecar::spawn`] 用 `include_str!` 安装到数据目录
+//! （`config::data_dir()/db-bridge.mjs`），再以 `node <script>` 启动。
+//! stdin/stdout 走 NDJSON JSON-RPC 2.0，一条消息一行；stderr 由独立线程
+//! 限长采集，只用于错误信息。
 //!
 //! 安全边界在 Rust 侧：所有用户 SQL 先过 [`SqlGuard`]，只读连接拒绝写，
-//! 查询结果一律覆盖为 `untrusted: true`。sidecar 只接受 SQLite，不接收
-//! 密码/密钥。
+//! 查询结果一律覆盖为 `untrusted: true`。sidecar 只接收 `secret_ref`
+//! （`env:NAME`），密码由 Node 从环境变量解析，不经过 JSON-RPC。
 //!
 //! 超时后立即终止子进程（`Drop`/`shutdown` 同样），避免僵尸进程与半开管道。
 
@@ -27,12 +29,15 @@ use lc_proto::{
 use serde_json::{Value, json};
 
 use super::service::{DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT};
-use super::{GuardedSql, SqlError, SqlGuard, SqlKind};
+use super::{GuardedSql, SqlError, SqlKind};
 
 /// 安装到数据目录的脚本名。
 pub const BRIDGE_FILE_NAME: &str = "db-bridge.mjs";
-/// `initialize` / `connect` / `disconnect` 超时。
+/// `initialize` / `disconnect` 超时。
 pub const INIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// 建立远程连接超时。bridge 内部连接超时为 10s，这里留出驱动握手的余量，
+/// 避免 Rust 先于 bridge 终止子进程。
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// 读查询超时。
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// 写/DDL 执行超时。
@@ -43,16 +48,18 @@ pub const SCHEMA_TIMEOUT: Duration = Duration::from_secs(30);
 pub const EXPLAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 const MAX_STDERR_LINES: usize = 40;
+/// `apps/db-bridge` 的 esbuild 产物；CI 在 cargo build 前运行
+/// `pnpm db:bridge:build`，提交的副本也保证离线 `cargo build` 可用。
 const BRIDGE_SOURCE: &str = include_str!("../../assets/db-bridge.mjs");
 
 /// sidecar 客户端错误。`code()` 映射到契约错误码；`to_error_body()` 供
 /// 命令层直接包装响应。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DbError {
-    /// Node/SQLite 不可用、驱动未打包、连接未建立。
+    /// Node 不可用、驱动未打包、连接未建立或连接失败。
     #[error("数据库 sidecar 不可用：{0}")]
     Unavailable(String),
-    /// SQL 闸门拒绝，或 SQLite 执行失败。
+    /// SQL 闸门拒绝，或数据库执行失败。
     #[error("数据库拒绝执行：{0}")]
     Rejected(String),
     /// 只读连接上的写操作。
@@ -103,9 +110,15 @@ impl From<SqlError> for DbError {
     }
 }
 
-/// 单个 SQLite sidecar 子进程。
+#[derive(Debug, Clone, Copy)]
+struct ConnectionState {
+    read_only: bool,
+    kind: DbKind,
+}
+
+/// 单个数据库 sidecar 子进程。
 ///
-/// `connections` 只保存连接 id 与只读标记，用于在调用 sidecar 前过
+/// `connections` 只保存连接 id、种类与只读标记，用于在调用 sidecar 前过
 /// [`SqlGuard`]；真正的句柄在 Node 进程内。
 pub struct DbSidecar {
     child: Child,
@@ -113,7 +126,10 @@ pub struct DbSidecar {
     responses: Receiver<Result<Value, String>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     next_id: u64,
-    connections: HashMap<String, bool>,
+    connections: HashMap<String, ConnectionState>,
+    /// `initialize` 声明的驱动种类。bundle 缺少某个驱动时，`connect`
+    /// 在发请求前就返回 `db_unavailable`。
+    kinds: Vec<String>,
 }
 
 impl DbSidecar {
@@ -170,6 +186,7 @@ impl DbSidecar {
             stderr_tail,
             next_id: 0,
             connections: HashMap::new(),
+            kinds: Vec::new(),
         })
     }
 
@@ -182,33 +199,46 @@ impl DbSidecar {
                 "不支持的 sidecar 协议版本：{version:?}"
             )));
         }
-        let supports_sqlite = result
+        let kinds = result
             .get("kinds")
             .and_then(Value::as_array)
-            .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("sqlite")));
-        if !supports_sqlite {
+            .map(|kinds| {
+                kinds
+                    .iter()
+                    .filter_map(|kind| kind.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !kinds.iter().any(|kind| kind == "sqlite") {
             return Err(DbError::Protocol("sidecar 未声明 sqlite 支持".to_string()));
         }
+        self.kinds = kinds;
         Ok(())
     }
 
-    /// 建立连接。目前仅支持 SQLite；其它 kind 立即返回 [`DbError::Unavailable`]。
+    /// 建立连接。`initialize` 未声明的驱动（bundle 未打包）直接返回
+    /// [`DbError::Unavailable`]；密码只以 `secret_ref` 传递。
     pub fn connect(&mut self, config: &DbConnectionConfig) -> Result<(), DbError> {
-        if config.kind != DbKind::Sqlite {
-            return Err(DbError::Unavailable(format!(
-                "{} 驱动未打包（仅支持 sqlite）",
-                kind_label(config.kind)
-            )));
-        }
+        ensure_kind_supported(&self.kinds, config.kind)?;
         let params = json!({
             "connection_id": config.connection_id.as_str(),
-            "kind": "sqlite",
+            "kind": kind_label(config.kind),
+            "host": config.host.as_str(),
+            "port": config.port,
             "database": config.database.as_str(),
+            "user": config.user.as_str(),
+            "secret_ref": config.secret_ref.as_str(),
             "read_only": config.read_only,
+            "extra": config.extra.as_deref(),
         });
-        self.request("connect", params, INIT_TIMEOUT)?;
-        self.connections
-            .insert(config.connection_id.clone(), config.read_only);
+        self.request("connect", params, CONNECT_TIMEOUT)?;
+        self.connections.insert(
+            config.connection_id.clone(),
+            ConnectionState {
+                read_only: config.read_only,
+                kind: config.kind,
+            },
+        );
         Ok(())
     }
 
@@ -221,17 +251,17 @@ impl DbSidecar {
         sql: &str,
         limit: Option<u32>,
     ) -> Result<DbQueryResult, DbError> {
-        let read_only = self.read_only(connection_id)?;
-        let guarded = self.guard(sql, read_only)?;
+        let state = self.connection_state(connection_id)?;
+        let limit = limit
+            .map(|value| value.clamp(1, MAX_QUERY_LIMIT))
+            .unwrap_or(DEFAULT_QUERY_LIMIT);
+        let guarded = self.guard(sql, state, limit as usize)?;
         if guarded.kind != SqlKind::Read {
             return Err(DbError::Rejected(format!(
                 "query 只接受只读语句（{:?}）",
                 guarded.kind
             )));
         }
-        let limit = limit
-            .map(|value| value.clamp(1, MAX_QUERY_LIMIT))
-            .unwrap_or(DEFAULT_QUERY_LIMIT);
         let result = self.request(
             "query",
             json!({
@@ -244,10 +274,11 @@ impl DbSidecar {
         parse_query_result(&result, limit)
     }
 
-    /// 执行写/DDL。同样先过 [`SqlGuard`]；SQLite 侧的 `readOnly` 是第二道防线。
+    /// 执行写/DDL。同样先过 [`SqlGuard`]；SQLite 的 `readOnly` 句柄和
+    /// bridge 的只读连接检查是第二道防线。
     pub fn execute(&mut self, connection_id: &str, sql: &str) -> Result<DbExecResult, DbError> {
-        let read_only = self.read_only(connection_id)?;
-        let guarded = self.guard(sql, read_only)?;
+        let state = self.connection_state(connection_id)?;
+        let guarded = self.guard(sql, state, DEFAULT_QUERY_LIMIT as usize)?;
         let result = self.request(
             "execute",
             json!({
@@ -270,11 +301,12 @@ impl DbSidecar {
         parse_schema_result(&result)
     }
 
-    /// 查看执行计划。用户 SQL 仍过 [`SqlGuard`]；sidecar 执行
-    /// `EXPLAIN QUERY PLAN <guarded.sql>`，不会执行原语句。
+    /// 查看执行计划。用户 SQL 仍过 [`SqlGuard`]；sidecar 按方言执行
+    /// `EXPLAIN`（SQLite 为 `EXPLAIN QUERY PLAN`，SQL Server 用
+    /// `SHOWPLAN_TEXT`），不会执行原语句。
     pub fn explain(&mut self, connection_id: &str, sql: &str) -> Result<DbExplainResult, DbError> {
-        let read_only = self.read_only(connection_id)?;
-        let guarded = self.guard(sql, read_only)?;
+        let state = self.connection_state(connection_id)?;
+        let guarded = self.guard(sql, state, DEFAULT_QUERY_LIMIT as usize)?;
         let result = self.request(
             "explain",
             json!({
@@ -286,7 +318,7 @@ impl DbSidecar {
         parse_explain_result(&result)
     }
 
-    /// 关闭 sidecar 内的 SQLite 句柄。本地连接标记总是清除。
+    /// 关闭 sidecar 内的数据库句柄。本地连接标记总是清除。
     pub fn disconnect(&mut self, connection_id: &str) -> Result<(), DbError> {
         let result = self.request(
             "disconnect",
@@ -302,16 +334,26 @@ impl DbSidecar {
         self.terminate();
     }
 
-    fn read_only(&self, connection_id: &str) -> Result<bool, DbError> {
+    fn connection_state(&self, connection_id: &str) -> Result<ConnectionState, DbError> {
         self.connections
             .get(connection_id)
             .copied()
             .ok_or_else(|| DbError::Unavailable(format!("数据库连接未建立：{connection_id}")))
     }
 
-    fn guard(&self, sql: &str, read_only: bool) -> Result<GuardedSql, DbError> {
-        SqlGuard::default()
-            .check(sql, read_only)
+    fn read_only(&self, connection_id: &str) -> Result<bool, DbError> {
+        self.connection_state(connection_id)
+            .map(|state| state.read_only)
+    }
+
+    fn guard(
+        &self,
+        sql: &str,
+        state: ConnectionState,
+        limit: usize,
+    ) -> Result<GuardedSql, DbError> {
+        super::guard_for(state.kind, limit)
+            .check(sql, state.read_only)
             .map_err(DbError::from)
     }
 
@@ -423,6 +465,16 @@ impl DbSidecar {
     fn next_id_for_test(&self) -> u64 {
         self.next_id
     }
+
+    #[cfg(test)]
+    fn kinds_for_test(&self) -> &[String] {
+        &self.kinds
+    }
+
+    #[cfg(test)]
+    fn set_kinds_for_test(&mut self, kinds: &[&str]) {
+        self.kinds = kinds.iter().map(|kind| (*kind).to_string()).collect();
+    }
 }
 
 impl Drop for DbSidecar {
@@ -437,6 +489,13 @@ fn install_bridge() -> Result<PathBuf, DbError> {
     std::fs::create_dir_all(&directory).map_err(|error| {
         DbError::Io(format!("无法创建数据目录 {}：{error}", directory.display()))
     })?;
+
+    let destination = directory.join(BRIDGE_FILE_NAME);
+    // bundle 约 2 MiB；内容相同就不要每次启动都重写（也减少跨进程
+    // rename 竞争）。文件被篡改/版本变化时仍会覆盖。
+    if std::fs::read(&destination).is_ok_and(|current| current == BRIDGE_SOURCE.as_bytes()) {
+        return Ok(destination);
+    }
 
     // 同一进程内并发 spawn 时只写一次；内容固定，跨进程竞争由
     // replace_file 的失败重试兜底（Windows 不允许 rename 覆盖）。
@@ -454,7 +513,6 @@ fn install_bridge() -> Result<PathBuf, DbError> {
         DbError::Io(format!("无法写入 sidecar 脚本 {}：{error}", temp.display()))
     })?;
 
-    let destination = directory.join(BRIDGE_FILE_NAME);
     replace_file(&temp, &destination)?;
     Ok(destination)
 }
@@ -730,6 +788,17 @@ fn kind_label(kind: DbKind) -> &'static str {
     }
 }
 
+fn ensure_kind_supported(kinds: &[String], kind: DbKind) -> Result<(), DbError> {
+    let label = kind_label(kind);
+    if kinds.iter().any(|supported| supported.as_str() == label) {
+        Ok(())
+    } else {
+        Err(DbError::Unavailable(format!(
+            "{label} 驱动未打包（sidecar 未声明支持；请构建 apps/db-bridge bundle）"
+        )))
+    }
+}
+
 fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -884,6 +953,13 @@ mod tests {
         assert_eq!(sidecar.next_id_for_test(), 0);
         sidecar.initialize().expect("第一次 initialize");
         assert_eq!(sidecar.next_id_for_test(), 1);
+        for kind in ["sqlite", "postgres", "mysql", "mssql"] {
+            assert!(
+                sidecar.kinds_for_test().iter().any(|value| value == kind),
+                "bundle 应声明 {kind} 支持：{:?}",
+                sidecar.kinds_for_test()
+            );
+        }
         sidecar.initialize().expect("第二次 initialize");
         assert_eq!(sidecar.next_id_for_test(), 2);
     }
@@ -1395,13 +1471,42 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_kind_is_db_unavailable() {
+    fn missing_bundled_driver_is_db_unavailable() {
+        let sqlite_only = vec!["sqlite".to_string()];
+        let error =
+            ensure_kind_supported(&sqlite_only, DbKind::Postgres).expect_err("postgres 未声明");
+        assert!(
+            matches!(&error, DbError::Unavailable(message) if message.contains("postgres") && message.contains("驱动未打包"))
+        );
+        assert_eq!(error.code(), ErrorCode::DbUnavailable);
+
+        let all = ["sqlite", "postgres", "mysql", "mssql"].map(str::to_string);
+        for kind in [
+            DbKind::Sqlite,
+            DbKind::Postgres,
+            DbKind::Mysql,
+            DbKind::Mssql,
+        ] {
+            assert!(ensure_kind_supported(&all, kind).is_ok());
+        }
+    }
+
+    #[test]
+    fn connect_reports_missing_driver_before_spawning_bridge_request() {
         let Some(node) = test_node() else { return };
         let mut sidecar = start(&node);
+        sidecar.set_kinds_for_test(&["sqlite"]);
         let mut config = sqlite_config("pg", Path::new("ignored.sqlite"), false);
         config.kind = DbKind::Postgres;
-        let error = sidecar.connect(&config).expect_err("postgres 必须不可用");
-        assert!(matches!(&error, DbError::Unavailable(message) if message.contains("postgres")));
+        config.host = "localhost".to_string();
+        config.port = 5432;
+        config.database = "app".to_string();
+        let error = sidecar
+            .connect(&config)
+            .expect_err("未声明的驱动必须不可用");
+        assert!(
+            matches!(&error, DbError::Unavailable(message) if message.contains("postgres") && message.contains("驱动未打包"))
+        );
         assert_eq!(error.code(), ErrorCode::DbUnavailable);
     }
 

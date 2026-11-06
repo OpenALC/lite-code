@@ -1,3 +1,4 @@
 packages:
+  - apps/db-bridge
   - apps/web
   - sidecars/*

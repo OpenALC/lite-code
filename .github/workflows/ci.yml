@@ -197,6 +197,25 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  db-bridge:
+    name: db-bridge
+    needs: prep
+    if: needs.prep.outputs.web == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 驱动连接参数/schema/read_only 的单测，不连真实数据库。
+      - run: pnpm db:bridge:check
+      - run: pnpm db:bridge:test
+      # 提交的 crates/lc-core/assets/db-bridge.mjs 必须与 apps/db-bridge 同步。
+      - run: pnpm db:bridge:build:check
+
   audit:
     name: pnpm audit
     needs: prep
@@ -246,7 +265,7 @@ jobs:
 
   summary:
     name: ci
-    needs: [prep, version-guard, rust-fmt, rust-clippy, rust-test, contract, lanes, web, audit, updater-manifest, deny]
+    needs: [prep, version-guard, rust-fmt, rust-clippy, rust-test, contract, lanes, web, db-bridge, audit, updater-manifest, deny]
     if: always()
     runs-on: ubuntu-22.04
     steps:
