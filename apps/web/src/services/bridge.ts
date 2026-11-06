@@ -162,6 +162,22 @@ async function invokeContract(command: string, args: Record<string, unknown>): P
 
 // ==== 命令包装：签名与契约 CoreCommand 对应；root 由传输层注入（见 src-tauri workspace_root） ====
 
+/** 原生文件夹选择器；取消时返回当前根。浏览器 dev 返回 fallback。 */
+export async function pickWorkspace(): Promise<BridgeResult<WorkspaceRootResult>> {
+  if (!isTauri()) {
+    return { ok: true, data: { kind: 'workspace_root', root: null }, fallback: true }
+  }
+  try {
+    const data = await invokeContract('workspace_pick', {})
+    if (data.kind !== 'workspace_root') {
+      return { ok: false, error: internalError('workspace_pick 返回了非 workspace_root 载荷'), fallback: false }
+    }
+    return { ok: true, data, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
 /** 当前工作区根；浏览器 dev 无真实工作区，返回 null 由视图层回退。 */
 export async function workspaceRoot(): Promise<BridgeResult<WorkspaceRootResult>> {
   if (!isTauri()) {

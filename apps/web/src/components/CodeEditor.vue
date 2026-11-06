@@ -7,6 +7,7 @@ import { writeFile } from '../services/bridge'
 import { languageForPath } from '../services/editorLanguage'
 import type { EditorFileStrategy } from '../services/largeFile'
 import { activeTab, markSaved, tabsStore, updateContent } from '../services/tabs'
+import { subscribePrefs, uiPrefs } from '../services/themeStore'
 import type { Tab, TabsState } from '../services/tabs'
 
 const { t } = useI18n()
@@ -15,6 +16,8 @@ const host = ref<HTMLElement | null>(null)
 let editor: monacoNs.editor.IStandaloneCodeEditor | null = null
 let monacoRef: typeof monacoNs | null = null
 let unsubTabs: (() => void) | null = null
+let unsubTheme: (() => void) | null = null
+let removeContext: (() => void) | null = null
 let currentTabId: string | null = null
 /** setValue 触发的 onDidChangeContent 不应回写 store */
 let applying = false
@@ -27,6 +30,7 @@ const viewStates = new Map<string, monacoNs.editor.ICodeEditorViewState | null>(
 type SaveState = { kind: 'saved' | 'demo' | 'error' | 'sample' | 'readonly'; text: string }
 const saveState = ref<SaveState | null>(null)
 const activeStrategy = ref<EditorFileStrategy | null>(null)
+const contextMenu = ref<{ x: number; y: number } | null>(null)
 
 function currentTab(): Tab | null {
   return activeTab(tabsStore.get())
@@ -162,6 +166,12 @@ function createEditorWorker(): Worker {
   )
 }
 
+function menuAction(action: string): void {
+  contextMenu.value = null
+  editor?.trigger('context-menu', action, null)
+  editor?.focus()
+}
+
 onMounted(async () => {
   ;(self as unknown as { MonacoEnvironment: unknown }).MonacoEnvironment = {
     getWorker: createEditorWorker,
@@ -181,9 +191,22 @@ onMounted(async () => {
     },
   })
 
+  monaco.editor.defineTheme('lite-code-light', {
+    base: 'vs',
+    inherit: true,
+    rules: [],
+    colors: {
+      'editor.background': '#ffffff',
+      'editorGutter.background': '#f7f9fc',
+      'editor.lineHighlightBackground': '#f1f5fb',
+      'editorLineNumber.foreground': '#99a3b5',
+      'editorLineNumber.activeForeground': '#1c2330',
+    },
+  })
+
   editor = monaco.editor.create(host.value!, {
     model: null,
-    theme: 'lite-code-dark',
+    theme: uiPrefs().theme === 'light' ? 'lite-code-light' : 'lite-code-dark',
     fontSize: 13,
     lineHeight: 21,
     minimap: { enabled: false },
@@ -195,12 +218,31 @@ onMounted(async () => {
   // 窗口级监听：焦点在文件树/标签栏时 Ctrl+S 也生效。
   window.addEventListener('keydown', onSaveKeydown)
   unsubTabs = tabsStore.subscribe(syncFromStore)
+  unsubTheme = subscribePrefs(prefs => {
+    monacoRef?.editor.setTheme(prefs.theme === 'light' ? 'lite-code-light' : 'lite-code-dark')
+  })
+
+  // 自定义中文右键菜单：capture 阶段拦截 Monaco 默认英文菜单。
+  const openMenu = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    contextMenu.value = { x: event.clientX, y: event.clientY }
+  }
+  window.addEventListener('click', () => { contextMenu.value = null })
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') contextMenu.value = null
+  })
+  host.value!.addEventListener('contextmenu', openMenu, true)
+  removeContext = () => host.value?.removeEventListener('contextmenu', openMenu, true)
+
   syncFromStore(tabsStore.get())
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onSaveKeydown)
   unsubTabs?.()
+  unsubTheme?.()
+  removeContext?.()
   editor?.dispose()
   editor = null
   for (const d of modelDisposables.values()) d.dispose()
@@ -232,12 +274,68 @@ onBeforeUnmount(() => {
     >
       {{ saveState.text }}
     </div>
+    <Teleport to="body">
+      <div
+        v-if="contextMenu"
+        class="editor-menu"
+        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+        @click.stop
+      >
+        <button
+          type="button"
+          @click="menuAction('undo')"
+        >
+          {{ t('menu.undo') }}
+        </button>
+        <button
+          type="button"
+          @click="menuAction('redo')"
+        >
+          {{ t('menu.redo') }}
+        </button>
+        <div class="menu-sep" />
+        <button
+          type="button"
+          @click="menuAction('editor.action.clipboardCutAction')"
+        >
+          {{ t('menu.cut') }}
+        </button>
+        <button
+          type="button"
+          @click="menuAction('editor.action.clipboardCopyAction')"
+        >
+          {{ t('menu.copy') }}
+        </button>
+        <button
+          type="button"
+          @click="menuAction('editor.action.clipboardPasteAction')"
+        >
+          {{ t('menu.paste') }}
+        </button>
+        <div class="menu-sep" />
+        <button
+          type="button"
+          @click="menuAction('editor.action.selectAll')"
+        >
+          {{ t('menu.selectAll') }}
+        </button>
+        <button
+          type="button"
+          @click="menuAction('actions.find')"
+        >
+          {{ t('menu.find') }}
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .editor-wrap {
   position: relative;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -259,6 +357,38 @@ onBeforeUnmount(() => {
   color: #d19a66;
   font-size: 11px;
   pointer-events: none;
+}
+
+.editor-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 170px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+}
+
+.editor-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  border-radius: var(--r-xs);
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.editor-menu button:hover {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 .save-note {

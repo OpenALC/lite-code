@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AgentPanel from './components/AgentPanel.vue'
+import AppIcon from './components/AppIcon.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import DbPanel from './components/DbPanel.vue'
 import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
-import ModeSwitcher from './components/ModeSwitcher.vue'
-import RuntimeSettings from './components/RuntimeSettings.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
 import TabBar from './components/TabBar.vue'
 import TaskList from './components/TaskList.vue'
 import TaskStatusBar from './components/TaskStatusBar.vue'
@@ -34,7 +34,7 @@ import {
   gitUnstage,
   isTauri,
   onCoreEvent,
-  openWorkspace,
+  pickWorkspace,
   resolveApproval,
   sessionCreate,
   taskApply,
@@ -49,26 +49,34 @@ import {
 } from './services/bridge'
 import { createDbController } from './services/dbStore'
 import { createGitController } from './services/gitStore'
-import {
-  LAYOUT_LIMITS,
-  NARROW_WIDTH_PX,
-  clamp,
-  resolveProfile,
-  type LayoutPrefs,
-} from './services/layoutProfile'
+import { LAYOUT_LIMITS, clamp } from './services/layoutProfile'
 import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { createTaskController } from './services/taskStore'
-import { setMode, setWindowWidth, uiStore } from './services/uiStore'
+import { activateTab, closeTab, tabsStore } from './services/tabs'
+import {
+  initUiPrefs,
+  setZoom,
+  subscribePrefs,
+  toggleTheme,
+  uiPrefs,
+  zoomBy,
+} from './services/themeStore'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
-// 桥接框架无关 store 与 Vue 响应性
-const ui = ref(uiStore.get())
-const unsub = uiStore.subscribe(s => {
-  ui.value = s
+const prefs = ref(uiPrefs())
+const unsubPrefs = subscribePrefs(next => {
+  prefs.value = next
 })
 
-// P3 Agent 会话控制器：docked 与居中的 Agent 视图共享同一事件流、草稿与错误。
+// 右侧功能栏：Agent / 任务工作台 / Git / 数据库，四者共用一栏，编辑器始终保留。
+type RightTab = 'agent' | 'workbench' | 'git' | 'db'
+type SidebarView = 'explorer' | 'search' | 'tasks' | 'settings'
+const rightTab = ref<RightTab>('agent')
+const sidebarView = ref<SidebarView>('explorer')
+const sidebarVisible = ref(true)
+const rightVisible = ref(true)
+
 const agentSession = createAgentSession({
   sessionCreate,
   agentSend,
@@ -77,7 +85,6 @@ const agentSession = createAgentSession({
   onCoreEvent,
 })
 
-// P4 任务控制器：左栏任务列表、右侧工作台与状态栏共享同一事件流与选中态。
 const taskSession = createTaskController({
   taskList,
   taskCreate,
@@ -90,7 +97,6 @@ const taskSession = createTaskController({
   onCoreEvent,
 })
 
-// P5 数据库面板：与 Agent/任务共用 core:event 流；打开面板时拉取连接列表。
 const dbSession = createDbController({
   dbList,
   dbConnect,
@@ -103,9 +109,7 @@ const dbSession = createDbController({
   dbDeleteConnection,
   onCoreEvent,
 })
-const dbOpen = ref(false)
 
-// P5 Git 面板：与数据库面板互斥占用中央区域，打开时并行拉取 status 与最近提交。
 const gitSession = createGitController({
   gitStatus,
   gitDiff,
@@ -114,71 +118,28 @@ const gitSession = createGitController({
   gitCommit,
   gitLog,
 })
-const gitOpen = ref(false)
 
-async function toggleDatabase(): Promise<void> {
-  if (dbOpen.value) {
-    dbOpen.value = false
-    return
-  }
-  gitOpen.value = false
-  dbOpen.value = true
-  await dbSession.refresh()
-}
+// 布局尺寸仍复用原偏好；去掉 editor/agent 模式，改为 VS Code 式固定区域。
+const layout = ref(loadLayoutPrefs())
+watch(layout, value => saveLayoutPrefs(value), { deep: true })
+const sidebarWidth = computed(() => layout.value.sidebarWidth)
+const rightWidth = computed(() => layout.value.agentWidth)
+const bottomHeight = computed(() => layout.value.bottomHeight)
+const bottomVisible = ref(!layout.value.bottomCollapsed)
 
-async function toggleGit(): Promise<void> {
-  if (gitOpen.value) {
-    gitOpen.value = false
-    return
-  }
-  dbOpen.value = false
-  gitOpen.value = true
-  await Promise.all([gitSession.refresh(), gitSession.loadLog()])
-}
-
-// 工作台挂载点保持稳定：任务切换只更新 controller，组件不随 activeTaskId 重建。
-// 窄窗口浮层重挂载时也从 controller 读回各任务的标签与预览 URL。
-const TASK_WORKBENCH_KEY = 'task-workbench'
-
-const layout = ref<LayoutPrefs>(loadLayoutPrefs())
-const profile = computed(() =>
-  resolveProfile(ui.value.mode, ui.value.windowWidth, layout.value),
-)
-watch(layout, prefs => saveLayoutPrefs(prefs), { deep: true })
-
-// 工作台折叠：编辑器模式默认收起以保住 P3 的 Agent 面板；切到 Agent 模式
-// 且窗口够宽时自动展开，形成「左项目+任务 / 中对话 / 右工作台」三栏。
-const workbenchCollapsed = ref(
-  profile.value.mode === 'editor' || ui.value.windowWidth < NARROW_WIDTH_PX,
-)
-watch(
-  () => profile.value.mode,
-  mode => {
-    if (mode === 'agent' && ui.value.windowWidth >= NARROW_WIDTH_PX) {
-      workbenchCollapsed.value = false
-    }
-  },
-)
-
-type ResizeTarget = 'sidebar' | 'agent' | 'bottom'
-
+type ResizeTarget = 'sidebar' | 'right' | 'bottom'
 function startResize(target: ResizeTarget, event: PointerEvent): void {
   event.preventDefault()
   const startX = event.clientX
   const startY = event.clientY
   const start = { ...layout.value }
-
   const move = (e: PointerEvent): void => {
     if (target === 'sidebar') {
       layout.value = {
         ...layout.value,
-        sidebarWidth: clamp(
-          start.sidebarWidth + e.clientX - startX,
-          LAYOUT_LIMITS.sidebar[0],
-          LAYOUT_LIMITS.sidebar[1],
-        ),
+        sidebarWidth: clamp(start.sidebarWidth + e.clientX - startX, 200, 420),
       }
-    } else if (target === 'agent') {
+    } else if (target === 'right') {
       layout.value = {
         ...layout.value,
         agentWidth: clamp(
@@ -206,83 +167,232 @@ function startResize(target: ResizeTarget, event: PointerEvent): void {
   window.addEventListener('pointerup', up)
 }
 
-function toggleAgent(): void {
-  layout.value = { ...layout.value, agentCollapsed: !layout.value.agentCollapsed }
-}
-
-function toggleBottom(): void {
-  layout.value = { ...layout.value, bottomCollapsed: !layout.value.bottomCollapsed }
-}
-
-/** 状态栏/新建任务入口：展开工作台，并恢复停靠的 Agent 面板（窄窗口仍收图标）。 */
-function revealTaskWorkbench(): void {
-  workbenchCollapsed.value = false
-  if (layout.value.agentCollapsed) {
-    layout.value = { ...layout.value, agentCollapsed: false }
-  }
-}
-
-// 工作区根由 Rust 侧经 workspace_root 注入（传输层安全边界，docs/PLAN.md R3）；
-// 浏览器 dev 无 Tauri，可用 ?root=<路径> 作为占位数据前缀。
-const treeCollapsed = ref(false)
-const showRuntime = ref(false)
-const showOpen = ref(false)
-const workspaceInput = ref('')
-const workspaceError = ref<string | null>(null)
-const openingWorkspace = ref(false)
+// 工作区与项目名
 const projectRoot = ref(new URLSearchParams(window.location.search).get('root') ?? '')
+const projectName = computed(() => {
+  if (!projectRoot.value) return t('explorer.project')
+  const parts = projectRoot.value.replace(/\\/g, '/').split('/').filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1] : projectRoot.value
+})
+const workspaceError = ref<string | null>(null)
 
-async function submitOpenWorkspace(): Promise<void> {
-  const path = workspaceInput.value.trim()
-  if (!path || openingWorkspace.value) return
-  openingWorkspace.value = true
+async function openWorkspaceDialog(): Promise<void> {
   workspaceError.value = null
-  const res = await openWorkspace(path)
-  openingWorkspace.value = false
+  const res = await pickWorkspace()
   if (!res.ok) {
     workspaceError.value = res.error.message
     return
   }
-  if (res.data.root) {
-    projectRoot.value = res.data.root
-    showOpen.value = false
-    workspaceInput.value = ''
+  if (res.data.root) projectRoot.value = res.data.root
+}
+
+const tabsState = ref(tabsStore.get())
+const unsubTabs = tabsStore.subscribe(state => {
+  tabsState.value = state
+})
+const openTabs = computed(() => tabsState.value.tabs)
+const activeTabId = computed(() => tabsState.value.activeId)
+
+function activateEditor(id: string): void {
+  activateTab(id)
+  sidebarView.value = 'explorer'
+}
+
+// 顶部快速打开 / 命令面板
+const quickQuery = ref('')
+const quickInput = ref<HTMLInputElement | null>(null)
+const quickOpen = ref(false)
+const quickIndex = ref(0)
+
+interface QuickItem {
+  id: string
+  label: string
+  detail: string
+  action: () => void | Promise<void>
+}
+
+const commands = computed<QuickItem[]>(() => [
+  { id: 'cmd:workspace', label: t('menu.openWorkspace'), detail: 'Ctrl+O', action: openWorkspaceDialog },
+  { id: 'cmd:settings', label: t('activity.settings'), detail: 'Ctrl+,', action: () => { sidebarView.value = 'settings' } },
+  { id: 'cmd:git', label: t('activity.git'), detail: '', action: () => { rightTab.value = 'git'; rightVisible.value = true; void refreshGit() } },
+  { id: 'cmd:db', label: t('activity.db'), detail: '', action: () => { rightTab.value = 'db'; rightVisible.value = true; void dbSession.refresh() } },
+  { id: 'cmd:agent', label: t('activity.agent'), detail: '', action: () => { rightTab.value = 'agent'; rightVisible.value = true } },
+  { id: 'cmd:theme', label: t('menu.toggleTheme'), detail: 'Ctrl+Alt+T', action: toggleTheme },
+  { id: 'cmd:bottom', label: t('menu.toggleBottom'), detail: 'Ctrl+J', action: () => { bottomVisible.value = !bottomVisible.value } },
+])
+
+const quickResults = computed<QuickItem[]>(() => {
+  const query = quickQuery.value.trim().toLowerCase()
+  if (!query) return []
+  const files: QuickItem[] = openTabs.value
+    .filter(tab => `${tab.title} ${tab.path ?? ''}`.toLowerCase().includes(query))
+    .map(tab => ({
+      id: `tab:${tab.id}`,
+      label: tab.title,
+      detail: tab.path ?? '',
+      action: () => activateEditor(tab.id),
+    }))
+  const cmds = commands.value.filter(cmd => cmd.label.toLowerCase().includes(query))
+  return [...files, ...cmds].slice(0, 8)
+})
+
+watch(quickResults, list => {
+  quickIndex.value = 0
+  if (list.length === 0) quickOpen.value = quickQuery.value.trim().length > 0
+})
+
+function openQuick(): void {
+  quickOpen.value = true
+  void nextTick(() => quickInput.value?.focus())
+}
+
+function runQuick(item: QuickItem | undefined): void {
+  if (!item) return
+  quickOpen.value = false
+  quickQuery.value = ''
+  void item.action()
+}
+
+function onQuickKey(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    quickOpen.value = false
+    return
+  }
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    quickIndex.value = Math.min(quickIndex.value + 1, quickResults.value.length - 1)
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    quickIndex.value = Math.max(quickIndex.value - 1, 0)
+  } else if (event.key === 'Enter') {
+    event.preventDefault()
+    runQuick(quickResults.value[quickIndex.value])
   }
 }
 
-function onResize(): void {
-  setWindowWidth(window.innerWidth)
+// 自定义菜单栏
+const openMenu = ref<'file' | 'edit' | 'view' | 'help' | null>(null)
+const menuItems = computed(() => ({
+  file: [
+    { label: t('menu.openWorkspace'), action: openWorkspaceDialog },
+    { label: t('menu.save'), action: () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })) } },
+    { label: t('menu.closeTab'), action: () => { if (activeTabId.value) closeTab(activeTabId.value) } },
+  ],
+  edit: [
+    { label: t('menu.undo'), action: () => document.execCommand('undo') },
+    { label: t('menu.redo'), action: () => document.execCommand('redo') },
+    { label: t('menu.find'), action: openQuick },
+  ],
+  view: [
+    { label: t('menu.toggleTheme'), action: toggleTheme },
+    { label: t('menu.zoomIn'), action: () => zoomBy(0.1) },
+    { label: t('menu.zoomOut'), action: () => zoomBy(-0.1) },
+    { label: t('menu.resetZoom'), action: () => setZoom(1) },
+    { label: t('menu.toggleBottom'), action: () => { bottomVisible.value = !bottomVisible.value } },
+  ],
+  help: [
+    { label: t('menu.about'), action: () => { sidebarView.value = 'settings' } },
+  ],
+}))
+
+function toggleMenu(name: 'file' | 'edit' | 'view' | 'help'): void {
+  openMenu.value = openMenu.value === name ? null : name
 }
 
-function onKey(e: KeyboardEvent): void {
-  // P3 将实现编辑器 ↔ Agent 无损切换，P0 先接上快捷键骨架
-  if (e.ctrlKey && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
-    setMode(ui.value.mode === 'editor' ? 'agent' : 'editor')
+function runMenu(action: () => void | Promise<void>): void {
+  openMenu.value = null
+  void action()
+}
+
+// 主题 / 缩放 / 语言
+function changeLocale(): void {
+  locale.value = prefs.value.locale
+  document.documentElement.lang = prefs.value.locale
+}
+
+function refreshGit(): Promise<void> {
+  return Promise.all([gitSession.refresh(), gitSession.loadLog()]).then(() => undefined)
+}
+
+function selectRight(tab: RightTab): void {
+  rightTab.value = tab
+  rightVisible.value = true
+  if (tab === 'git') void refreshGit()
+  if (tab === 'db') void dbSession.refresh()
+}
+
+function selectSidebar(view: SidebarView): void {
+  sidebarView.value = view
+  sidebarVisible.value = true
+}
+
+// 自定义窗口控件（Tauri 无边框窗口）
+function windowAction(action: 'minimize' | 'toggleMaximize' | 'close'): void {
+  if (!isTauri()) return
+  const internals = (window as unknown as { __TAURI_INTERNALS__?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__
+  const command = action === 'minimize'
+    ? 'plugin:window|minimize'
+    : action === 'toggleMaximize'
+      ? 'plugin:window|toggle_maximize'
+      : 'plugin:window|close'
+  void internals?.invoke(command, { label: 'main' })
+}
+
+// 快捷键
+function onKey(event: KeyboardEvent): void {
+  const mod = event.ctrlKey || event.metaKey
+  if (mod && event.key.toLowerCase() === 'p') {
+    event.preventDefault()
+    openQuick()
+  } else if (mod && event.key === '=') {
+    event.preventDefault()
+    zoomBy(0.1)
+  } else if (mod && event.key === '-') {
+    event.preventDefault()
+    zoomBy(-0.1)
+  } else if (mod && event.key === '0') {
+    event.preventDefault()
+    setZoom(1)
+  } else if (mod && event.altKey && event.key.toLowerCase() === 't') {
+    event.preventDefault()
+    toggleTheme()
+  } else if (mod && event.key.toLowerCase() === 'b') {
+    event.preventDefault()
+    sidebarVisible.value = !sidebarVisible.value
+  } else if (mod && event.key.toLowerCase() === 'j') {
+    event.preventDefault()
+    bottomVisible.value = !bottomVisible.value
+  } else if (mod && event.key === ',') {
+    event.preventDefault()
+    sidebarView.value = 'settings'
+    sidebarVisible.value = true
   }
 }
 
 onMounted(() => {
-  setWindowWidth(window.innerWidth)
-  window.addEventListener('resize', onResize)
+  initUiPrefs()
+  document.documentElement.dataset.theme = prefs.value.theme
+  locale.value = prefs.value.locale
+  document.documentElement.lang = prefs.value.locale
   window.addEventListener('keydown', onKey)
+  window.addEventListener('click', () => { openMenu.value = null })
   void taskSession.refresh()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
     } else if (!isTauri() && projectRoot.value === '') {
-      // 浏览器 dev 没有真实工作区；用哨兵根加载占位树，避免永远“读取中”。
       projectRoot.value = 'workspace'
     }
   })
 })
 
 onBeforeUnmount(() => {
-  unsub()
+  unsubPrefs()
+  unsubTabs()
   agentSession.dispose()
   taskSession.dispose()
   dbSession.dispose()
   gitSession.dispose()
-  window.removeEventListener('resize', onResize)
   window.removeEventListener('keydown', onKey)
 })
 </script>
@@ -290,279 +400,527 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="shell"
-    :class="`mode-${profile.mode}`"
+    :class="{ 'sidebar-off': !sidebarVisible, 'right-off': !rightVisible }"
   >
-    <header class="topbar">
-      <div class="brand">
-        {{ t('app.title') }}
-      </div>
-      <div class="spacer" />
-      <button
-        type="button"
-        class="runtime-btn"
-        :class="{ active: gitOpen }"
-        @click="toggleGit"
-      >
-        {{ t('git.open') }}
-      </button>
-      <button
-        type="button"
-        class="runtime-btn"
-        :class="{ active: dbOpen }"
-        @click="toggleDatabase"
-      >
-        {{ t('db.open') }}
-      </button>
-      <button
-        type="button"
-        class="runtime-btn"
-        @click="showOpen = true"
-      >
-        {{ t('workspace.open') }}
-      </button>
-      <button
-        type="button"
-        class="runtime-btn"
-        @click="showRuntime = true"
-      >
-        {{ t('runtime.title') }}
-      </button>
-      <ModeSwitcher />
-    </header>
-
-    <div
-      v-if="showOpen"
-      class="workspace-open"
+    <header
+      class="titlebar"
+      data-tauri-drag-region
     >
-      <input
-        v-model="workspaceInput"
-        class="workspace-input"
-        :placeholder="t('workspace.placeholder')"
-        spellcheck="false"
-        @keydown.enter="submitOpenWorkspace"
-      >
-      <button
-        type="button"
-        class="workspace-action"
-        :disabled="openingWorkspace || workspaceInput.trim().length === 0"
-        @click="submitOpenWorkspace"
-      >
-        {{ t('workspace.action') }}
-      </button>
-      <button
-        type="button"
-        class="workspace-cancel"
-        @click="showOpen = false; workspaceError = null"
-      >
-        {{ t('workspace.cancel') }}
-      </button>
       <div
-        v-if="workspaceError"
-        class="workspace-error"
+        class="brand"
+        data-tauri-drag-region
       >
-        {{ t('workspace.error') }}: {{ workspaceError }}
+        <span class="brand-mark" />
+        <span class="brand-text">Lite Code</span>
       </div>
-    </div>
+      <nav class="menus">
+        <button
+          type="button"
+          @click.stop="toggleMenu('file')"
+        >
+          {{ t('menu.file') }}
+        </button>
+        <button
+          type="button"
+          @click.stop="toggleMenu('edit')"
+        >
+          {{ t('menu.edit') }}
+        </button>
+        <button
+          type="button"
+          @click.stop="toggleMenu('view')"
+        >
+          {{ t('menu.view') }}
+        </button>
+        <button
+          type="button"
+          @click.stop="toggleMenu('help')"
+        >
+          {{ t('menu.help') }}
+        </button>
+        <div
+          v-if="openMenu"
+          class="menu-pop"
+          @click.stop
+        >
+          <button
+            v-for="item in menuItems[openMenu]"
+            :key="item.label"
+            type="button"
+            @click="runMenu(item.action)"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+      </nav>
 
-    <div class="main">
-      <!-- P4 三栏：左栏 = 项目文件树 + 任务列表；中栏对话/编辑器；右栏工作台。 -->
-      <aside
-        v-if="profile.sidebarVisible"
-        class="side"
-        :style="{ width: `${profile.sidebarWidth}px` }"
+      <div
+        class="quick-wrap"
+        data-tauri-drag-region="false"
       >
-        <div class="side-head">
+        <input
+          ref="quickInput"
+          v-model="quickQuery"
+          class="quick-input"
+          :placeholder="t('titlebar.searchPlaceholder')"
+          spellcheck="false"
+          @focus="quickOpen = true"
+          @keydown="onQuickKey"
+        >
+        <div
+          v-if="quickOpen && quickQuery && quickResults.length"
+          class="quick-pop"
+        >
+          <button
+            v-for="(item, index) in quickResults"
+            :key="item.id"
+            type="button"
+            class="quick-item"
+            :class="{ active: index === quickIndex }"
+            @mousedown.prevent="runQuick(item)"
+          >
+            <span class="quick-label">{{ item.label }}</span>
+            <span class="quick-detail">{{ item.detail }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="title-actions">
+        <button
+          type="button"
+          class="icon-btn"
+          :title="t('settings.language')"
+          @click="changeLocale"
+        >
+          {{ prefs.locale === 'zh-CN' ? '中' : 'EN' }}
+        </button>
+        <button
+          type="button"
+          class="icon-btn"
+          :title="t('menu.toggleTheme')"
+          @click="toggleTheme"
+        >
+          <AppIcon
+            :name="prefs.theme === 'dark' ? 'sun' : 'moon'"
+            :size="16"
+          />
+        </button>
+        <template v-if="isTauri()">
           <button
             type="button"
-            class="side-toggle"
-            :title="t('tree.toggle')"
-            :aria-expanded="!treeCollapsed"
-            @click="treeCollapsed = !treeCollapsed"
+            class="win-btn"
+            :title="t('titlebar.minimize')"
+            @click="windowAction('minimize')"
           >
-            {{ treeCollapsed ? '▸' : '▾' }}
+            —
           </button>
-          <span
-            v-if="!treeCollapsed"
-            class="side-title"
-          >{{ t('tree.title') }}</span>
-        </div>
-        <div
-          v-if="!treeCollapsed"
-          class="tree-slot"
+          <button
+            type="button"
+            class="win-btn"
+            :title="t('titlebar.maximize')"
+            @click="windowAction('toggleMaximize')"
+          >
+            □
+          </button>
+          <button
+            type="button"
+            class="win-btn close"
+            :title="t('titlebar.close')"
+            @click="windowAction('close')"
+          >
+            ×
+          </button>
+        </template>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <nav
+        class="activity"
+        :aria-label="t('activity.explorer')"
+      >
+        <button
+          type="button"
+          class="act-btn"
+          :class="{ active: sidebarView === 'explorer' && sidebarVisible }"
+          :title="t('activity.explorer')"
+          @click="selectSidebar('explorer')"
         >
-          <FileTree :root="projectRoot" />
+          <AppIcon name="explorer" />
+        </button>
+        <button
+          type="button"
+          class="act-btn"
+          :class="{ active: sidebarView === 'search' && sidebarVisible }"
+          :title="t('activity.search')"
+          @click="selectSidebar('search')"
+        >
+          <AppIcon name="search" />
+        </button>
+        <button
+          type="button"
+          class="act-btn"
+          :class="{ active: rightTab === 'git' && rightVisible }"
+          :title="t('activity.git')"
+          @click="selectRight('git')"
+        >
+          <AppIcon name="git" />
+        </button>
+        <button
+          type="button"
+          class="act-btn"
+          :class="{ active: rightTab === 'db' && rightVisible }"
+          :title="t('activity.db')"
+          @click="selectRight('db')"
+        >
+          <AppIcon name="db" />
+        </button>
+        <button
+          type="button"
+          class="act-btn"
+          :class="{ active: sidebarView === 'tasks' && sidebarVisible }"
+          :title="t('activity.tasks')"
+          @click="selectSidebar('tasks')"
+        >
+          <AppIcon name="tasks" />
+        </button>
+        <button
+          type="button"
+          class="act-btn"
+          :class="{ active: rightTab === 'agent' && rightVisible }"
+          :title="t('activity.agent')"
+          @click="selectRight('agent')"
+        >
+          <AppIcon name="agent" />
+        </button>
+        <div class="act-space" />
+        <button
+          type="button"
+          class="act-btn"
+          :class="{ active: sidebarView === 'settings' && sidebarVisible }"
+          :title="t('activity.settings')"
+          @click="selectSidebar('settings')"
+        >
+          <AppIcon name="settings" />
+        </button>
+      </nav>
+
+      <aside
+        v-if="sidebarVisible"
+        class="sidebar"
+        :style="{ width: `${sidebarWidth}px` }"
+      >
+        <div class="sidebar-head">
+          <div class="project">
+            <AppIcon
+              name="folder"
+              :size="14"
+            />
+            <span
+              class="project-name"
+              :title="projectRoot"
+            >{{ projectName }}</span>
+          </div>
+          <div class="sidebar-actions">
+            <button
+              type="button"
+              class="icon-btn"
+              :title="t('explorer.openWorkspace')"
+              @click="openWorkspaceDialog"
+            >
+              <AppIcon
+                name="folder"
+                :size="14"
+              />
+            </button>
+            <button
+              type="button"
+              class="icon-btn"
+              :title="t('explorer.refresh')"
+              @click="openWorkspaceDialog"
+            >
+              <AppIcon
+                name="refresh"
+                :size="14"
+              />
+            </button>
+          </div>
         </div>
+
         <div
-          class="task-slot"
-          :class="{ expanded: treeCollapsed }"
+          v-if="workspaceError"
+          class="side-error"
+        >
+          {{ workspaceError }}
+        </div>
+
+        <div
+          v-if="sidebarView === 'explorer'"
+          class="view explorer"
+        >
+          <div class="section-title">
+            <span>{{ t('explorer.openEditors') }}</span>
+            <span class="count">{{ openTabs.length }}</span>
+          </div>
+          <div class="open-editors">
+            <div
+              v-for="tab in openTabs"
+              :key="tab.id"
+              class="editor-row"
+              :class="{ active: tab.id === activeTabId }"
+              @click="activateEditor(tab.id)"
+            >
+              <span
+                class="dirty"
+                :class="{ on: tab.dirty }"
+              />
+              <span class="editor-name">{{ tab.title }}</span>
+              <button
+                type="button"
+                class="editor-close"
+                @click.stop="closeTab(tab.id)"
+              >
+                ×
+              </button>
+            </div>
+            <div
+              v-if="openTabs.length === 0"
+              class="empty-line"
+            >
+              {{ t('explorer.noEditors') }}
+            </div>
+          </div>
+          <div class="section-title tree-title">
+            <span>{{ projectName }}</span>
+          </div>
+          <div class="tree-body">
+            <FileTree :root="projectRoot" />
+          </div>
+        </div>
+
+        <div
+          v-else-if="sidebarView === 'search'"
+          class="view search-view"
+        >
+          <div class="section-title">
+            {{ t('activity.search') }}
+          </div>
+          <div class="search-hint">
+            {{ t('search.hint') }}
+          </div>
+          <button
+            v-for="item in quickResults"
+            :key="item.id"
+            type="button"
+            class="search-result"
+            @click="runQuick(item)"
+          >
+            <span>{{ item.label }}</span>
+            <small>{{ item.detail }}</small>
+          </button>
+          <div
+            v-if="quickQuery && quickResults.length === 0"
+            class="empty-line"
+          >
+            {{ t('search.noResults') }}
+          </div>
+        </div>
+
+        <div
+          v-else-if="sidebarView === 'tasks'"
+          class="view tasks-view"
         >
           <TaskList
             :controller="taskSession"
-            @created="revealTaskWorkbench"
+            @created="selectRight('workbench')"
           />
         </div>
+
+        <div
+          v-else
+          class="view settings-view"
+        >
+          <SettingsPanel />
+        </div>
       </aside>
+
       <div
-        v-if="profile.sidebarVisible"
-        class="resizer v"
+        v-if="sidebarVisible"
+        class="resizer"
         role="separator"
         aria-orientation="vertical"
         @pointerdown="startResize('sidebar', $event)"
       />
 
-      <section class="center">
-        <GitPanel
-          v-if="gitOpen"
-          :controller="gitSession"
-          @close="gitOpen = false"
-        />
-        <DbPanel
-          v-else-if="dbOpen"
-          :controller="dbSession"
-          @close="dbOpen = false"
-        />
-        <template v-else>
-          <TabBar v-if="profile.tabsVisible" />
-          <CodeEditor v-if="profile.centerView === 'editor'" />
-          <AgentPanel
+      <main class="editor-col">
+        <TabBar />
+        <div class="editor-card">
+          <CodeEditor v-if="openTabs.length > 0" />
+          <div
             v-else
-            :controller="agentSession"
-          />
-          <div
-            v-if="profile.bottomPanelVisible"
-            class="resizer h"
-            role="separator"
-            aria-orientation="horizontal"
-            @pointerdown="startResize('bottom', $event)"
-          />
-          <div
-            v-if="profile.bottomPanelVisible"
-            class="bottom-panel"
-            :style="{ height: `${profile.bottomHeight}px` }"
+            class="welcome"
           >
-            <div class="bottom-tabs">
-              <span class="bottom-tab active">{{ t('bottom.terminal') }}</span>
-              <span class="bottom-tab">{{ t('bottom.output') }}</span>
-              <span class="bottom-tab">{{ t('bottom.problems') }}</span>
-              <button
-                type="button"
-                class="bottom-collapse"
-                :title="t('bottom.collapse')"
-                @click="toggleBottom"
-              >
-                ▾
-              </button>
-            </div>
-            <div class="bottom-body">
-              —
-            </div>
-          </div>
-        </template>
-      </section>
-
-      <div
-        v-if="profile.agentPanel === 'docked'"
-        class="resizer v"
-        role="separator"
-        aria-orientation="vertical"
-        @pointerdown="startResize('agent', $event)"
-      />
-      <aside
-        v-if="profile.agentPanel === 'docked'"
-        class="right-column"
-        :style="{ width: `${profile.agentWidth}px` }"
-      >
-        <div
-          v-if="!workbenchCollapsed"
-          class="workbench-slot"
-        >
-          <TaskWorkbench
-            :key="TASK_WORKBENCH_KEY"
-            :controller="taskSession"
-            @collapse="workbenchCollapsed = true"
-          />
-        </div>
-        <button
-          v-else
-          type="button"
-          class="workbench-strip"
-          :title="t('task.expand')"
-          @click="workbenchCollapsed = false"
-        >
-          <span>{{ t('task.workbenchTitle') }}</span>
-          <span class="strip-chev">▸</span>
-        </button>
-        <div class="agent-dock">
-          <div class="agent-head">
-            <span>{{ t('agent.panelTitle') }}</span>
+            <div class="welcome-mark" />
+            <h1>{{ t('welcome.title') }}</h1>
+            <p>{{ t('welcome.subtitle') }}</p>
             <button
               type="button"
-              class="agent-toggle"
-              :title="t('agent.collapse')"
-              @click="toggleAgent"
+              class="primary"
+              @click="openWorkspaceDialog"
+            >
+              {{ t('welcome.openWorkspace') }}
+            </button>
+            <div class="shortcuts">
+              {{ t('welcome.shortcuts') }}
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="bottomVisible"
+          class="resizer h"
+          role="separator"
+          aria-orientation="horizontal"
+          @pointerdown="startResize('bottom', $event)"
+        />
+        <section
+          v-if="bottomVisible"
+          class="bottom"
+          :style="{ height: `${bottomHeight}px` }"
+        >
+          <div class="bottom-tabs">
+            <span class="bottom-tab active">{{ t('bottom.terminal') }}</span>
+            <span class="bottom-tab">{{ t('bottom.output') }}</span>
+            <span class="bottom-tab">{{ t('bottom.problems') }}</span>
+            <button
+              type="button"
+              class="icon-btn bottom-close"
+              @click="bottomVisible = false"
             >
               ×
             </button>
           </div>
-          <AgentPanel :controller="agentSession" />
+          <div class="bottom-body">
+            —
+          </div>
+        </section>
+      </main>
+
+      <div
+        v-if="rightVisible"
+        class="resizer"
+        role="separator"
+        aria-orientation="vertical"
+        @pointerdown="startResize('right', $event)"
+      />
+      <aside
+        v-if="rightVisible"
+        class="right"
+        :style="{ width: `${rightWidth}px` }"
+      >
+        <div class="right-tabs">
+          <button
+            type="button"
+            :class="{ active: rightTab === 'agent' }"
+            @click="selectRight('agent')"
+          >
+            {{ t('activity.agent') }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: rightTab === 'workbench' }"
+            @click="selectRight('workbench')"
+          >
+            {{ t('task.workbenchTitle') }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: rightTab === 'git' }"
+            @click="selectRight('git')"
+          >
+            {{ t('activity.git') }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: rightTab === 'db' }"
+            @click="selectRight('db')"
+          >
+            {{ t('activity.db') }}
+          </button>
+          <button
+            type="button"
+            class="right-close"
+            @click="rightVisible = false"
+          >
+            ×
+          </button>
+        </div>
+        <div class="right-body">
+          <AgentPanel
+            v-if="rightTab === 'agent'"
+            :controller="agentSession"
+          />
+          <TaskWorkbench
+            v-else-if="rightTab === 'workbench'"
+            :controller="taskSession"
+            @collapse="rightVisible = false"
+          />
+          <GitPanel
+            v-else-if="rightTab === 'git'"
+            :controller="gitSession"
+            @close="rightTab = 'agent'"
+          />
+          <DbPanel
+            v-else
+            :controller="dbSession"
+            @close="rightTab = 'agent'"
+          />
         </div>
       </aside>
-      <aside
-        v-else
-        class="right-rail"
-      >
-        <button
-          type="button"
-          class="agent-icon"
-          :title="t('agent.expand')"
-          :disabled="ui.windowWidth < NARROW_WIDTH_PX"
-          @click="toggleAgent"
-        >
-          A
-        </button>
-        <button
-          type="button"
-          class="workbench-icon"
-          :title="workbenchCollapsed ? t('task.expand') : t('task.collapse')"
-          @click="workbenchCollapsed = !workbenchCollapsed"
-        >
-          T
-        </button>
-      </aside>
-      <div
-        v-if="profile.agentPanel === 'icon' && !workbenchCollapsed"
-        class="workbench-overlay"
-        :style="{ width: `${profile.agentWidth}px` }"
-      >
-        <TaskWorkbench
-          :key="TASK_WORKBENCH_KEY"
-          :controller="taskSession"
-          @collapse="workbenchCollapsed = true"
-        />
-      </div>
     </div>
 
-    <RuntimeSettings
-      v-if="showRuntime"
-      @close="showRuntime = false"
-    />
-
     <footer class="statusbar">
-      <span class="item">{{ t('status.branch') }}</span>
-      <span class="item dim">Node —</span>
-      <span class="item dim">MCP 0</span>
-      <span class="item dim">{{ t('status.sessions') }}</span>
+      <span class="status-item">{{ t('status.branch') }} main</span>
+      <span class="status-item dim">Node —</span>
+      <span class="status-item dim">MCP 0</span>
       <TaskStatusBar
         :controller="taskSession"
-        @reveal="revealTaskWorkbench"
+        @reveal="selectRight('workbench')"
       />
+      <span class="status-space" />
+      <div class="zoom-control">
+        <button
+          type="button"
+          @click="zoomBy(-0.1)"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          @click="setZoom(1)"
+        >
+          {{ Math.round(prefs.zoom * 100) }}%
+        </button>
+        <button
+          type="button"
+          @click="zoomBy(0.1)"
+        >
+          +
+        </button>
+      </div>
       <button
-        v-if="profile.mode === 'editor' && !profile.bottomPanelVisible"
         type="button"
-        class="status-btn"
-        @click="toggleBottom"
+        class="status-item"
+        @click="selectSidebar('settings')"
       >
-        {{ t('bottom.show') }}
+        {{ t('activity.settings') }}
+      </button>
+      <button
+        type="button"
+        class="status-item"
+        @click="bottomVisible = !bottomVisible"
+      >
+        {{ t('bottom.terminal') }}
       </button>
     </footer>
   </div>
@@ -570,247 +928,557 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .shell {
-  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
   background: var(--bg);
 }
 
-.workspace-open {
-  position: absolute;
-  top: 40px;
-  left: 12px;
-  z-index: 40;
-  width: min(560px, calc(100vw - 24px));
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
-}
-
-.workspace-input {
-  flex: 1;
-  min-width: 220px;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--bg);
-  color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.workspace-input:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-
-.workspace-action,
-.workspace-cancel {
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--panel-3);
-  color: var(--fg-2);
-  font-size: 11px;
-}
-
-.workspace-action:hover:not(:disabled),
-.workspace-cancel:hover {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-
-.workspace-action:disabled {
-  color: var(--fg-faint);
-}
-
-.workspace-error {
-  flex-basis: 100%;
-  color: #e06c75;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.topbar {
+/* ---- 自定义标题栏 ---- */
+.titlebar {
+  position: relative;
+  z-index: 30;
+  flex: none;
+  height: 38px;
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 36px;
-  padding: 0 12px;
-  background: var(--panel);
+  padding: 0 10px 0 14px;
+  background: var(--titlebar);
   border-bottom: 1px solid var(--border);
+  user-select: none;
 }
 
 .brand {
-  font-weight: 600;
-  color: var(--fg-2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 132px;
+}
+
+.brand-mark {
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, var(--accent), #9d7bff);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.brand-text {
   font-size: 12px;
-  letter-spacing: 0.04em;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--fg);
 }
 
-.spacer {
-  flex: 1;
+.menus {
+  position: relative;
+  display: flex;
+  gap: 2px;
 }
 
-.runtime-btn {
-  height: 22px;
+.menus > button {
+  height: 26px;
   padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-xs);
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.menus > button:hover {
   background: var(--panel-3);
+  color: var(--fg);
+}
+
+.menu-pop {
+  position: absolute;
+  top: 30px;
+  left: 0;
+  z-index: 60;
+  min-width: 190px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+}
+
+.menu-pop button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  text-align: left;
+  border-radius: var(--r-xs);
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.menu-pop button:hover {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+.quick-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.quick-input {
+  width: 100%;
+  height: 26px;
+  padding: 0 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.quick-input:focus {
+  border-color: var(--accent-line);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.quick-pop {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+}
+
+.quick-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: var(--r-xs);
+  text-align: left;
+}
+
+.quick-item.active,
+.quick-item:hover {
+  background: var(--accent-soft);
+}
+
+.quick-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.quick-detail {
+  color: var(--fg-faint);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.title-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-xs);
   color: var(--fg-dim);
   font-size: 11px;
 }
 
-.runtime-btn:hover {
+.icon-btn:hover {
+  background: var(--panel-3);
   color: var(--fg);
-  border-color: var(--accent);
 }
 
-.runtime-btn.active {
-  color: var(--accent);
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
+.win-btn {
+  width: 30px;
+  height: 26px;
+  border-radius: var(--r-xs);
+  color: var(--fg-dim);
+  font-size: 12px;
 }
 
-.main {
+.win-btn:hover {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.win-btn.close:hover {
+  background: #d9534f;
+  color: #fff;
+}
+
+/* ---- 主区域 ---- */
+.workspace {
   flex: 1;
   min-height: 0;
   display: flex;
+  padding: 6px;
+  gap: 6px;
 }
 
-.side {
-  min-width: 0;
+.activity {
+  flex: none;
+  width: 46px;
   display: flex;
   flex-direction: column;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
-}
-
-.tree-slot {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  overflow: hidden;
-}
-
-.tree-slot :deep(.tree) {
-  flex: 1;
-}
-
-.task-slot {
-  flex: 0 0 42%;
-  min-height: 140px;
-  max-height: 58%;
-  display: flex;
-  overflow: hidden;
-  border-top: 1px solid var(--border);
-}
-
-.task-slot.expanded {
-  flex: 1;
-  max-height: none;
-}
-
-.resizer {
-  flex: 0 0 auto;
-  z-index: 5;
-  background: transparent;
-}
-
-.resizer.v {
-  width: 4px;
-  cursor: col-resize;
-}
-
-.resizer.h {
-  height: 4px;
-  cursor: row-resize;
-}
-
-.resizer:hover {
-  background: var(--accent);
-}
-
-.side-head {
-  display: flex;
   align-items: center;
   gap: 4px;
-  height: 28px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border);
+  padding: 6px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
 }
 
-.side-toggle {
-  width: 18px;
-  height: 18px;
+.act-btn {
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--r-sm);
-  color: var(--fg-faint);
-  font-size: 10px;
+  color: var(--fg-dim);
 }
 
-.side-toggle:hover {
+.act-btn:hover {
   color: var(--fg);
   background: var(--panel-3);
 }
 
-.side-title {
-  font-size: 11px;
-  color: var(--fg-dim);
-  letter-spacing: 0.04em;
+.act-btn.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.center {
+.act-space {
+  flex: 1;
+}
+
+.sidebar {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.sidebar-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg-2);
+}
+
+.project-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+
+.side-error {
+  padding: 6px 10px;
+  color: var(--red);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.section-title .count {
+  color: var(--fg-faint);
+}
+
+.open-editors {
+  max-height: 120px;
+  overflow: auto;
+  padding: 0 6px 6px;
+}
+
+.editor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.editor-row:hover {
+  background: var(--panel-3);
+}
+
+.editor-row.active {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+.dirty {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.dirty.on {
+  background: var(--accent);
+}
+
+.editor-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-close {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.tree-title {
+  border-top: 1px solid var(--border);
+}
+
+.tree-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.tree-body :deep(.tree) {
+  flex: 1;
+}
+
+.empty-line {
+  padding: 8px 10px;
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.search-view {
+  padding: 0 10px 10px;
+}
+
+.search-hint {
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.search-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: 12px;
+}
+
+.search-result:hover {
+  background: var(--panel-3);
+}
+
+.search-result small {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.tasks-view,
+.settings-view {
+  overflow: auto;
+}
+
+.editor-col {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 6px;
 }
 
-.bottom-panel {
+.editor-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.welcome {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border);
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-dim);
+}
+
+.welcome-mark {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--accent), #9d7bff);
+  box-shadow: 0 0 0 8px var(--accent-soft);
+  margin-bottom: 8px;
+}
+
+.welcome h1 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.welcome p {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.welcome .primary {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.welcome .primary:hover {
+  background: var(--accent-hov);
+}
+
+.shortcuts {
+  margin-top: 8px;
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.resizer {
+  flex: 0 0 3px;
+  z-index: 5;
+  border-radius: 999px;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.resizer.h {
+  flex-basis: 3px;
+  cursor: row-resize;
+}
+
+.resizer:hover {
+  background: var(--accent-line);
+}
+
+.bottom {
+  flex: none;
+  display: flex;
+  flex-direction: column;
   background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
 }
 
 .bottom-tabs {
+  flex: none;
   display: flex;
-  gap: 12px;
-  padding: 0 12px;
-  height: 26px;
   align-items: center;
+  gap: 14px;
+  height: 30px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
-}
-
-.bottom-collapse {
-  margin-left: auto;
-  color: var(--fg-faint);
-  font-size: 10px;
-}
-
-.bottom-collapse:hover {
-  color: var(--fg);
+  font-size: 11px;
 }
 
 .bottom-tab {
-  font-size: 12px;
   color: var(--fg-dim);
 }
 
 .bottom-tab.active {
   color: var(--accent);
+}
+
+.bottom-close {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
 }
 
 .bottom-body {
@@ -821,153 +1489,126 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.right-column {
+.right {
+  flex: none;
   min-width: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
 }
 
-.workbench-slot {
-  flex: 1 1 55%;
+.right-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.right-tabs button {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--r-xs);
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.right-tabs button:hover {
+  color: var(--fg);
+  background: var(--panel-3);
+}
+
+.right-tabs button.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.right-close {
+  margin-left: auto;
+}
+
+.right-body {
+  flex: 1;
   min-height: 0;
   display: flex;
   overflow: hidden;
 }
 
-.workbench-strip {
+.right-body :deep(.db-side) {
+  width: 220px;
+}
+
+.right-body :deep(.files-pane) {
+  flex-basis: 200px;
+  min-width: 160px;
+}
+
+/* ---- 状态栏 ---- */
+.statusbar {
   flex: none;
+  height: 24px;
   display: flex;
   align-items: center;
-  height: 28px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border);
-  color: var(--fg-dim);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-align: left;
-}
-
-.workbench-strip:hover {
-  color: var(--fg);
-  background: var(--panel-2);
-}
-
-.strip-chev {
-  margin-left: auto;
-  color: var(--fg-faint);
-  font-size: 10px;
-}
-
-.agent-dock {
-  flex: 1 1 45%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+  gap: 14px;
+  padding: 0 10px;
+  background: var(--titlebar);
   border-top: 1px solid var(--border);
-}
-
-.right-rail {
-  width: 40px;
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding-top: 8px;
-  background: var(--panel);
-  border-left: 1px solid var(--border);
-}
-
-.workbench-icon {
   color: var(--fg-dim);
-  font-weight: 600;
   font-size: 11px;
-  background: none;
-  border: 0;
-  cursor: pointer;
 }
 
-.workbench-icon:hover {
-  color: var(--accent);
-}
-
-.workbench-overlay {
-  position: absolute;
-  top: 36px;
-  right: 0;
-  bottom: 24px;
-  z-index: 25;
-  display: flex;
-  min-width: 0;
-  background: var(--panel);
-  border-left: 1px solid var(--border);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
-}
-
-.agent-head {
-  display: flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
+.status-item {
   color: var(--fg-dim);
+  font-size: 11px;
 }
 
-.agent-head span {
+.status-item.dim {
+  color: var(--fg-faint);
+}
+
+.status-space {
   flex: 1;
 }
 
-.agent-toggle {
-  width: 20px;
-  height: 20px;
-  color: var(--fg-faint);
-  font-size: 14px;
-  line-height: 1;
+.zoom-control {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.agent-toggle:hover {
+.zoom-control button {
+  min-width: 24px;
+  height: 20px;
+  border-radius: var(--r-xs);
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.zoom-control button:hover {
+  background: var(--panel-3);
   color: var(--fg);
 }
 
-.agent-icon {
-  color: var(--accent);
-  font-weight: 600;
-  background: none;
-  border: 0;
-  cursor: pointer;
-}
+@media (max-width: 1100px) {
+  .right {
+    position: absolute;
+    top: 44px;
+    right: 8px;
+    bottom: 30px;
+    z-index: 40;
+    width: min(420px, calc(100vw - 90px)) !important;
+    box-shadow: var(--shadow);
+  }
 
-.agent-icon:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-
-.statusbar {
-  display: flex;
-  gap: 16px;
-  height: 24px;
-  align-items: center;
-  padding: 0 12px;
-  background: var(--panel);
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--fg-2);
-}
-
-.item.dim {
-  color: var(--fg-faint);
-}
-
-.status-btn {
-  margin-left: auto;
-  color: var(--accent);
-  font-size: 11px;
-}
-
-.status-btn:hover {
-  text-decoration: underline;
+  .right-off .right {
+    display: none;
+  }
 }
 </style>

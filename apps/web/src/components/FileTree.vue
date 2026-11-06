@@ -40,7 +40,12 @@ const props = defineProps<{ root: string }>()
 const { t } = useI18n()
 
 const state = ref<TreeState>(createTreeState(props.root, false))
-const rows = computed(() => visibleRows(state.value))
+const HIDDEN_NAMES = new Set(['.git', '.github', '.zcode'])
+const rows = computed(() =>
+  visibleRows(state.value).filter(
+    row => row.kind !== 'entry' || !HIDDEN_NAMES.has(row.entry.name),
+  ),
+)
 const rootLayer = computed(() => state.value.layers[state.value.root])
 /** 空态：真实读取成功且无条目（占位数据总有条目，不会落到这里） */
 const isEmpty = computed(() => rows.value.length === 0 && rootLayer.value?.state === 'ready')

@@ -1,5 +1,7 @@
 {
-  "app": { "title": "Lite Code" },
+  "app": {
+    "title": "Lite Code"
+  },
   "mode": {
     "editor": "Editor",
     "agent": "Agent",
@@ -350,5 +352,85 @@
   "status": {
     "branch": "main",
     "sessions": "0 running sessions"
+  },
+  "menu": {
+    "file": "File",
+    "edit": "Edit",
+    "view": "View",
+    "help": "Help",
+    "openWorkspace": "Open Workspace…",
+    "save": "Save",
+    "closeTab": "Close Tab",
+    "undo": "Undo",
+    "redo": "Redo",
+    "find": "Find",
+    "toggleTheme": "Toggle Theme",
+    "zoomIn": "Zoom In",
+    "zoomOut": "Zoom Out",
+    "resetZoom": "Reset Zoom",
+    "toggleBottom": "Toggle Bottom Panel",
+    "about": "About Lite Code",
+    "cut": "Cut",
+    "copy": "Copy",
+    "paste": "Paste",
+    "selectAll": "Select All"
+  },
+  "activity": {
+    "explorer": "Explorer",
+    "search": "Search",
+    "git": "Source Control",
+    "db": "Database",
+    "tasks": "Tasks",
+    "agent": "Agent",
+    "settings": "Settings",
+    "toggleSidebar": "Toggle Sidebar"
+  },
+  "explorer": {
+    "openEditors": "Open Editors",
+    "noEditors": "No open editors",
+    "project": "Project",
+    "newFile": "New File",
+    "newFolder": "New Folder",
+    "refresh": "Refresh",
+    "openWorkspace": "Open Workspace",
+    "collapse": "Collapse"
+  },
+  "search": {
+    "placeholder": "Search files or commands…",
+    "noResults": "No results",
+    "hint": "Type a file name or command, press Enter",
+    "commands": "Commands"
+  },
+  "welcome": {
+    "title": "Welcome to Lite Code",
+    "subtitle": "Open a workspace, or start from the Explorer.",
+    "openWorkspace": "Open Workspace",
+    "shortcuts": "Ctrl+Shift+P Command Palette · Ctrl+P Quick Open"
+  },
+  "settings": {
+    "appearance": "Appearance",
+    "theme": "Theme",
+    "dark": "Dark",
+    "light": "Light",
+    "zoom": "Page Zoom",
+    "language": "Language",
+    "themeShortcut": "Theme shortcut",
+    "editor": "Editor",
+    "font": "Font",
+    "tabSize": "Tab Size",
+    "wordWrap": "Word Wrap",
+    "agent": "Agent",
+    "agentHint": "Provider and keys live in your home directory; keys prefer environment variables.",
+    "db": "Database",
+    "projectOptIn": "Project MCP requires opt-in",
+    "about": "About",
+    "version": "Version",
+    "aboutHint": "Lightweight desktop agent workbench; core and contract live in Rust."
+  },
+  "titlebar": {
+    "searchPlaceholder": "Search files, commands…",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "close": "Close"
   }
 }

@@ -1,37 +1,73 @@
-/* 视觉基调来自 demo/index.html（UI.md §2）：高密度、低装饰、工具感。
-   不用玻璃拟态、不用 backdrop-filter；明度层级靠背景而非阴影。 */
-:root {
-  --font-ui: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+/* 现代简洁基调：中性灰 + 蓝色强调，低装饰、清晰层级。
+   暗色/亮色通过 data-theme 切换，组件只用变量。 */
+:root,
+:root[data-theme='dark'] {
+  --font-ui: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
-  --bg: #17181c;
-  --panel: #1d1f24;
-  --panel-2: #222429;
-  --panel-3: #292c33;
-  --border: #2a2d34;
-  --border-strong: #3a3e47;
+  --bg: #111318;
+  --titlebar: #151821;
+  --panel: #181b23;
+  --panel-2: #1e222c;
+  --panel-3: #262b37;
+  --panel-4: #2d3340;
+  --border: #262b36;
+  --border-strong: #3a4150;
 
-  --fg: #d9dade;
-  --fg-2: #b3b7bf;
-  --fg-dim: #878c96;
-  --fg-faint: #5c616b;
+  --fg: #e6e9ef;
+  --fg-2: #bfc6d4;
+  --fg-dim: #8b94a7;
+  --fg-faint: #5c6578;
 
-  --accent: #e8875a;
-  --accent-hov: #f39b70;
-  --accent-fg: #1b1410;
-  --accent-soft: rgba(232, 135, 90, 0.10);
-  --accent-line: rgba(232, 135, 90, 0.34);
+  --accent: #5b9dff;
+  --accent-hov: #79b0ff;
+  --accent-fg: #08111f;
+  --accent-soft: rgba(91, 157, 255, 0.12);
+  --accent-line: rgba(91, 157, 255, 0.38);
 
-  --green: #79b98a;
-  --yellow: #d9ae5f;
-  --red: #d97a70;
+  --green: #56c08d;
+  --yellow: #e0b45c;
+  --red: #ef7d7d;
 
-  --r: 6px;
-  --r-sm: 4px;
+  --r: 10px;
+  --r-sm: 6px;
+  --r-xs: 4px;
+  --shadow: 0 8px 24px rgb(0 0 0 / 32%);
+  --shadow-soft: 0 2px 8px rgb(0 0 0 / 18%);
   --dur: 140ms;
   --ease: cubic-bezier(0.2, 0.6, 0.3, 1);
 
   color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #eef1f6;
+  --titlebar: #f7f9fc;
+  --panel: #ffffff;
+  --panel-2: #f4f6fa;
+  --panel-3: #e9edf5;
+  --panel-4: #dde3ee;
+  --border: #dce2ee;
+  --border-strong: #c3ccdc;
+
+  --fg: #1c2330;
+  --fg-2: #39445a;
+  --fg-dim: #69748a;
+  --fg-faint: #99a3b5;
+
+  --accent: #3b82f6;
+  --accent-hov: #2f6fd8;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(59, 130, 246, 0.10);
+  --accent-line: rgba(59, 130, 246, 0.40);
+
+  --green: #1f9d63;
+  --yellow: #b57910;
+  --red: #d14343;
+
+  --shadow: 0 10px 28px rgb(28 35 48 / 14%);
+  --shadow-soft: 0 2px 8px rgb(28 35 48 / 8%);
+  color-scheme: light;
 }
 
 * {
@@ -52,6 +88,7 @@ body {
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overflow: hidden;
 }
 
 button {
@@ -62,9 +99,32 @@ button {
   cursor: pointer;
 }
 
+input,
+select,
+textarea {
+  font: inherit;
+  color: var(--fg);
+}
+
 :focus-visible {
-  outline: 1px solid var(--accent-line);
+  outline: 2px solid var(--accent-line);
   outline-offset: 1px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--panel-4);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {

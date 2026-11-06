@@ -30,6 +30,8 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2.5"
 # 更新检查只拉取静态 JSON；复用 lc-core 已锁定的 ureq 版本，不新增第三方包。
 ureq = "3.5.1"
+# 原生文件夹选择器（打开工作区）；仅桌面壳使用。
+rfd = "0.15"
 lc-core = { workspace = true }
 lc-proto = { workspace = true }
 serde = { workspace = true }

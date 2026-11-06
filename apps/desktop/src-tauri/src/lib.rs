@@ -123,6 +123,35 @@ fn workspace_open(
     })
 }
 
+/// 原生文件夹选择器：选中后校验、持久化并返回新的工作区根。
+/// 取消时返回当前根，前端无需区分“取消”和“未变化”。
+#[tauri::command]
+async fn workspace_pick(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let current = state.get();
+    let picked = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new().set_title("打开工作区").pick_folder()
+    })
+    .await
+    .map_err(|e| ErrorBody::new(ErrorCode::Internal, e.to_string()))?;
+
+    let Some(path) = picked else {
+        return Ok(CommandResult::WorkspaceRoot {
+            root: current.map(|p| lc_core::fs::display_path(&p)),
+        });
+    };
+    let canonical = validate_workspace_dir(&path.to_string_lossy())?;
+    let display = lc_core::fs::display_path(&canonical);
+    state.set(canonical);
+    if let Ok(store) = JsonConfigStore::at_default_path() {
+        let _ = store_workspace_root(&store, Some(display.clone()));
+    }
+    Ok(CommandResult::WorkspaceRoot {
+        root: Some(display),
+    })
+}
+
 /// 转发 lc-core 的 Node 探测。惰性触发由前端控制，这里不做缓存。
 #[tauri::command]
 fn node_detect() -> CommandResult {
@@ -645,6 +674,7 @@ pub fn run() {
             update_check,
             workspace_root,
             workspace_open,
+            workspace_pick,
             fs_read_dir,
             fs_read_file,
             fs_write_file,

@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Lite Code 主窗口：核心权限 + 自定义标题栏窗口控制","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-minimize","core:window:allow-toggle-maximize","core:window:allow-close","core:window:allow-start-dragging"]}}

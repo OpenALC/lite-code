@@ -1,5 +1,7 @@
 {
-  "app": { "title": "Lite Code" },
+  "app": {
+    "title": "Lite Code"
+  },
   "mode": {
     "editor": "编辑器",
     "agent": "Agent",
@@ -350,5 +352,85 @@
   "status": {
     "branch": "main",
     "sessions": "0 个运行中会话"
+  },
+  "menu": {
+    "file": "文件",
+    "edit": "编辑",
+    "view": "查看",
+    "help": "帮助",
+    "openWorkspace": "打开工作区…",
+    "save": "保存",
+    "closeTab": "关闭标签",
+    "undo": "撤销",
+    "redo": "重做",
+    "find": "查找",
+    "toggleTheme": "切换亮色/暗色",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "resetZoom": "重置缩放",
+    "toggleBottom": "显示/隐藏底部面板",
+    "about": "关于 Lite Code",
+    "cut": "剪切",
+    "copy": "复制",
+    "paste": "粘贴",
+    "selectAll": "全选"
+  },
+  "activity": {
+    "explorer": "资源管理器",
+    "search": "搜索",
+    "git": "源代码管理",
+    "db": "数据库",
+    "tasks": "任务",
+    "agent": "Agent",
+    "settings": "设置",
+    "toggleSidebar": "切换侧栏"
+  },
+  "explorer": {
+    "openEditors": "打开的编辑器",
+    "noEditors": "没有打开的文件",
+    "project": "项目",
+    "newFile": "新建文件",
+    "newFolder": "新建文件夹",
+    "refresh": "刷新",
+    "openWorkspace": "打开工作区",
+    "collapse": "折叠"
+  },
+  "search": {
+    "placeholder": "搜索文件或命令…",
+    "noResults": "没有匹配项",
+    "hint": "输入文件名或命令，回车打开",
+    "commands": "命令"
+  },
+  "welcome": {
+    "title": "欢迎使用 Lite Code",
+    "subtitle": "打开一个工作区，或从左侧资源管理器开始。",
+    "openWorkspace": "打开工作区",
+    "shortcuts": "Ctrl+Shift+P 命令面板 · Ctrl+P 快速打开"
+  },
+  "settings": {
+    "appearance": "外观",
+    "theme": "主题",
+    "dark": "深色",
+    "light": "浅色",
+    "zoom": "页面缩放",
+    "language": "语言",
+    "themeShortcut": "主题快捷键",
+    "editor": "编辑器",
+    "font": "字体",
+    "tabSize": "缩进",
+    "wordWrap": "自动换行",
+    "agent": "Agent",
+    "agentHint": "供应商与密钥配置位于用户目录，密钥优先读环境变量。",
+    "db": "数据库",
+    "projectOptIn": "项目 MCP 需显式启用",
+    "about": "关于",
+    "version": "版本",
+    "aboutHint": "轻量桌面 Agent 工作台；契约与核心在 Rust 侧。"
+  },
+  "titlebar": {
+    "searchPlaceholder": "搜索文件、命令…",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "close": "关闭"
   }
 }

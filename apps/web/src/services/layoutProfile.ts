@@ -15,13 +15,13 @@ export interface LayoutPrefs {
 }
 
 export const LAYOUT_LIMITS = {
-  sidebar: [160, 360],
+  sidebar: [240, 420],
   agent: [280, 640],
   bottom: [120, 400],
 } as const
 
 export const DEFAULT_LAYOUT: LayoutPrefs = {
-  sidebarWidth: 220,
+  sidebarWidth: 280,
   agentWidth: 400,
   bottomHeight: 180,
   agentCollapsed: false,
