@@ -212,6 +212,8 @@ fn redact_backup_keys(path: &Path) {
         return;
     };
     let Ok(mut file) = ProvidersFile::parse(&text) else {
+        // 损坏的备份可能仍含旧密钥，无法脱敏时直接丢弃。
+        let _ = std::fs::remove_file(bak);
         return;
     };
     for provider in &mut file.providers {
