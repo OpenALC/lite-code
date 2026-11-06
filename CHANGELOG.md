@@ -49,4 +49,5 @@
 - 依赖：`dompurify` override 至 3.4.17，`pnpm audit --prod` 清零
 - 复验补丁：DB 审批按 connection_id 隔离、shell/DB/git 子进程剥离 provider 密钥、CI audit 缓存修复
 - 审计 Medium：CREATE TRIGGER DML 检查、LIMIT/TOP 识别、DB bridge 流式取样、不可信边界转义、task key FNV-1a 64
+- 审批 UX：write_file/edit_file 展示内容/替换摘要，AllowSession 按内容隔离
 
