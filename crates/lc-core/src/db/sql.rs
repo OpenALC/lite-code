@@ -10,6 +10,10 @@
 //! - 关键字只在括号深度 0 上判定，`(SELECT ... WHERE ...)` 里的 `WHERE`
 //!   不会被当成外层条件；`WITH` / `EXPLAIN` 会继续看主语句或 CTE 体内的
 //!   数据修改，避免 `WITH ... DELETE` / `EXPLAIN ANALYZE DELETE` 被当成 Read；
+//! - `CREATE ... TRIGGER ... BEGIN ... END` 按触发器体逐条检查
+//!   UPDATE/DELETE/MERGE 的顶层 WHERE，体内的 `;` 不切分语句；
+//! - `LIMIT` 注入只看真正的限制子句（`LIMIT <值>`、`FETCH FIRST/NEXT`、
+//!   `SELECT TOP ...`）；名为 `top` / `limit` / `fetch` 的列不会抑制注入；
 //! - `PRAGMA` 只把只读白名单（`table_info` / `index_list` 等）归为 Read；
 //!   带 `=`、括号赋值或未知名称的 pragma 归 Write，`db_query` 会拒绝；
 //! - 单语句按顶层 `;` 切分，空语句忽略；
@@ -144,7 +148,8 @@ impl SqlGuard {
     /// 校验单条 SQL 并按需注入 `LIMIT`。
     ///
     /// `read_only` 表示连接/事务只读：除 Read 以外的类型一律拒绝。无顶层
-    /// `WHERE` 的 UPDATE/DELETE/MERGE 在**任何**模式下都拒绝。
+    /// `WHERE` 的 UPDATE/DELETE/MERGE（含 `CREATE TRIGGER` 体内）在**任何**
+    /// 模式下都拒绝。
     pub fn check(&self, sql: &str, read_only: bool) -> Result<GuardedSql, SqlError> {
         let tokens = lex(sql, self.dialect)?;
         let statements = split_statements(&tokens);
@@ -185,6 +190,19 @@ impl SqlGuard {
         if let Some(statement) = nested_write_without_where(tokens) {
             return Err(SqlError::MissingWhere { statement });
         }
+        // 触发器体在词法上是顶层（`BEGIN ... ; END` 不带括号），`nested_write_without_where`
+        // 看不到；必须显式扫描 BEGIN/END 内的语句。缺少完整的 BEGIN/END 形态时
+        // fail-closed，避免把无法解析的触发器当普通 DDL 放行。
+        if is_create_trigger(tokens) {
+            if trigger_body_span(tokens).is_none() {
+                return Err(SqlError::UnsupportedSyntax {
+                    construct: "CREATE TRIGGER body",
+                });
+            }
+            if let Some(statement) = trigger_write_without_where(tokens) {
+                return Err(SqlError::MissingWhere { statement });
+            }
+        }
         if classification.kind == SqlKind::Unknown {
             return Err(SqlError::UnknownStatement {
                 head: classification.head,
@@ -193,7 +211,7 @@ impl SqlGuard {
 
         let inject_limit = classification.kind == SqlKind::Read
             && matches!(classification.head.as_str(), "SELECT" | "WITH")
-            && !has_top_level_word(tokens, &["LIMIT", "FETCH", "TOP"]);
+            && !has_top_level_limit_clause(tokens);
 
         // 只保留语句本体：去掉语句外空白/结尾分号/尾随注释；语句内部原文保留。
         let start = tokens.first().map_or(0, |token| token.start);
@@ -489,8 +507,18 @@ fn scan_quoted(
 fn split_statements<'a, 'sql>(tokens: &'a [Token<'sql>]) -> Vec<&'a [Token<'sql>]> {
     let mut statements = Vec::new();
     let mut start = 0usize;
+    // CREATE TRIGGER 的 `BEGIN ... ; ... END` 体内分号是语句分隔符，但整个
+    // 触发器仍是一条 SQL 语句；在匹配 END 之前不能切分。
+    let mut trigger_end: Option<usize> = None;
     for (index, token) in tokens.iter().enumerate() {
-        if token.kind == TokenKind::Punct && token.text == ";" && token.depth == 0 {
+        if index == start {
+            trigger_end = trigger_body_span(&tokens[start..]).map(|(_, end)| start + end);
+        }
+        if token.kind == TokenKind::Punct
+            && token.text == ";"
+            && token.depth == 0
+            && !trigger_end.is_some_and(|end| index < end)
+        {
             if index > start {
                 statements.push(&tokens[start..index]);
             }
@@ -695,6 +723,205 @@ fn has_top_level_word(tokens: &[Token<'_>], words: &[&str]) -> bool {
                 .iter()
                 .any(|word| token.text.eq_ignore_ascii_case(word))
     })
+}
+
+fn is_top_level_word(token: &Token<'_>, word: &str) -> bool {
+    token.depth == 0 && token.kind == TokenKind::Word && token.text.eq_ignore_ascii_case(word)
+}
+
+/// 是否已有真正的顶层行数限制子句。不能只看关键字：列名 `top`、`limit`、
+/// `fetch` 也会是顶层 Word，误判会导致不注入而放大结果集。
+fn has_top_level_limit_clause(tokens: &[Token<'_>]) -> bool {
+    has_limit_clause(tokens) || has_fetch_clause(tokens) || has_select_top_clause(tokens)
+}
+
+/// `LIMIT <number|?|:name>` 只在后接限制值时成立。
+fn has_limit_clause(tokens: &[Token<'_>]) -> bool {
+    tokens.iter().enumerate().any(|(index, token)| {
+        is_top_level_word(token, "LIMIT") && limit_operand(tokens.get(index + 1))
+    })
+}
+
+fn limit_operand(token: Option<&Token<'_>>) -> bool {
+    match token {
+        Some(token) if token.depth == 0 => match token.kind {
+            TokenKind::Number => true,
+            TokenKind::Punct => token.text == "?" || token.text == ":",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `FETCH FIRST|NEXT ...`；同样要求后继关键字，避免把 `SELECT fetch` 当子句。
+fn has_fetch_clause(tokens: &[Token<'_>]) -> bool {
+    tokens.windows(2).any(|pair| {
+        is_top_level_word(&pair[0], "FETCH")
+            && (is_top_level_word(&pair[1], "FIRST") || is_top_level_word(&pair[1], "NEXT"))
+    })
+}
+
+/// `SELECT [ALL|DISTINCT] TOP <number>|(<expr>)`。TOP 必须位于 SELECT
+/// 修饰位置，`SELECT top FROM t` 里的列名不算。
+fn has_select_top_clause(tokens: &[Token<'_>]) -> bool {
+    for (index, token) in tokens.iter().enumerate() {
+        if !is_top_level_word(token, "SELECT") {
+            continue;
+        }
+        let mut next = index + 1;
+        if tokens.get(next).is_some_and(|token| {
+            is_top_level_word(token, "ALL") || is_top_level_word(token, "DISTINCT")
+        }) {
+            next += 1;
+        }
+        if !tokens
+            .get(next)
+            .is_some_and(|token| is_top_level_word(token, "TOP"))
+        {
+            continue;
+        }
+        match tokens.get(next + 1) {
+            Some(token) if token.depth == 0 && token.kind == TokenKind::Number => return true,
+            Some(token)
+                if token.depth == 0 && token.kind == TokenKind::Punct && token.text == "(" =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `CREATE [OR REPLACE] [TEMP|TEMPORARY] TRIGGER ...`。
+fn is_create_trigger(tokens: &[Token<'_>]) -> bool {
+    let mut index = 0usize;
+    if !tokens
+        .get(index)
+        .is_some_and(|token| is_top_level_word(token, "CREATE"))
+    {
+        return false;
+    }
+    index += 1;
+    if tokens
+        .get(index)
+        .is_some_and(|token| is_top_level_word(token, "OR"))
+        && tokens
+            .get(index + 1)
+            .is_some_and(|token| is_top_level_word(token, "REPLACE"))
+    {
+        index += 2;
+    }
+    if tokens.get(index).is_some_and(|token| {
+        is_top_level_word(token, "TEMP") || is_top_level_word(token, "TEMPORARY")
+    }) {
+        index += 1;
+    }
+    tokens
+        .get(index)
+        .is_some_and(|token| is_top_level_word(token, "TRIGGER"))
+}
+
+/// 定位触发器体 `BEGIN ... END`，返回 `(BEGIN, END)` 的 token 下标。
+///
+/// 头部 `ON table` 之后、`BEGIN` 之前还有 `FOR EACH ROW` / `WHEN expr`，
+/// 其中可能出现名为 `begin` 的列；逐个尝试候选 BEGIN，只有能配平
+/// `CASE`/`BEGIN`/`END` 的才是真正的语句体。
+fn trigger_body_span(tokens: &[Token<'_>]) -> Option<(usize, usize)> {
+    if !is_create_trigger(tokens) {
+        return None;
+    }
+    let mut after_on = false;
+    for (index, token) in tokens.iter().enumerate() {
+        if token.depth != 0 || token.kind != TokenKind::Word {
+            continue;
+        }
+        if is_top_level_word(token, "ON") {
+            after_on = true;
+            continue;
+        }
+        if !after_on || !is_top_level_word(token, "BEGIN") {
+            continue;
+        }
+        if let Some(end) = trigger_body_end(tokens, index) {
+            return Some((index, end));
+        }
+    }
+    None
+}
+
+/// 从语句体 BEGIN 开始配平嵌套的 `CASE`/`BEGIN`，返回语句体 END 的下标。
+///
+/// 真正的触发器体 END 后面只能是语句结束符或输入结尾；头部 `WHEN` 里的
+/// `CASE ... END` 后面紧跟的是真正的 BEGIN，借此排除误配候选。
+fn trigger_body_end(tokens: &[Token<'_>], begin: usize) -> Option<usize> {
+    let mut nesting = 1usize;
+    for (index, token) in tokens.iter().enumerate().skip(begin + 1) {
+        if token.depth != 0 || token.kind != TokenKind::Word {
+            continue;
+        }
+        if is_top_level_word(token, "BEGIN") || is_top_level_word(token, "CASE") {
+            nesting += 1;
+        } else if is_top_level_word(token, "END") {
+            nesting = nesting.saturating_sub(1);
+            if nesting == 0 {
+                let followed_by_end = match tokens.get(index + 1) {
+                    None => true,
+                    Some(next) => {
+                        next.depth == 0 && next.kind == TokenKind::Punct && next.text == ";"
+                    }
+                };
+                return followed_by_end.then_some(index);
+            }
+        }
+    }
+    None
+}
+
+/// 扫描触发器体内的 UPDATE/DELETE/MERGE；每条语句必须在同一词法层有
+/// WHERE。触发器体语句不在括号内（depth 0），所以不能复用
+/// `nested_write_without_where`。
+fn trigger_write_without_where(tokens: &[Token<'_>]) -> Option<String> {
+    let (begin, end) = trigger_body_span(tokens)?;
+    let mut index = begin + 1;
+    while index < end {
+        let token = &tokens[index];
+        if token.depth != 0 || token.kind != TokenKind::Word {
+            index += 1;
+            continue;
+        }
+        let word = token.text.to_ascii_uppercase();
+        // INSERT ... ON CONFLICT DO UPDATE 的 UPDATE 不是独立语句，无需 WHERE。
+        if !matches!(word.as_str(), "UPDATE" | "DELETE" | "MERGE")
+            || preceding_top_level_word(tokens, begin, index).as_deref() == Some("DO")
+        {
+            index += 1;
+            continue;
+        }
+        let statement_end = tokens[index + 1..end]
+            .iter()
+            .position(|next| next.depth == 0 && next.kind == TokenKind::Punct && next.text == ";")
+            .map_or(end, |offset| index + 1 + offset);
+        let has_where = tokens[index + 1..statement_end].iter().any(|next| {
+            next.depth == 0
+                && next.kind == TokenKind::Word
+                && next.text.eq_ignore_ascii_case("WHERE")
+        });
+        if !has_where {
+            return Some(word);
+        }
+        index = statement_end + 1;
+    }
+    None
+}
+
+/// 指定下标之前、指定下界之后的最近一个顶层 Word（大写）。
+fn preceding_top_level_word(tokens: &[Token<'_>], lower: usize, index: usize) -> Option<String> {
+    tokens[lower..index]
+        .iter()
+        .rev()
+        .find(|token| token.depth == 0 && token.kind == TokenKind::Word)
+        .map(|token| token.text.to_ascii_uppercase())
 }
 
 /// 括号内的 UPDATE/DELETE/MERGE 必须在**同一括号层**有 WHERE；主查询的
@@ -933,6 +1160,48 @@ mod tests {
     }
 
     #[test]
+    fn column_named_top_does_not_suppress_limit() {
+        let guarded = ok("SELECT top FROM users");
+        assert_eq!(guarded.kind, SqlKind::Read);
+        assert!(guarded.injected_limit);
+        assert_eq!(guarded.sql, "SELECT top FROM users LIMIT 100");
+
+        let qualified = ok("SELECT users.top FROM users");
+        assert!(qualified.injected_limit);
+    }
+
+    #[test]
+    fn column_named_limit_or_fetch_does_not_suppress_limit() {
+        let limit_column = ok("SELECT limit FROM users");
+        assert!(limit_column.injected_limit);
+        assert_eq!(limit_column.sql, "SELECT limit FROM users LIMIT 100");
+
+        let limit_in_where = ok("SELECT * FROM users WHERE limit = 5");
+        assert!(limit_in_where.injected_limit);
+
+        let fetch_column = ok("SELECT fetch FROM users");
+        assert!(fetch_column.injected_limit);
+    }
+
+    #[test]
+    fn top_expression_and_parameter_forms_are_preserved() {
+        let top_expr = ok("SELECT TOP (5) * FROM users");
+        assert!(!top_expr.injected_limit);
+
+        let top_distinct = ok("SELECT DISTINCT TOP 5 * FROM users");
+        assert!(!top_distinct.injected_limit);
+
+        let named = ok("SELECT * FROM users LIMIT :count");
+        assert!(!named.injected_limit);
+
+        let positional = ok("SELECT * FROM users LIMIT ?");
+        assert!(!positional.injected_limit);
+
+        let fetch_next = ok("SELECT * FROM users ORDER BY id FETCH NEXT 5 ROWS ONLY");
+        assert!(!fetch_next.injected_limit);
+    }
+
+    #[test]
     fn limit_in_subquery_still_limits_outer_query() {
         let guarded = ok("SELECT * FROM (SELECT id FROM users LIMIT 1) AS recent");
         assert!(guarded.injected_limit);
@@ -1167,6 +1436,69 @@ mod tests {
     fn quoted_where_column_in_condition_is_fine() {
         let guarded = ok("DELETE FROM users WHERE \"where\" = 1");
         assert_eq!(guarded.kind, SqlKind::Write);
+    }
+
+    // ==== CREATE TRIGGER 体 ====
+
+    #[test]
+    fn create_trigger_without_where_is_rejected() {
+        assert_missing_where(
+            "CREATE TRIGGER wipe AFTER INSERT ON users BEGIN DELETE FROM users; END",
+            "DELETE",
+        );
+        assert_missing_where(
+            "CREATE TEMP TRIGGER wipe AFTER UPDATE ON users BEGIN UPDATE users SET name = 'x'; END",
+            "UPDATE",
+        );
+        assert_missing_where(
+            "CREATE TRIGGER wipe AFTER INSERT ON users BEGIN INSERT INTO log VALUES (1); DELETE FROM users; END",
+            "DELETE",
+        );
+    }
+
+    #[test]
+    fn create_trigger_with_where_is_allowed() {
+        for sql in [
+            "CREATE TRIGGER cleanup AFTER INSERT ON users BEGIN DELETE FROM sessions WHERE user_id = new.id; END",
+            "CREATE TRIGGER cleanup BEFORE UPDATE ON users BEGIN UPDATE users SET touched = 1 WHERE id = old.id; END",
+            "CREATE TEMPORARY TRIGGER cleanup AFTER DELETE ON users BEGIN DELETE FROM sessions WHERE user_id = old.id; END",
+        ] {
+            let guarded = ok(sql);
+            assert_eq!(guarded.kind, SqlKind::Ddl, "kind for {sql:?}");
+            assert!(!guarded.injected_limit, "limit for {sql:?}");
+            assert_eq!(guarded.sql, sql);
+        }
+    }
+
+    #[test]
+    fn create_trigger_body_handles_case_end_nesting() {
+        let sql = "CREATE TRIGGER audit AFTER INSERT ON users BEGIN INSERT INTO log VALUES (CASE WHEN new.active THEN 1 ELSE 0 END); END";
+        let guarded = ok(sql);
+        assert_eq!(guarded.kind, SqlKind::Ddl);
+        assert_eq!(guarded.sql, sql);
+    }
+
+    #[test]
+    fn create_trigger_when_clause_begin_column_does_not_confuse_body() {
+        assert_missing_where(
+            "CREATE TRIGGER tr AFTER INSERT ON users WHEN CASE WHEN begin THEN 1 ELSE 0 END BEGIN DELETE FROM users; END",
+            "DELETE",
+        );
+
+        let sql = "CREATE TRIGGER tr AFTER INSERT ON users WHEN CASE WHEN begin THEN 1 ELSE 0 END BEGIN DELETE FROM users WHERE id = 1; END";
+        let guarded = ok(sql);
+        assert_eq!(guarded.kind, SqlKind::Ddl);
+        assert_eq!(guarded.sql, sql);
+    }
+
+    #[test]
+    fn create_trigger_without_begin_end_fails_closed() {
+        assert!(matches!(
+            error("CREATE TRIGGER broken AFTER INSERT ON users DELETE FROM users"),
+            SqlError::UnsupportedSyntax {
+                construct: "CREATE TRIGGER body"
+            }
+        ));
     }
 
     // ==== 字符串/注释不影响分类 ====

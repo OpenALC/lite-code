@@ -130,8 +130,10 @@ function query(params) {
   );
 
   const started = performance.now();
-  let rows;
+  const normalized = [];
   let columns;
+  let truncated = false;
+  let firstRow;
   try {
     const statement = entry.db.prepare(sql);
     // Node 24 支持 setReturnArrays：重复列名不会在对象键上被合并。
@@ -145,32 +147,45 @@ function query(params) {
         nullable: column.notnull !== 1,
       }));
     }
-    rows = statement.all();
+    const collect = (row) => {
+      if (firstRow === undefined) firstRow = row;
+      if (Array.isArray(row)) {
+        normalized.push(row.map(cell));
+      } else if (row && typeof row === 'object') {
+        normalized.push(Object.values(row).map(cell));
+      } else {
+        normalized.push([cell(row)]);
+      }
+    };
+    // 用 iterate 在 limit + 1 行处停止：SQL 自带更大的 LIMIT 时也不会先
+    // 把整张表物化到内存。多取的第 limit + 1 行只用于判定 truncated。
+    if (typeof statement.iterate === 'function') {
+      for (const row of statement.iterate()) {
+        if (normalized.length >= limit) {
+          truncated = true;
+          break;
+        }
+        collect(row);
+      }
+    } else {
+      // 旧版 Node 没有 iterate：退回 all()，仍由 Rust 侧二次切片兜底。
+      const rows = statement.all();
+      truncated = rows.length > limit;
+      for (const row of truncated ? rows.slice(0, limit) : rows) {
+        collect(row);
+      }
+    }
   } catch (error) {
     throw dbRejected(
       `sqlite query failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
-  if (!Array.isArray(rows)) rows = [];
-  const rowCount = rows.length;
-  const truncated = rowCount > limit;
-  const limited = truncated ? rows.slice(0, limit) : rows;
-
-  const normalized = [];
-  for (const row of limited) {
-    if (Array.isArray(row)) {
-      normalized.push(row.map(cell));
-    } else if (row && typeof row === 'object') {
-      normalized.push(Object.values(row).map(cell));
-    } else {
-      normalized.push([cell(row)]);
-    }
-  }
-
   if (!columns) {
-    const first = rows[0];
-    const names = first && typeof first === 'object' ? Object.keys(first) : [];
+    const names =
+      firstRow && !Array.isArray(firstRow) && typeof firstRow === 'object'
+        ? Object.keys(firstRow)
+        : [];
     columns = names.map((name) => ({
       name,
       type_name: '',

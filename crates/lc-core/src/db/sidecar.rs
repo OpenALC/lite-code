@@ -947,6 +947,96 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_query_stops_at_limit_and_reports_truncation() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("query-limit");
+        let db = dir.db_path();
+        let mut sidecar = start(&node);
+        sidecar
+            .connect(&sqlite_config("main", &db, false))
+            .expect("连接 sqlite");
+        sidecar
+            .execute("main", "CREATE TABLE items (id INTEGER PRIMARY KEY)")
+            .expect("建表");
+        sidecar
+            .execute(
+                "main",
+                "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000) INSERT INTO items (id) SELECT n FROM seq",
+            )
+            .expect("插入 1000 行");
+
+        // 默认上限 100：SQL 自带更大的 LIMIT 时，第 101 行存在就必须标记
+        // truncated（闸门不会改写过大的自带 LIMIT，bridge 负责封顶）。
+        let defaulted = sidecar
+            .query("main", "SELECT id FROM items ORDER BY id LIMIT 1000", None)
+            .expect("默认上限查询");
+        assert_eq!(defaulted.row_count, 100);
+        assert_eq!(defaulted.rows.len(), 100);
+        assert!(defaulted.truncated);
+
+        let limited = sidecar
+            .query("main", "SELECT id FROM items ORDER BY id", Some(5))
+            .expect("limit 5 查询");
+        assert_eq!(limited.row_count, 5);
+        assert_eq!(
+            limited.rows,
+            vec![
+                vec![Some("1".to_string())],
+                vec![Some("2".to_string())],
+                vec![Some("3".to_string())],
+                vec![Some("4".to_string())],
+                vec![Some("5".to_string())],
+            ]
+        );
+        assert!(limited.truncated);
+
+        // 行数恰好等于 limit 时不需要 truncated。
+        let exact = sidecar
+            .query(
+                "main",
+                "SELECT id FROM items WHERE id <= 5 ORDER BY id",
+                Some(5),
+            )
+            .expect("恰好 limit 查询");
+        assert_eq!(exact.row_count, 5);
+        assert!(!exact.truncated);
+    }
+
+    #[test]
+    fn sqlite_query_does_not_materialize_past_limit() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("query-lazy");
+        let db = dir.db_path();
+        let mut sidecar = start(&node);
+        sidecar
+            .connect(&sqlite_config("main", &db, false))
+            .expect("连接 sqlite");
+        sidecar
+            .execute("main", "CREATE TABLE items (id INTEGER PRIMARY KEY)")
+            .expect("建表");
+        sidecar
+            .execute(
+                "main",
+                "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000) INSERT INTO items (id) SELECT n FROM seq",
+            )
+            .expect("插入 1000 行");
+
+        // 第 500 行表达式会抛错。旧实现先 all() 取回 LIMIT 100 的行，
+        // 必然执行到第 500 行；iterate 在 limit + 1 行停止则不会。
+        let result = sidecar
+            .query(
+                "main",
+                "SELECT CASE WHEN id = 500 THEN json('bad') ELSE id END AS value FROM items",
+                Some(10),
+            )
+            .expect("bridge 不应物化超过 limit + 1 行");
+        assert_eq!(result.row_count, 10);
+        assert_eq!(result.rows[0], vec![Some("1".to_string())]);
+        assert_eq!(result.columns[0].name, "value");
+        assert!(result.truncated);
+    }
+
+    #[test]
     fn schema_tree_lists_database_table_and_columns() {
         let Some(node) = test_node() else { return };
         let dir = TempDir::new("schema");
@@ -1066,6 +1156,69 @@ mod tests {
             .query("main", "SELECT name FROM items WHERE id = 1", None)
             .expect("复查");
         assert_eq!(unchanged.rows, vec![vec![Some("keep".to_string())]]);
+    }
+
+    #[test]
+    fn create_trigger_with_where_is_allowed_and_fires() {
+        let Some(node) = test_node() else { return };
+        let dir = TempDir::new("trigger");
+        let db = dir.db_path();
+        let mut sidecar = start(&node);
+        sidecar
+            .connect(&sqlite_config("main", &db, false))
+            .expect("连接 sqlite");
+        sidecar
+            .execute(
+                "main",
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)",
+            )
+            .expect("建 items");
+        sidecar
+            .execute(
+                "main",
+                "CREATE TABLE audit (id INTEGER PRIMARY KEY, name TEXT)",
+            )
+            .expect("建 audit");
+        sidecar
+            .execute(
+                "main",
+                "INSERT INTO items (id, name) VALUES (1, 'a'), (2, 'b')",
+            )
+            .expect("插入 items");
+        sidecar
+            .execute(
+                "main",
+                "INSERT INTO audit (id, name) VALUES (1, 'old1'), (2, 'old2')",
+            )
+            .expect("插入 audit");
+
+        // 触发器体内的 `;` 不能触发多语句拒绝，体内 UPDATE 的 WHERE 必须保留。
+        sidecar
+            .execute(
+                "main",
+                "CREATE TRIGGER sync_name AFTER UPDATE OF name ON items BEGIN UPDATE audit SET name = new.name WHERE id = new.id; END",
+            )
+            .expect("创建带 WHERE 的触发器");
+        sidecar
+            .execute("main", "UPDATE items SET name = 'new' WHERE id = 1")
+            .expect("触发更新");
+
+        let audit = sidecar
+            .query("main", "SELECT name FROM audit WHERE id = 1", None)
+            .expect("查询 audit");
+        assert_eq!(audit.rows, vec![vec![Some("new".to_string())]]);
+
+        let error = sidecar
+            .execute(
+                "main",
+                "CREATE TRIGGER wipe AFTER DELETE ON items BEGIN DELETE FROM audit; END",
+            )
+            .expect_err("触发器体内无 WHERE 的 DELETE 必须被拒绝");
+        assert!(matches!(&error, DbError::Rejected(message) if message.contains("WHERE")));
+        let unchanged = sidecar
+            .query("main", "SELECT COUNT(*) AS n FROM audit", None)
+            .expect("复查 audit");
+        assert_eq!(unchanged.rows, vec![vec![Some("2".to_string())]]);
     }
 
     #[test]
