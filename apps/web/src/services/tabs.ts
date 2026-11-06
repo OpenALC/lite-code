@@ -2,6 +2,7 @@
 // 关闭保护：dirty 标签的 closeTab 不真正关闭、不弹窗，只返回 needsConfirm，
 // 由视图层决定确认交互（UI.md §7：不用模态框打断流程）。
 // 框架无关：按 services/store.ts 的模式只暴露纯函数与 subscribe()（UI.md §8）。
+import { basenamePath, isPathWithin, replacePathPrefix } from './fileTree'
 import { resolveEditorStrategy, type EditorFileStrategy } from './largeFile'
 import { createStore, type Store } from './store'
 
@@ -99,6 +100,50 @@ export function openTab(tab: OpenTabInput): void {
     ],
     activeId: tab.id,
   })
+}
+
+/**
+ * 文件系统移动/重命名成功后同步标签：路径命中 from（目录含全部后代）的标签
+ * 更新 id / path / title，激活标签的 id 一并跟随。返回是否有变化。
+ * 内容、dirty 与编辑器策略保持不变。
+ */
+export function relocateTabs(from: string, to: string): boolean {
+  if (!from || !to || from === to) return false
+  const state = tabsStore.get()
+  const idMap = new Map<string, string>()
+  let changed = false
+
+  const tabs = state.tabs.map(tab => {
+    if (tab.path === null || !isPathWithin(from, tab.path)) return tab
+    const nextPath = replacePathPrefix(tab.path, from, to)
+    if (!nextPath || nextPath === tab.path) return tab
+    const nextId = isPathWithin(from, tab.id)
+      ? (replacePathPrefix(tab.id, from, to) ?? tab.id)
+      : tab.id
+    if (nextId !== tab.id) idMap.set(tab.id, nextId)
+    changed = true
+    return { ...tab, id: nextId, path: nextPath, title: basenamePath(nextPath) }
+  })
+
+  if (!changed) return false
+  const activeId =
+    state.activeId !== null ? (idMap.get(state.activeId) ?? state.activeId) : null
+  tabsStore.set({ tabs, activeId })
+  return true
+}
+
+/**
+ * 文件系统删除成功后关闭被删路径上的标签（目录含全部后代）。
+ * 磁盘内容已不存在，dirty 标签也强制关闭；返回关闭数量。
+ */
+export function removeTabsUnder(path: string): number {
+  if (!path) return 0
+  const ids = tabsStore
+    .get()
+    .tabs.filter(tab => tab.path !== null && isPathWithin(path, tab.path))
+    .map(tab => tab.id)
+  for (const id of ids) closeTab(id, { force: true })
+  return ids.length
 }
 
 /** 激活标签。id 不存在时不改变状态，返回 false。 */

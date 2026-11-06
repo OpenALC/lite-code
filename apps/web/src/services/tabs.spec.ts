@@ -8,6 +8,8 @@ import {
   INITIAL_TABS_STATE,
   markSaved,
   openTab,
+  relocateTabs,
+  removeTabsUnder,
   setDirty,
   tabsStore,
   updateContent,
@@ -246,6 +248,79 @@ describe('closeTab · 激活顺延', () => {
     openTab({ id: 'a.rs', title: 'a.rs' })
     expect(closeTab('sample')).toEqual({ kind: 'closed' })
     expect(tabsStore.get().activeId).toBe('a.rs')
+  })
+})
+
+describe('文件系统移动/重命名后的标签同步', () => {
+  it('目录前缀更新后代标签的 id / path，激活 id 跟随', () => {
+    openTab({ id: 'D:/proj/src/a.rs', title: 'a.rs', content: 'a' })
+    openTab({ id: 'D:/proj/b.rs', title: 'b.rs', content: 'b' })
+    activateTab('D:/proj/src/a.rs')
+    expect(relocateTabs('D:/proj/src', 'D:/proj/lib')).toBe(true)
+
+    const state = tabsStore.get()
+    expect(state.tabs.find(t => t.path === 'D:/proj/lib/a.rs')).toMatchObject({
+      id: 'D:/proj/lib/a.rs',
+      title: 'a.rs',
+    })
+    expect(state.tabs.find(t => t.path === 'D:/proj/b.rs')?.id).toBe('D:/proj/b.rs')
+    expect(state.activeId).toBe('D:/proj/lib/a.rs')
+  })
+
+  it('重命名单个文件：标题随新文件名更新，内容与 dirty 保留', () => {
+    openTab({ id: 'D:/proj/a.rs', title: 'a.rs', content: 'v1' })
+    updateContent('D:/proj/a.rs', 'v2')
+    expect(relocateTabs('D:/proj/a.rs', 'D:/proj/b.rs')).toBe(true)
+
+    const tab = tabsStore.get().tabs.find(t => t.path === 'D:/proj/b.rs')
+    expect(tab).toMatchObject({
+      id: 'D:/proj/b.rs',
+      title: 'b.rs',
+      content: 'v2',
+      dirty: true,
+    })
+  })
+
+  it('组件边界外不更新；无变化返回 false 且不发通知', () => {
+    openTab({ id: 'D:/proj/src2/a.rs', title: 'a.rs', content: 'a' })
+    const seen: TabsState[] = []
+    const unsub = tabsStore.subscribe(s => seen.push(s))
+    expect(relocateTabs('D:/proj/src', 'D:/proj/lib')).toBe(false)
+    expect(tabsStore.get().tabs.find(t => t.path === 'D:/proj/src2/a.rs')?.id).toBe(
+      'D:/proj/src2/a.rs',
+    )
+    expect(seen).toEqual([])
+    unsub()
+  })
+})
+
+describe('文件系统删除后的标签清理', () => {
+  it('关闭目录下全部标签，保留同前缀边界外的标签', () => {
+    openTab({ id: 'D:/proj/src/a.rs', title: 'a.rs', content: 'a' })
+    openTab({ id: 'D:/proj/src/deep/b.rs', title: 'b.rs', content: 'b' })
+    openTab({ id: 'D:/proj/src2/c.rs', title: 'c.rs', content: 'c' })
+
+    expect(removeTabsUnder('D:/proj/src')).toBe(2)
+    expect(tabsStore.get().tabs.map(t => t.path)).toEqual([null, 'D:/proj/src2/c.rs'])
+  })
+
+  it('dirty 标签强制关闭，激活顺延到相邻标签', () => {
+    openTab({ id: 'D:/proj/src/a.rs', title: 'a.rs', content: 'a' })
+    openTab({ id: 'D:/proj/b.rs', title: 'b.rs', content: 'b' })
+    activateTab('D:/proj/src/a.rs')
+    setDirty('D:/proj/src/a.rs', true)
+
+    expect(removeTabsUnder('D:/proj/src')).toBe(1)
+    const state = tabsStore.get()
+    expect(state.tabs.map(t => t.id)).toEqual(['sample', 'D:/proj/b.rs'])
+    expect(state.activeId).toBe('D:/proj/b.rs')
+  })
+
+  it('删除单文件只关闭精确路径，不误伤同名前缀', () => {
+    openTab({ id: 'D:/proj/a.rs', title: 'a.rs', content: 'a' })
+    openTab({ id: 'D:/proj/a.rs.bak', title: 'a.rs.bak', content: 'b' })
+    expect(removeTabsUnder('D:/proj/a.rs')).toBe(1)
+    expect(tabsStore.get().tabs.map(t => t.path)).toEqual([null, 'D:/proj/a.rs.bak'])
   })
 })
 

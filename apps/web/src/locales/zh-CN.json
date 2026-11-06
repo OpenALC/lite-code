@@ -61,7 +61,25 @@
     "empty": "空目录",
     "loadError": "无法读取该目录",
     "fileError": "无法读取该文件",
-    "editableHint": "打开文件后可编辑，Ctrl+S 保存"
+    "editableHint": "打开文件后可编辑，Ctrl+S 保存",
+    "menu": {
+      "label": "文件操作",
+      "open": "打开",
+      "rename": "重命名",
+      "delete": "删除",
+      "newFile": "新建文件",
+      "newFolder": "新建文件夹",
+      "reveal": "在文件管理器中显示",
+      "refresh": "刷新",
+      "newFilePrompt": "新建文件名：",
+      "newFolderPrompt": "新建文件夹名：",
+      "renamePrompt": "重命名“{name}”：",
+      "deleteConfirm": "确定删除“{name}”吗？",
+      "deleteDirConfirm": "确定删除目录“{name}”及其全部内容吗？此操作不可撤销。",
+      "invalidName": "名称不能为空，也不能包含路径分隔符",
+      "invalidMove": "不能移动到自身或其子目录，也不能覆盖同名文件",
+      "actionFailed": "操作失败"
+    }
   },
   "agent": {
     "placeholderTitle": "Agent 模式",

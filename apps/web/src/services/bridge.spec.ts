@@ -6,8 +6,13 @@ import {
   agentCancel,
   agentSend,
   CORE_EVENT_CHANNEL,
+  createEntry,
   dbConnect,
   dbDeleteConnection,
+  deletePath,
+  movePath,
+  renamePath,
+  revealPath,
   dbDisconnect,
   dbExecute,
   dbExplain,
@@ -167,6 +172,44 @@ describe('fallback 占位（浏览器 dev）', () => {
         expect(res.data.status.kind).toBe('need_manual')
       }
     }
+  })
+})
+
+describe('文件写操作命令（移动/新建/删除/重命名/定位）', () => {
+  it('浏览器 dev 全部返回 fallback ack（不触碰真实磁盘）', async () => {
+    for (const res of [
+      await movePath('D:/p/a.rs', 'D:/p/sub/a.rs'),
+      await createEntry('D:/p/new.rs', false),
+      await deletePath('D:/p/new.rs'),
+      await renamePath('D:/p/a.rs', 'D:/p/b.rs'),
+      await revealPath('D:/p/a.rs'),
+    ]) {
+      expect(res).toEqual({ ok: true, data: { kind: 'ack' }, fallback: true })
+    }
+  })
+
+  it('Tauri：命令名与 snake_case 参数', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'ack' } satisfies CommandResult
+      },
+    })
+
+    await movePath('D:/p/a.rs', 'D:/p/sub/a.rs')
+    await createEntry('D:/p/new', true)
+    await deletePath('D:/p/new')
+    await renamePath('D:/p/a.rs', 'D:/p/b.rs')
+    await revealPath('D:/p/b.rs')
+
+    expect(calls).toEqual([
+      { cmd: 'fs_move', args: { from: 'D:/p/a.rs', to: 'D:/p/sub/a.rs' } },
+      { cmd: 'fs_create', args: { path: 'D:/p/new', dir: true } },
+      { cmd: 'fs_delete', args: { path: 'D:/p/new' } },
+      { cmd: 'fs_rename', args: { from: 'D:/p/a.rs', to: 'D:/p/b.rs' } },
+      { cmd: 'fs_reveal', args: { path: 'D:/p/b.rs' } },
+    ])
   })
 })
 

@@ -2,10 +2,20 @@ import { describe, expect, it } from 'vitest'
 
 import type { DirEntryDto } from '@lc-proto'
 import {
+  basenamePath,
   createTreeState,
+  dropTargetDir,
+  forgetPath,
+  isPathWithin,
+  isStrictDescendant,
+  joinPath,
   layerFailed,
   layerLoaded,
+  parentPath,
+  planMove,
   reRoot,
+  replacePathPrefix,
+  setExpanded,
   sortEntries,
   toggleDir,
   visibleRows,
@@ -118,5 +128,138 @@ describe('reRoot（换工作区根）', () => {
   it('同根返回原状态（视图层 watch 不触发多余重置）', () => {
     const state = createTreeState('D:/a', false)
     expect(reRoot(state, 'D:/a')).toBe(state)
+  })
+})
+
+describe('路径父子判断', () => {
+  it('按组件边界匹配：/a/b 不是 /a/bc 的父级', () => {
+    expect(isPathWithin('/a/b', '/a/b/c.rs')).toBe(true)
+    expect(isPathWithin('/a/b', '/a/bc/c.rs')).toBe(false)
+    expect(isPathWithin('/a/b', '/a/b')).toBe(true)
+    expect(isStrictDescendant('/a/b', '/a/b')).toBe(false)
+    expect(isStrictDescendant('/a/b', '/a/b/c.rs')).toBe(true)
+  })
+
+  it('Windows 盘符路径大小写不敏感，POSIX 路径大小写敏感', () => {
+    expect(isPathWithin('D:/proj', 'd:/PROJ/src/a.rs')).toBe(true)
+    expect(isPathWithin('/proj', '/Proj/a.rs')).toBe(false)
+    expect(isPathWithin('', '/proj/a.rs')).toBe(false)
+  })
+
+  it('parentPath / basenamePath / joinPath 保留分隔符风格', () => {
+    expect(parentPath('D:\\proj\\src\\a.rs')).toBe('D:\\proj\\src')
+    expect(parentPath('D:\\proj\\a.rs')).toBe('D:\\proj')
+    expect(parentPath('D:\\proj')).toBe('D:\\')
+    expect(parentPath('/proj/src/a.rs')).toBe('/proj/src')
+    expect(parentPath('/a.rs')).toBe('/')
+    expect(basenamePath('D:\\proj\\src\\a.rs')).toBe('a.rs')
+    expect(basenamePath('/proj/')).toBe('proj')
+    expect(joinPath('D:\\proj\\src', 'a.rs')).toBe('D:\\proj\\src\\a.rs')
+    expect(joinPath('/', 'a.rs')).toBe('/a.rs')
+    expect(joinPath('C:\\', 'a.rs')).toBe('C:\\a.rs')
+  })
+
+  it('replacePathPrefix 只替换组件边界且跟随目标分隔符', () => {
+    expect(replacePathPrefix('D:\\proj\\src\\a.rs', 'D:\\proj\\src', 'D:\\proj\\lib')).toBe(
+      'D:\\proj\\lib\\a.rs',
+    )
+    expect(replacePathPrefix('/proj/src/a.rs', '/proj/src', '/proj/lib')).toBe(
+      '/proj/lib/a.rs',
+    )
+    expect(replacePathPrefix('/proj/src2/a.rs', '/proj/src', '/proj/lib')).toBeNull()
+  })
+})
+
+describe('拖放目标解析与移动校验', () => {
+  it('目录目标 = 自身，文件目标 = 父目录', () => {
+    expect(dropTargetDir(dir('D:/proj/sub'))).toBe('D:/proj/sub')
+    expect(dropTargetDir(file('D:/proj/sub/a.rs'))).toBe('D:/proj/sub')
+  })
+
+  it('文件拖到目录：目标为目录 + 原文件名', () => {
+    expect(planMove('D:/proj', file('D:/proj/a.txt'), dir('D:/proj/sub'))).toEqual({
+      ok: true,
+      from: 'D:/proj/a.txt',
+      to: 'D:/proj/sub/a.txt',
+      destDir: 'D:/proj/sub',
+    })
+  })
+
+  it('拖到文件：移动到该文件的父目录', () => {
+    expect(
+      planMove('D:/proj', file('D:/proj/a.txt'), file('D:/proj/sub/b.txt')),
+    ).toEqual({
+      ok: true,
+      from: 'D:/proj/a.txt',
+      to: 'D:/proj/sub/a.txt',
+      destDir: 'D:/proj/sub',
+    })
+  })
+
+  it('目录拖到根：目标为根目录', () => {
+    expect(planMove('D:/proj', dir('D:/proj/sub/inner'), dir('D:/proj'))).toEqual({
+      ok: true,
+      from: 'D:/proj/sub/inner',
+      to: 'D:/proj/inner',
+      destDir: 'D:/proj',
+    })
+  })
+
+  it('拖到自身/子孙：拒绝自嵌套', () => {
+    expect(planMove('D:/proj', dir('D:/proj/sub'), dir('D:/proj/sub'))).toEqual({
+      ok: false,
+      reason: 'selfNesting',
+    })
+    expect(
+      planMove('D:/proj', dir('D:/proj/sub'), dir('D:/proj/sub/inner')),
+    ).toEqual({ ok: false, reason: 'selfNesting' })
+  })
+
+  it('原地移动：同一父目录返回 sameParent（不产生写操作）', () => {
+    expect(planMove('D:/proj', file('D:/proj/a.txt'), file('D:/proj/a.txt'))).toEqual({
+      ok: false,
+      reason: 'sameParent',
+    })
+    expect(
+      planMove('D:/proj', dir('D:/proj/sub/inner'), dir('D:/proj/sub')),
+    ).toEqual({ ok: false, reason: 'sameParent' })
+  })
+
+  it('源或目标在根外：拒绝', () => {
+    expect(planMove('D:/proj', file('D:/other/a.txt'), dir('D:/proj/sub'))).toEqual({
+      ok: false,
+      reason: 'outsideRoot',
+    })
+    expect(planMove('D:/proj', file('D:/proj/a.txt'), dir('D:/other/sub'))).toEqual({
+      ok: false,
+      reason: 'outsideRoot',
+    })
+  })
+})
+
+describe('移动/删除后的树状态清理', () => {
+  it('setExpanded 幂等，值不变返回原状态', () => {
+    const state = createTreeState('D:/proj', false)
+    const expanded = setExpanded(state, 'D:/proj/sub', true)
+    expect(expanded.expanded['D:/proj/sub']).toBe(true)
+    expect(setExpanded(expanded, 'D:/proj/sub', true)).toBe(expanded)
+    const collapsed = setExpanded(expanded, 'D:/proj/sub', false)
+    expect(collapsed.expanded['D:/proj/sub']).toBe(false)
+  })
+
+  it('forgetPath 丢弃路径及其后代的层与展开状态，保留兄弟节点', () => {
+    let state = createTreeState('D:/proj', false)
+    state = layerLoaded(state, 'D:/proj', [dir('D:/proj/sub'), dir('D:/proj/sub2')])
+    state = layerLoaded(state, 'D:/proj/sub', [file('D:/proj/sub/a.rs')])
+    state = layerLoaded(state, 'D:/proj/sub2', [file('D:/proj/sub2/b.rs')])
+    state = setExpanded(state, 'D:/proj/sub', true)
+    state = setExpanded(state, 'D:/proj/sub2', true)
+
+    const next = forgetPath(state, 'D:/proj/sub')
+    expect(next.layers['D:/proj/sub']).toBeUndefined()
+    expect(next.expanded['D:/proj/sub']).toBeUndefined()
+    expect(next.layers['D:/proj/sub2']).toBeDefined()
+    expect(next.expanded['D:/proj/sub2']).toBe(true)
+    expect(next.layers['D:/proj']).toBeDefined()
   })
 })

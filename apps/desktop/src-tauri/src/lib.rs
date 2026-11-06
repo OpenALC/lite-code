@@ -16,7 +16,9 @@ mod git;
 mod task;
 mod updater;
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 use agent::{AgentSessions, agent_cancel, agent_send, approval_resolve, session_create};
@@ -285,6 +287,66 @@ fn fs_write_file(
     Ok(CommandResult::Ack)
 }
 
+/// 移动文件/目录（拖拽落点）。目标必须落在工作区内、不能已存在，
+/// 目录也不能移动到自身或后代（否则会形成自嵌套）。
+#[tauri::command]
+fn fs_move(
+    from: String,
+    to: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
+    move_entry(&root, &from, &to)?;
+    Ok(CommandResult::Ack)
+}
+
+/// 新建空文件或单层目录；父目录必须已存在且在工作区内。
+#[tauri::command]
+fn fs_create(
+    path: String,
+    dir: bool,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
+    create_entry(&root, &path, dir)?;
+    Ok(CommandResult::Ack)
+}
+
+/// 删除文件或目录（目录递归删除）。根目录本身不可删除；调用方负责
+/// 递归删除前的二次确认（非空目录）。
+#[tauri::command]
+fn fs_delete(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
+    delete_entry(&root, &path)?;
+    Ok(CommandResult::Ack)
+}
+
+/// 重命名（复用移动实现，语义与 fs_move 一致）。
+#[tauri::command]
+fn fs_rename(
+    from: String,
+    to: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
+    move_entry(&root, &from, &to)?;
+    Ok(CommandResult::Ack)
+}
+
+/// 在系统文件管理器中定位路径（Windows 选中、macOS Finder 定位、Linux 打开目录）。
+#[tauri::command]
+fn fs_reveal(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<CommandResult, ErrorBody> {
+    let root = state.get().ok_or_else(workspace_unavailable)?;
+    reveal_entry(&root, &path)?;
+    Ok(CommandResult::Ack)
+}
+
 // ==== 纯逻辑层（无 Tauri 运行时依赖，单测直接覆盖） ====
 
 /// 列一层目录：lc-core 校验 + 列举，失败映射为契约 `ErrorBody`。
@@ -325,6 +387,183 @@ fn io_to_fs(path: &Path, e: std::io::Error) -> FsError {
             path,
             message: e.to_string(),
         }
+    }
+}
+
+fn invalid_argument(message: impl Into<String>) -> ErrorBody {
+    ErrorBody::new(ErrorCode::InvalidArgument, message)
+}
+
+fn target_exists(path: &Path) -> ErrorBody {
+    invalid_argument(format!(
+        "target already exists: {}",
+        lc_core::fs::display_path(path)
+    ))
+}
+
+/// 相对路径按工作区根解析（前端通常传绝对展示路径）。
+fn rooted_path(root: &Path, path: &str) -> PathBuf {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    }
+}
+
+fn canonical_root(root: &Path) -> Result<PathBuf, ErrorBody> {
+    std::fs::canonicalize(root).map_err(|e| fs_error_body(&io_to_fs(root, e)))
+}
+
+/// 校验已存在路径并返回（canonical root, canonical target）。
+fn existing_entry(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), ErrorBody> {
+    let root = canonical_root(root)?;
+    let candidate = rooted_path(&root, path);
+    let canonical =
+        ensure_within_root(&root, &candidate, &RealPathResolver).map_err(|e| fs_error_body(&e))?;
+    Ok((root, canonical))
+}
+
+/// 校验「即将创建」的目标：目标必须不存在，父目录必须存在且落在根内。
+/// 与 `lc_core::fs::write` 的悬空软链策略一致：链接本身存在就拒绝，
+/// 避免 rename/create 跟随链接写到根外。
+fn resolve_new_entry(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), ErrorBody> {
+    let root = canonical_root(root)?;
+    let candidate = rooted_path(&root, path);
+    match std::fs::canonicalize(&candidate) {
+        Ok(_) => {
+            ensure_within_root(&root, &candidate, &RealPathResolver)
+                .map_err(|e| fs_error_body(&e))?;
+            Err(target_exists(&candidate))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(&candidate).is_ok() {
+                return Err(ErrorBody::new(
+                    ErrorCode::PathOutsideRoot,
+                    format!(
+                        "path outside project root: {}",
+                        lc_core::fs::display_path(&candidate)
+                    ),
+                ));
+            }
+            let parent = candidate
+                .parent()
+                .ok_or_else(|| invalid_argument("destination has no parent"))?;
+            let name = candidate
+                .file_name()
+                .ok_or_else(|| invalid_argument("destination has no file name"))?;
+            let parent = ensure_within_root(&root, parent, &RealPathResolver)
+                .map_err(|e| fs_error_body(&e))?;
+            Ok((root, parent.join(name)))
+        }
+        Err(e) => Err(fs_error_body(&io_to_fs(&candidate, e))),
+    }
+}
+
+/// 移动/重命名：拒绝根目录、同名目标、已存在目标与目录自嵌套。
+fn move_entry(root: &Path, from: &str, to: &str) -> Result<(), ErrorBody> {
+    let (root, from_canonical) = existing_entry(root, from)?;
+    if from_canonical == root {
+        return Err(invalid_argument("cannot move the workspace root"));
+    }
+    let (_, to_target) = resolve_new_entry(&root, to)?;
+    if to_target == from_canonical {
+        return Err(invalid_argument("source and target are the same path"));
+    }
+    if to_target.starts_with(&from_canonical) {
+        return Err(invalid_argument("cannot move a directory into itself"));
+    }
+    // resolve_new_entry 已拒绝常规已存在路径；这里再挡一次竞态/软链。
+    if std::fs::symlink_metadata(&to_target).is_ok() {
+        return Err(target_exists(&to_target));
+    }
+    std::fs::rename(&from_canonical, &to_target)
+        .map_err(|e| fs_error_body(&io_to_fs(&to_target, e)))
+}
+
+/// 新建空文件（create_new，不覆盖）或单层目录。
+fn create_entry(root: &Path, path: &str, dir: bool) -> Result<(), ErrorBody> {
+    let (_, target) = resolve_new_entry(root, path)?;
+    let result = if dir {
+        std::fs::create_dir(&target)
+    } else {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map(|_| ())
+    };
+    result.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            target_exists(&target)
+        } else {
+            fs_error_body(&io_to_fs(&target, e))
+        }
+    })
+}
+
+/// 删除文件/目录；目录递归删除。根目录本身拒绝删除。
+fn delete_entry(root: &Path, path: &str) -> Result<(), ErrorBody> {
+    let (root, canonical) = existing_entry(root, path)?;
+    if canonical == root {
+        return Err(invalid_argument("cannot delete the workspace root"));
+    }
+    // 用未解析软链的词法路径删除，避免把「根内软链指向根内」的目标删掉。
+    let candidate = rooted_path(&root, path);
+    let metadata = std::fs::symlink_metadata(&candidate)
+        .map_err(|e| fs_error_body(&io_to_fs(&candidate, e)))?;
+    let result = if metadata.file_type().is_symlink() {
+        std::fs::remove_file(&candidate)
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(&candidate)
+    } else {
+        std::fs::remove_file(&candidate)
+    };
+    result.map_err(|e| fs_error_body(&io_to_fs(&candidate, e)))
+}
+
+/// 根内校验后交给系统文件管理器；explorer 成功时也可能返回非 0，
+/// 因此只把「无法启动」当作错误。
+fn reveal_entry(root: &Path, path: &str) -> Result<(), ErrorBody> {
+    let (_, canonical) = existing_entry(root, path)?;
+    let mut child = reveal_command(&canonical)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| fs_error_body(&io_to_fs(&canonical, e)))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+fn reveal_command(path: &Path) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // Explorer 需要 `/select,<path>` 这一种参数形态；`Command::arg` 会把
+        // 逗号后的空格引成两个参数，导致只打开「文档」而不是定位目标。
+        let mut command = Command::new("explorer");
+        command.raw_arg(format!("/select,\"{}\"", lc_core::fs::display_path(path)));
+        command
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut command = Command::new("xdg-open");
+        let target = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        command.arg(target);
+        command
     }
 }
 
@@ -409,6 +648,11 @@ pub fn run() {
             fs_read_dir,
             fs_read_file,
             fs_write_file,
+            fs_move,
+            fs_create,
+            fs_delete,
+            fs_rename,
+            fs_reveal,
             session_create,
             agent_send,
             agent_cancel,
@@ -474,8 +718,8 @@ mod tests {
     use lc_proto::{CommandResult, ErrorCode, NodeHealth, NodeSource, SemVer};
 
     use super::{
-        WorkspaceState, list_dir, node_health, read_file_text, runtime_info,
-        validate_workspace_dir, write_text,
+        WorkspaceState, create_entry, delete_entry, list_dir, move_entry, node_health,
+        read_file_text, runtime_info, validate_workspace_dir, write_text,
     };
 
     /// 进程内唯一临时目录（lc-core 不引 tempfile，薄壳同样不引入新依赖）。
@@ -626,6 +870,127 @@ mod tests {
         let err = write_text(&root, outside.to_str().unwrap(), "x");
         assert_eq!(code_of(&err), ErrorCode::PathOutsideRoot);
         let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn create_entry_makes_file_and_dir_without_overwrite() {
+        let root = temp_root("create");
+        let file = root.join("a.txt");
+        create_entry(&root, file.to_str().unwrap(), false).expect("create file");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "");
+        fs::write(&file, "keep").unwrap();
+
+        let dir = root.join("sub");
+        create_entry(&root, dir.to_str().unwrap(), true).expect("create dir");
+        assert!(dir.is_dir());
+
+        assert_eq!(
+            code_of(&create_entry(&root, file.to_str().unwrap(), false)),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            code_of(&create_entry(&root, dir.to_str().unwrap(), true)),
+            ErrorCode::InvalidArgument
+        );
+        // 拒绝覆盖：原内容保持不变
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+    }
+
+    #[test]
+    fn move_and_rename_preserve_content() {
+        let root = temp_root("move");
+        let source = root.join("a.txt");
+        fs::write(&source, "body").unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+
+        let moved = root.join("sub/a.txt");
+        move_entry(&root, source.to_str().unwrap(), moved.to_str().unwrap()).expect("move");
+        assert!(!source.exists());
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "body");
+
+        let renamed = root.join("sub/b.txt");
+        move_entry(&root, moved.to_str().unwrap(), renamed.to_str().unwrap()).expect("rename");
+        assert!(!moved.exists());
+        assert_eq!(fs::read_to_string(&renamed).unwrap(), "body");
+    }
+
+    #[test]
+    fn fs_commands_reject_paths_outside_root() {
+        let root = temp_root("mutation-outside");
+        fs::write(root.join("a.txt"), "x").unwrap();
+        let outside =
+            std::env::temp_dir().join(format!("lc-desktop-outside-{}.txt", std::process::id()));
+        fs::write(&outside, "o").unwrap();
+
+        assert_eq!(
+            code_of(&move_entry(
+                &root,
+                root.join("a.txt").to_str().unwrap(),
+                outside.to_str().unwrap()
+            )),
+            ErrorCode::PathOutsideRoot
+        );
+        assert_eq!(
+            code_of(&create_entry(&root, outside.to_str().unwrap(), false)),
+            ErrorCode::PathOutsideRoot
+        );
+        assert_eq!(
+            code_of(&delete_entry(&root, outside.to_str().unwrap())),
+            ErrorCode::PathOutsideRoot
+        );
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn move_rejects_directory_self_nesting() {
+        let root = temp_root("nested");
+        let dir = root.join("a");
+        fs::create_dir(&dir).unwrap();
+        let inner = dir.join("inner");
+        assert_eq!(
+            code_of(&move_entry(
+                &root,
+                dir.to_str().unwrap(),
+                inner.to_str().unwrap()
+            )),
+            ErrorCode::InvalidArgument
+        );
+        assert!(!inner.exists());
+    }
+
+    #[test]
+    fn move_and_rename_reject_existing_target() {
+        let root = temp_root("collision");
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+
+        assert_eq!(
+            code_of(&move_entry(&root, a.to_str().unwrap(), b.to_str().unwrap())),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(fs::read_to_string(&a).unwrap(), "a");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "b");
+    }
+
+    #[test]
+    fn delete_removes_files_recursively_and_protects_root() {
+        let root = temp_root("delete");
+        fs::create_dir_all(root.join("dir/deep")).unwrap();
+        fs::write(root.join("dir/deep/a.txt"), "a").unwrap();
+        delete_entry(&root, root.join("dir").to_str().unwrap()).expect("delete dir");
+        assert!(!root.join("dir").exists());
+
+        fs::write(root.join("f.txt"), "f").unwrap();
+        delete_entry(&root, root.join("f.txt").to_str().unwrap()).expect("delete file");
+        assert!(!root.join("f.txt").exists());
+
+        assert_eq!(
+            code_of(&delete_entry(&root, root.to_str().unwrap())),
+            ErrorCode::InvalidArgument
+        );
+        assert!(root.is_dir());
     }
 
     #[test]

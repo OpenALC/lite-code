@@ -61,7 +61,25 @@
     "empty": "Empty directory",
     "loadError": "Failed to read this directory",
     "fileError": "Failed to read this file",
-    "editableHint": "Open a file to edit; Ctrl+S saves"
+    "editableHint": "Open a file to edit; Ctrl+S saves",
+    "menu": {
+      "label": "File actions",
+      "open": "Open",
+      "rename": "Rename",
+      "delete": "Delete",
+      "newFile": "New file",
+      "newFolder": "New folder",
+      "reveal": "Show in file manager",
+      "refresh": "Refresh",
+      "newFilePrompt": "New file name:",
+      "newFolderPrompt": "New folder name:",
+      "renamePrompt": "Rename “{name}”:",
+      "deleteConfirm": "Delete “{name}”?",
+      "deleteDirConfirm": "Delete folder “{name}” and everything inside? This cannot be undone.",
+      "invalidName": "Name cannot be empty or contain path separators",
+      "invalidMove": "Cannot move into itself or its subfolder, or overwrite an existing file",
+      "actionFailed": "Action failed"
+    }
   },
   "agent": {
     "placeholderTitle": "Agent mode",

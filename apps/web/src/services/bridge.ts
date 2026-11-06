@@ -231,6 +231,54 @@ export async function writeFile(
   return { ok: true, data: res.data, fallback: false }
 }
 
+/** 移动/重命名文件或目录；目标由 Rust 侧校验（根内、不覆盖、目录不自嵌套）。 */
+export async function movePath(from: string, to: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void from
+    void to
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('fs_move', { from, to }), 'fs_move')
+}
+
+/** 新建空文件或单层目录；父目录必须已存在且落在工作区内。 */
+export async function createEntry(path: string, dir: boolean): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void path
+    void dir
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('fs_create', { path, dir }), 'fs_create')
+}
+
+/** 删除文件或目录（目录递归删除）；根内校验由 Rust 侧完成。 */
+export async function deletePath(path: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void path
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('fs_delete', { path }), 'fs_delete')
+}
+
+/** 重命名（后端复用移动实现）；根内与不覆盖校验同 fs_move。 */
+export async function renamePath(from: string, to: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void from
+    void to
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('fs_rename', { from, to }), 'fs_rename')
+}
+
+/** 在系统文件管理器中定位路径（Windows 选中；Linux 打开所在目录）。 */
+export async function revealPath(path: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    void path
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  return asAck(await call('fs_reveal', { path }), 'fs_reveal')
+}
+
 // ==== Agent 会话命令（契约 v0.3） ====
 
 /** 浏览器 dev 会话 id；UI 在非 Tauri 环境禁用发送，这里只是保持返回形状一致。 */
