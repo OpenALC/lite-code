@@ -271,6 +271,16 @@ function runQuick(item: QuickItem | undefined): void {
   void item.action()
 }
 
+/** 点击快速打开以外的区域时收起面板（含清空查询），与 VS Code 行为一致。 */
+function onDocumentPointerDown(event: PointerEvent): void {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  if (!target.closest('.quick-wrap')) {
+    quickOpen.value = false
+    quickQuery.value = ''
+  }
+}
+
 function onQuickKey(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     quickOpen.value = false
@@ -413,6 +423,7 @@ onMounted(() => {
   renameTab(SETTINGS_TAB_ID, t('activity.settings'))
   window.addEventListener('keydown', onKey)
   window.addEventListener('click', () => { openMenu.value = null })
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
   void taskSession.refresh()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
@@ -431,6 +442,7 @@ onBeforeUnmount(() => {
   dbSession.dispose()
   gitSession.dispose()
   window.removeEventListener('keydown', onKey)
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
 })
 </script>
 

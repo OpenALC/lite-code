@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-06，main HEAD：preview.6 发布提交（见 `git log`）；版本 `0.6.1-preview.6`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-06，main HEAD：preview.7 发布提交（见 `git log`）；版本 `0.6.1-preview.7`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.5` 构建成功但为 draft（已被 preview.6 取代）；`preview.6` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.5`/`preview.6` 构建成功但为 draft（已被 preview.7 取代）；`preview.7` 发布中。
 
 ## 当前位置一览
 
@@ -72,14 +72,14 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `v0.6.1-preview.4` 已发布（10 资产）；`v0.6.1-preview.6` 发布中 |
+| P6 发布 | ✅ `v0.6.1-preview.4` 已发布（10 资产）；`v0.6.1-preview.7` 发布中 |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ 上一轮 `4780f68` 全绿；preview.6 本地门禁全绿，等待推送后 CI |
+| main CI | ✅ 上一轮 `4780f68` 全绿；preview.7 本地门禁全绿，等待推送后 CI |
 
 ## 本轮完成
 
@@ -240,6 +240,12 @@
    Agent 头部裁切、中文界面残留英文、minimap 视觉噪声。
 4. **验证**：Tauri/WebView2 真机通过原生选择器打开工作区、搜索命中跳转、右键菜单、
    拖拽移动、主题/语言/缩放、设置页；Git/DB 在右栏不遮挡编辑器。
+
+## preview.7：快速打开关闭行为
+
+preview.6 的基础上补一处交互修复：快速打开面板打开后点击编辑器/文件树/侧栏不会关闭，
+会遮住标签栏并保留旧查询。现在用 document `pointerdown`（捕获阶段）判断 `.quick-wrap`
+之外的区域，收起并清空查询；面板内条目点击不受影响。
 
 ## preview.6：审计修复
 
