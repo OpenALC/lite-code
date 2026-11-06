@@ -80,6 +80,7 @@
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ 上一轮 `4780f68` 全绿；preview.7 本地门禁全绿，等待推送后 CI |
+| UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；CI 全绿，待下一预览版 |
 
 ## 本轮完成
 
@@ -307,5 +308,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 416 · lc-cli 33 · lc-proto 10 · lc-desktop 82 · web 316（17 文件）· 合计 **859**（含 `db_agent` 集成 2 项、`fs::search` 11 项）。
+lc-core 419 · lc-cli 33 · lc-proto 10 · lc-desktop 82 · web 316（17 文件）· 合计 **862**（含 `db_agent` 集成 2 项、`fs::search` 14 项）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
