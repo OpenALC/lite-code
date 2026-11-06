@@ -27,8 +27,6 @@ pub use store::{DEFAULT_MAX_RUNNING, HARD_MAX_RUNNING, TaskStore};
 pub use worktree::ApplyOutcome;
 
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -338,8 +336,12 @@ pub(crate) fn slugify(title: &str) -> String {
     }
 }
 
-/// project-key：根目录名 + 根路径的稳定短 hash（`DefaultHasher`）。
+/// project-key：根目录名 + 根路径的完整 64 位 hash（FNV-1a）。
 /// 用来隔离不同项目的 worktree 目录：`<data>/worktrees/<project-key>/<task-id>`。
+///
+/// 路径只在 Windows 上忽略大小写并把 `/` 规范成 `\`；Unix 上大小写不同
+/// 就是不同项目。hash 取完整 64 位并按 16 进制输出，避免旧实现截断到
+/// 32 位带来的碰撞面。
 pub(crate) fn project_key(root: &Path) -> String {
     let raw_name = root
         .file_name()
@@ -348,7 +350,11 @@ pub(crate) fn project_key(root: &Path) -> String {
     let mut name = String::new();
     for c in raw_name.chars() {
         if c.is_ascii_alphanumeric() {
-            name.push(c.to_ascii_lowercase());
+            name.push(if cfg!(windows) {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            });
         } else if !name.is_empty() && !name.ends_with('-') {
             name.push('-');
         }
@@ -359,9 +365,51 @@ pub(crate) fn project_key(root: &Path) -> String {
     let name = name.trim_matches('-');
     let base = if name.is_empty() { "project" } else { name };
 
-    let mut hasher = DefaultHasher::new();
-    root.to_string_lossy().to_lowercase().hash(&mut hasher);
-    format!("{base}-{:08x}", hasher.finish() as u32)
+    format!("{base}-{:016x}", hash_project_path(root))
+}
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a 64：无依赖、跨平台且跨编译器版本稳定。
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// 路径规范化后再 hash：Unix 保留大小写（`/` 是唯一分隔符），Windows
+/// 忽略大小写并统一分隔符，避免同一项目因写法不同得到两个 key。
+fn hash_project_path(root: &Path) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        let mut bytes = root.as_os_str().as_bytes().to_vec();
+        while bytes.len() > 1 && bytes.last() == Some(&b'/') {
+            bytes.pop();
+        }
+        fnv1a_64(&bytes)
+    }
+    #[cfg(windows)]
+    {
+        let mut text = root.to_string_lossy().replace('/', "\\");
+        while text.len() > 3 && text.ends_with('\\') {
+            text.pop();
+        }
+        fnv1a_64(text.to_lowercase().as_bytes())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let mut text = root.to_string_lossy().into_owned();
+        while text.len() > 1 && text.ends_with(std::path::MAIN_SEPARATOR) {
+            text.pop();
+        }
+        fnv1a_64(text.as_bytes())
+    }
 }
 
 /// 词法绝对化（不解析符号链接）：用于“新 worktree 路径是否落在项目内”的检查。

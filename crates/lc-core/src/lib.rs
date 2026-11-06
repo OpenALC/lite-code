@@ -14,6 +14,8 @@ pub mod process;
 pub mod runtime;
 pub mod task;
 
+mod untrusted;
+
 /// 核心版本号（workspace 统一管理）。
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

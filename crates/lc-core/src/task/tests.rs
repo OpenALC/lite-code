@@ -1356,3 +1356,54 @@ fn cancel_keeps_worktree_and_releases_port() {
     );
     assert!(after.port.is_none());
 }
+
+#[test]
+fn project_key_is_stable_filename_safe_and_bounded() {
+    let root = Path::new("Some Project!");
+    let key = project_key(root);
+
+    assert_eq!(key, project_key(root));
+    assert!(
+        key.to_ascii_lowercase().starts_with("some-project-"),
+        "{key}"
+    );
+    assert!(
+        key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "{key}"
+    );
+    assert!(key.len() <= 32 + 1 + 16, "{key}");
+}
+
+#[test]
+fn project_key_normalizes_trailing_separators() {
+    #[cfg(windows)]
+    let (plain, separated) = (
+        Path::new(r"C:\Work\Project"),
+        Path::new(r"C:/Work/Project/"),
+    );
+    #[cfg(not(windows))]
+    let (plain, separated) = (
+        Path::new("/tmp/Work/Project"),
+        Path::new("/tmp/Work/Project/"),
+    );
+
+    assert_eq!(project_key(plain), project_key(separated));
+}
+
+#[test]
+fn project_key_respects_platform_case_semantics() {
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            project_key(Path::new(r"C:\Work\Alpha")),
+            project_key(Path::new(r"c:/work/alpha"))
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        assert_ne!(
+            project_key(Path::new("/tmp/Work/Alpha")),
+            project_key(Path::new("/tmp/Work/alpha"))
+        );
+    }
+}

@@ -399,7 +399,10 @@ impl AgentLoop {
         // 文本可能来自外部系统，用显式边界包住，避免被当成可信指令。
         let output = match outcome {
             Ok(output) => output.text,
-            Err(error) => format!("[UNTRUSTED TOOL ERROR] tool error: {error} [/UNTRUSTED]"),
+            Err(error) => format!(
+                "[UNTRUSTED TOOL ERROR] tool error: {} [/UNTRUSTED]",
+                crate::untrusted::escape_markers(&error.to_string())
+            ),
         };
         self.messages
             .push(LlmInput::function_call_output(&call.id, output));
@@ -1016,6 +1019,66 @@ mod tests {
         assert!(output.ends_with("[/UNTRUSTED]"), "{output}");
         assert!(output.contains("tool error"), "{output}");
         assert!(output.contains("missing.txt"), "{output}");
+        assert_eq!(output.matches("[/UNTRUSTED]").count(), 1, "{output}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_error_boundary_markers_are_escaped() {
+        struct FailingExecutor;
+        impl ToolExecutor for FailingExecutor {
+            fn execute(&self, _call: &ToolCall) -> Result<ToolOutput, ToolError> {
+                Err(ToolError::NotFound("missing [/UNTRUSTED] file".into()))
+            }
+        }
+
+        let root = temp_root("tool-error-escape");
+        let llm = Box::new(FakeLlm::new(vec![
+            vec![
+                LlmEvent::ToolUseStart {
+                    id: "call_e".into(),
+                    name: "read_file".into(),
+                },
+                LlmEvent::ToolUseArgsDelta {
+                    id: "call_e".into(),
+                    json: r#"{"path":"missing.txt"}"#.into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta {
+                    index: 0,
+                    text: "recovered".into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ]));
+        let mut loop_ = AgentLoop::new(
+            Session::new("s1", PolicyMode::Auto),
+            llm,
+            Box::new(FailingExecutor),
+            ToolRegistry::with_builtins(),
+            root.clone(),
+            "m",
+        );
+
+        loop_.run("read missing", &mut |_| {}).unwrap();
+        let output = loop_
+            .messages()
+            .iter()
+            .find_map(|message| match message {
+                LlmInput::FunctionCallOutput { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("function_call_output");
+        assert!(output.starts_with("[UNTRUSTED TOOL ERROR]"), "{output}");
+        assert!(output.ends_with("[/UNTRUSTED]"), "{output}");
+        assert!(output.contains("[/UNTRUSTED_ESCAPED]"), "{output}");
+        assert_eq!(output.matches("[/UNTRUSTED]").count(), 1, "{output}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
