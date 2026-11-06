@@ -66,9 +66,10 @@
 | P5 发布 | ✅ `v0.5.1-preview.1` **已发布**（非 draft）：6 资产 |
 | P6 鸿蒙 | ✅ spike 完成（DevEco 26/API26）：ArkWeb 跑通前端、NAPI 传 handle；Monaco 内存/IME 未过 → 首版只读+对话 |
 | P6 本地安全整改 | ✅ CSP frame-src/object-src；DB/MCP 输出不可信边界；审计范围写入 `docs/SECURITY-AUDIT.md` |
-| P6 A 类 arm64 | ✅ release.yml 新增 `ubuntu-24.04-arm` 构建、arm64 资产校验与 `lc-cli-arm64`；待 tag 验证 |
+| P6 A 类 arm64 | ✅ `v0.6.1-preview.2` 的 arm64 build 已成功；x64/publish 进行中 |
 | P6 A 类 更新器 | ✅ `update_check` + `latest.json` 生成器 + 回滚文档；无签名密钥时 `signed:false`，签名门禁未完全关闭 |
-| P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验等 |
+| P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
+| P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
@@ -265,5 +266,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 379 · lc-cli 33 · lc-proto 10 · lc-desktop 76 · web 277（15 文件）· 合计 **777**（含 `db_agent` 集成 2 项）。
+lc-core 399 · lc-cli 33 · lc-proto 10 · lc-desktop 76 · web 277（15 文件）· 合计 **797**（含 `db_agent` 集成 2 项）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。

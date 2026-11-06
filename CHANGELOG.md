@@ -48,4 +48,5 @@
 - 发布加固：签名 fail-closed、最小权限、资产/checksums 一致性校验、CI audit 与 updater manifest 测试
 - 依赖：`dompurify` override 至 3.4.17，`pnpm audit --prod` 清零
 - 复验补丁：DB 审批按 connection_id 隔离、shell/DB/git 子进程剥离 provider 密钥、CI audit 缓存修复
+- 审计 Medium：CREATE TRIGGER DML 检查、LIMIT/TOP 识别、DB bridge 流式取样、不可信边界转义、task key FNV-1a 64
 
