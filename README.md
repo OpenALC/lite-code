@@ -3,7 +3,8 @@
 轻量级桌面 Agent 工作台：Tauri 2 + Rust 核心 + Vue 3 / Monaco。
 不是 Claude Code / Codex 的 GUI 套壳——Agent harness、文件系统、进程与运行时都在 Rust 侧，前端只是可替换的视图层。
 
-> 当前处于 **P5 数据库与周边**：P3 Agent、P4 任务工作台、SQLite 数据库面板与 Git 面板可用。
+> 当前处于 **P6 稳定化预览**：P3 Agent、P4 任务工作台、P5 数据库/Git、P6 arm64 与更新器检查可用。
+> 鸿蒙首版为只读预览 + 对话；签名、soak、第三方审计由维护者关闭。
 > OpenAI Responses 为默认端点；Anthropic Messages 已完成事件解码，传输层在后续版本接入。
 
 ## 下载与安装
