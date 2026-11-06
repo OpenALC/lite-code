@@ -444,6 +444,7 @@
     "aboutHint": "Lightweight desktop agent workbench; core and contract live in Rust."
   },
   "providers": {
+    "anthropicSoon": " (coming soon)",
     "title": "Providers",
     "subtitle": "Configure model endpoints. OpenAI Responses is supported now; Anthropic Messages is coming later.",
     "providerList": "Providers",
@@ -489,7 +490,7 @@
     "subagentModel": "Subagent model",
     "subagentThinking": "Subagent thinking",
     "subagentNone": "Not set",
-    "subagentHint": "Subagent tasks use this model; empty follows the default.",
+    "subagentHint": "Subagent tasks will use this model (stored now; subagent execution is not wired yet).",
     "save": "Save",
     "saving": "Saving…",
     "saved": "Saved to providers.json",

@@ -90,18 +90,17 @@ pub fn load_from(
     path: &Path,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<AgentRuntime, RuntimeError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => runtime_from_str(&text, env),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => fallback_from_env(env),
-        Err(e) => Err(RuntimeError::Io(e.to_string())),
+    match ProvidersFile::load_path(path) {
+        Ok(Some(file)) => runtime_from_file(&file, env),
+        Ok(None) => fallback_from_env(env),
+        Err(e) => Err(RuntimeError::Config(e)),
     }
 }
 
-fn runtime_from_str(
-    text: &str,
+fn runtime_from_file(
+    file: &ProvidersFile,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<AgentRuntime, RuntimeError> {
-    let file = ProvidersFile::parse(text)?;
     file.validate()?;
 
     let model = file

@@ -119,14 +119,19 @@ pub(crate) fn merge_and_validate(
             } else {
                 new_key.or_else(|| old.as_ref().and_then(|p| p.api_key.clone()))
             };
-            let api_key_ref = provider
-                .api_key_ref
-                .as_deref()
-                .map(str::trim)
-                .filter(|reference| !reference.is_empty())
-                .map(str::to_string)
-                .or_else(|| old.map(|p| p.api_key_ref))
-                .unwrap_or_default();
+            let api_key_ref = if provider.clear_api_key {
+                // 清除密钥时一并清掉环境变量引用，避免运行时继续回退到旧密钥。
+                String::new()
+            } else {
+                provider
+                    .api_key_ref
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reference| !reference.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| old.map(|p| p.api_key_ref))
+                    .unwrap_or_default()
+            };
             ProviderConfig {
                 id: provider.id,
                 kind: provider.kind,
@@ -185,7 +190,7 @@ fn to_view(file: ProvidersFile) -> ProvidersView {
 /// 只暴露末四位；短密钥整体打码，避免把 4 位以内的密钥直接回显。
 fn key_hint(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
-    if chars.len() <= 4 {
+    if chars.len() < 8 {
         return "••••".into();
     }
     let tail: String = chars[chars.len() - 4..].iter().collect();
@@ -279,6 +284,7 @@ mod tests {
     fn clear_key_removes_secret() {
         let merged = merge_and_validate(Some(existing(Some("sk-old"))), input(None, true)).unwrap();
         assert_eq!(merged.providers[0].api_key, None);
+        assert_eq!(merged.providers[0].api_key_ref, "");
     }
 
     #[test]
@@ -287,6 +293,9 @@ mod tests {
         let view = to_view(file);
         assert!(view.providers[0].has_api_key);
         assert_eq!(view.providers[0].api_key_hint.as_deref(), Some("••••6789"));
+
+        let short = to_view(existing(Some("abcde")));
+        assert_eq!(short.providers[0].api_key_hint.as_deref(), Some("••••"));
     }
 
     #[test]

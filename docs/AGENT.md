@@ -85,7 +85,7 @@ enum LlmEvent {
 
 ### 3.1 供应商与模型配置
 
-供应商管理是**左侧栏的一等功能**，不是设置页里的附属项。配置存在用户级 `providers.json`，密钥单独进 `SecretStore`，二者分离。
+供应商管理是**左侧栏的一等功能**，不是设置页里的附属项。配置存在用户级 `providers.json`；预览版允许把 API Key 写入其中的 `apiKey` 字段（Unix 0600，Windows 依赖用户目录 ACL），SecretStore 落地后再迁移。
 
 ```jsonc
 {
@@ -123,8 +123,8 @@ enum LlmEvent {
 | 字段 | 含义 | 约束 |
 |---|---|---|
 | `id` | 显示 id | 唯一，可自由改名（"我的便宜模型"），仅本地生效 |
-| `subagentModel` | 子 Agent 模型 | 必须是已配置的模型 id；留空跟随默认模型 |
-| `subagentThinking` | 子 Agent 思考挡位 | 必须是所选模型 `thinking` 列表中的值 |
+| `subagentModel` | 子 Agent 模型 | 必须是已配置的模型 id；当前仅持久化，尚未接入 subagent 执行 |
+| `subagentThinking` | 子 Agent 思考挡位 | 当前仅持久化；UI 从所选模型的 `thinking` 列表提供选项 |
 | `modelId` | 实际 id | 发往 API 的原值，不校验格式——服务商可能随时加新模型 |
 | `thinking` | 支持挡位 | 至少一项；不含 `off` 的模型，UI 隐藏关闭选项 |
 | `contextK` | 上下文窗口 | > 0；仅影响预算计算，不向上游校验 |

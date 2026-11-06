@@ -444,6 +444,7 @@
     "aboutHint": "轻量桌面 Agent 工作台；契约与核心在 Rust 侧。"
   },
   "providers": {
+    "anthropicSoon": "（即将支持）",
     "title": "供应商",
     "subtitle": "配置模型接入。当前支持 OpenAI Responses，Anthropic Messages 将在后续版本支持。",
     "providerList": "供应商列表",
@@ -489,7 +490,7 @@
     "subagentModel": "Subagent 模型",
     "subagentThinking": "Subagent 思考强度",
     "subagentNone": "不设置",
-    "subagentHint": "子 Agent 任务使用该模型；留空则跟随默认模型。",
+    "subagentHint": "子 Agent 任务将使用该模型（当前仅持久化，尚未接入 subagent 执行）。",
     "save": "保存",
     "saving": "保存中…",
     "saved": "已保存到 providers.json",

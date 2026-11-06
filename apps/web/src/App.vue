@@ -801,30 +801,32 @@ onBeforeUnmount(() => {
       <main class="editor-col">
         <TabBar />
         <div class="editor-card">
-          <ProvidersPanel v-if="activeTabId === '__providers__'" />
-          <SettingsPanel
-            v-else-if="activeTabId === '__settings__'"
-            @manage-providers="openProviders"
-          />
-          <CodeEditor v-else-if="openTabs.length > 0" />
-          <div
-            v-else
-            class="welcome"
-          >
-            <div class="welcome-mark" />
-            <h1>{{ t('welcome.title') }}</h1>
-            <p>{{ t('welcome.subtitle') }}</p>
-            <button
-              type="button"
-              class="primary"
-              @click="openWorkspaceDialog"
+          <ProvidersPanel v-show="activeTabId === '__providers__'" />
+          <template v-if="activeTabId !== '__providers__'">
+            <SettingsPanel
+              v-if="activeTabId === '__settings__'"
+              @manage-providers="openProviders"
+            />
+            <CodeEditor v-else-if="openTabs.length > 0" />
+            <div
+              v-else
+              class="welcome"
             >
-              {{ t('welcome.openWorkspace') }}
-            </button>
-            <div class="shortcuts">
-              {{ t('welcome.shortcuts') }}
+              <div class="welcome-mark" />
+              <h1>{{ t('welcome.title') }}</h1>
+              <p>{{ t('welcome.subtitle') }}</p>
+              <button
+                type="button"
+                class="primary"
+                @click="openWorkspaceDialog"
+              >
+                {{ t('welcome.openWorkspace') }}
+              </button>
+              <div class="shortcuts">
+                {{ t('welcome.shortcuts') }}
+              </div>
             </div>
-          </div>
+          </template>
         </div>
 
         <div

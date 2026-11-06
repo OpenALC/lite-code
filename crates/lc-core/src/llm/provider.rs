@@ -9,8 +9,6 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::write_atomic;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderKind {
     /// v1 端点；OpenAI 兼容服务通过 baseUrl 覆盖。
@@ -21,7 +19,7 @@ pub enum ProviderKind {
     AnthropicMessages,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub id: String,
@@ -40,6 +38,21 @@ pub struct ProviderConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// 手写 Debug：`apiKey` 永远不进入日志/panic 输出。
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .field("label", &self.label)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("api_key_ref", &self.api_key_ref)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,19 +125,28 @@ impl ProvidersFile {
 
     /// 读取配置文件；文件不存在返回 `Ok(None)`（首次配置）。
     pub fn load_path(path: &Path) -> Result<Option<Self>, ProviderError> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Self::parse(&text).map(Some),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(ProviderError::Io(e.to_string())),
-        }
+        let file = match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(ProviderError::Io(e.to_string())),
+        };
+        // 旧版本可能以 0644 保存过密钥；加载时收紧并把备份里的密钥抹掉。
+        restrict_permissions(path).map_err(|e| ProviderError::Io(e.to_string()))?;
+        redact_backup_keys(path);
+        restrict_permissions(path).map_err(|e| ProviderError::Io(e.to_string()))?;
+        Ok(Some(file))
     }
 
     /// 校验后原子写入（备份 `.bak`）。Unix 下把文件与备份收紧到 0600：
     /// 供应商页允许直接保存 API Key，不能依赖默认 umask。
     pub fn save_path(&self, path: &Path) -> Result<(), ProviderError> {
         self.validate()?;
-        write_atomic(path, &self.serialize()).map_err(|e| ProviderError::Io(e.to_string()))?;
-        restrict_permissions(path);
+        // 先收紧旧文件权限：备份复制会沿用旧文件权限。
+        restrict_permissions(path).map_err(|e| ProviderError::Io(e.to_string()))?;
+        write_private(path, &self.serialize()).map_err(|e| ProviderError::Io(e.to_string()))?;
+        // .bak 只保留非密钥字段：清除/轮换密钥后，旧密钥不能继续留在备份里。
+        redact_backup_keys(path);
+        restrict_permissions(path).map_err(|e| ProviderError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -181,17 +203,79 @@ impl ProvidersFile {
     }
 }
 
-#[cfg(unix)]
-fn restrict_permissions(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+/// 备份文件去掉所有 `apiKey`，保留 baseUrl/模型等可恢复信息。
+fn redact_backup_keys(path: &Path) {
     let mut bak = path.as_os_str().to_owned();
     bak.push(".bak");
-    let _ = std::fs::set_permissions(Path::new(&bak), std::fs::Permissions::from_mode(0o600));
+    let bak = Path::new(&bak);
+    let Ok(text) = std::fs::read_to_string(bak) else {
+        return;
+    };
+    let Ok(mut file) = ProvidersFile::parse(&text) else {
+        return;
+    };
+    for provider in &mut file.providers {
+        provider.api_key = None;
+    }
+    let _ = std::fs::write(bak, file.serialize());
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if path.exists() {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let mut bak = path.as_os_str().to_owned();
+    bak.push(".bak");
+    let bak = Path::new(&bak);
+    if bak.exists() {
+        std::fs::set_permissions(bak, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) {}
+fn restrict_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// 临时文件创建即 0600，避免 `fs::write` 先按 umask 写明文再 chmod。
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    if path.exists() {
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".bak");
+        std::fs::copy(path, Path::new(&bak))?;
+    }
+
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = Path::new(&tmp);
+    let _ = std::fs::remove_file(tmp);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tmp)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = std::fs::File::create(tmp)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(tmp, path)
+}
 
 #[cfg(test)]
 mod tests {
@@ -338,6 +422,39 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn saved_files_are_private_and_backup_has_no_key() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "lc-provider-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("providers.json");
+        let file = ProvidersFile::parse(VALID).expect("parse");
+        file.save_path(&path).expect("save");
+        let mut updated = file.clone();
+        updated.providers[0].api_key = Some("sk-very-secret".into());
+        updated.save_path(&path).expect("save again");
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&path.with_extension("json.bak")), 0o600);
+        assert!(!path.with_extension("json.tmp").exists());
+        let backup = ProvidersFile::parse(
+            &std::fs::read_to_string(path.with_extension("json.bak")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(backup.providers[0].api_key, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn save_and_load_roundtrip_with_missing_file() {
         let dir = std::env::temp_dir().join(format!(
@@ -360,7 +477,11 @@ mod tests {
         file.providers[0].api_key = Some("sk-updated".into());
         file.save_path(&path).expect("save again");
         assert_eq!(ProvidersFile::load_path(&path).unwrap().unwrap(), file);
-        assert!(path.with_extension("json.bak").exists());
+        let bak_path = path.with_extension("json.bak");
+        assert!(bak_path.exists());
+        let backup = ProvidersFile::parse(&std::fs::read_to_string(&bak_path).unwrap()).unwrap();
+        assert_eq!(backup.providers[0].api_key, None);
+        assert_eq!(backup.providers[0].label, "OpenAI");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

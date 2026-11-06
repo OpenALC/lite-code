@@ -52,7 +52,7 @@ const success = ref<string | null>(null)
 const isFallback = ref(false)
 const showKey = ref(false)
 const confirmProviderId = ref<string | null>(null)
-const confirmModelId = ref<string | null>(null)
+const confirmModelIndex = ref<number | null>(null)
 
 const selectedProvider = computed(
   () => providers.value.find(provider => provider.id === selectedProviderId.value) ?? null,
@@ -87,16 +87,19 @@ function parseThinking(text: string): string[] {
 }
 
 function applyView(view: ProvidersView): void {
+  const previous = selectedProviderId.value
   providers.value = view.providers.map(toProviderDraft)
   models.value = view.models.map(toModelDraft)
   defaultModel.value = view.defaultModel ?? models.value[0]?.id ?? ''
   defaultThinking.value = view.defaultThinking ?? ''
   subagentModel.value = view.subagentModel ?? ''
   subagentThinking.value = view.subagentThinking ?? ''
-  selectedProviderId.value = providers.value[0]?.id ?? ''
+  selectedProviderId.value = providers.value.some(provider => provider.id === previous)
+    ? previous
+    : (providers.value[0]?.id ?? '')
   showKey.value = false
   confirmProviderId.value = null
-  confirmModelId.value = null
+  confirmModelIndex.value = null
 }
 
 function toProviderDraft(provider: ProviderView): ProviderDraft {
@@ -208,7 +211,7 @@ function removeProvider(provider: ProviderDraft): void {
   }
   if (confirmProviderId.value !== provider.id) {
     confirmProviderId.value = provider.id
-    confirmModelId.value = null
+    confirmModelIndex.value = null
     return
   }
   providers.value = providers.value.filter(item => item.id !== provider.id)
@@ -219,16 +222,16 @@ function removeProvider(provider: ProviderDraft): void {
   success.value = null
 }
 
-function removeModel(model: ModelDraft): void {
-  if (confirmModelId.value !== model.id) {
-    confirmModelId.value = model.id
+function removeModel(model: ModelDraft, index: number): void {
+  if (confirmModelIndex.value !== index) {
+    confirmModelIndex.value = index
     confirmProviderId.value = null
     return
   }
-  models.value = models.value.filter(item => item.id !== model.id)
+  models.value = models.value.filter((_, i) => i !== index)
   if (defaultModel.value === model.id) defaultModel.value = models.value[0]?.id ?? ''
   if (subagentModel.value === model.id) subagentModel.value = ''
-  confirmModelId.value = null
+  confirmModelIndex.value = null
   success.value = null
 }
 
@@ -236,7 +239,7 @@ function selectProvider(provider: ProviderDraft): void {
   selectedProviderId.value = provider.id
   showKey.value = false
   confirmProviderId.value = null
-  confirmModelId.value = null
+  confirmModelIndex.value = null
 }
 
 function onApiKeyInput(provider: ProviderDraft): void {
@@ -317,6 +320,7 @@ function localError(): string | null {
 }
 
 async function save(): Promise<void> {
+  if (saving.value) return
   error.value = null
   success.value = null
   normalizeDefaults()
@@ -407,319 +411,322 @@ onMounted(load)
       {{ t('providers.loading') }}
     </div>
 
-    <div
+    <fieldset
       v-else
-      class="layout"
+      class="form-body"
+      :disabled="saving"
     >
-      <aside class="provider-list">
-        <div class="list-head">
-          <span>{{ t('providers.providerList') }}</span>
-          <button
-            type="button"
-            class="ghost"
-            @click="addProvider"
-          >
-            + {{ t('providers.addProvider') }}
-          </button>
-        </div>
-        <button
-          v-for="provider in providers"
-          :key="provider.id"
-          type="button"
-          class="provider-card"
-          :class="{ active: provider.id === selectedProviderId }"
-          @click="selectProvider(provider)"
-        >
-          <span
-            class="dot"
-            :class="{ on: provider.enabled }"
-          />
-          <span class="provider-text">
-            <span class="provider-name">{{ provider.label || provider.id }}</span>
-            <span class="provider-meta">{{ provider.baseUrl }}</span>
-          </span>
-          <span class="provider-count">{{ providerModelCount(provider.id) }}</span>
-        </button>
-        <div
-          v-if="providers.length === 0"
-          class="list-empty"
-        >
-          {{ t('providers.noProviders') }}
-        </div>
-      </aside>
-
-      <section class="detail">
-        <div
-          v-if="selectedProvider"
-          class="card"
-        >
-          <div class="card-head">
-            <h2>{{ t('providers.providerConfig') }}</h2>
-            <div class="card-actions">
-              <label class="switch">
-                <input
-                  v-model="selectedProvider.enabled"
-                  type="checkbox"
-                >
-                <span>{{ t('providers.enabled') }}</span>
-              </label>
-              <button
-                type="button"
-                class="danger ghost"
-                @click="removeProvider(selectedProvider)"
-              >
-                {{ confirmProviderId === selectedProvider.id ? t('providers.confirmDelete') : t('providers.delete') }}
-              </button>
-            </div>
-          </div>
-
-          <div class="grid two">
-            <label class="field">
-              <span>{{ t('providers.providerName') }}</span>
-              <input
-                v-model="selectedProvider.label"
-                type="text"
-                :placeholder="t('providers.providerNamePlaceholder')"
-              >
-            </label>
-            <label class="field">
-              <span>{{ t('providers.format') }}</span>
-              <select v-model="selectedProvider.kind">
-                <option value="openai-responses">
-                  OpenAI Responses
-                </option>
-                <option
-                  value="anthropic-messages"
-                  :disabled="selectedProvider.kind !== 'anthropic-messages'"
-                >
-                  Anthropic Messages{{ selectedProvider.kind === 'anthropic-messages' ? '' : '（即将支持）' }}
-                </option>
-              </select>
-            </label>
-          </div>
-
-          <label class="field">
-            <span>{{ t('providers.baseUrl') }}</span>
-            <input
-              v-model="selectedProvider.baseUrl"
-              type="url"
-              spellcheck="false"
-              placeholder="https://api.openai.com/v1"
-            >
-          </label>
-
-          <label class="field">
-            <span>{{ t('providers.apiKey') }}</span>
-            <div class="key-row">
-              <input
-                v-model="selectedProvider.apiKey"
-                :type="showKey ? 'text' : 'password'"
-                spellcheck="false"
-                autocomplete="off"
-                :placeholder="keyPlaceholder(selectedProvider)"
-                :disabled="selectedProvider.clearApiKey"
-                @input="onApiKeyInput(selectedProvider)"
-              >
-              <button
-                type="button"
-                class="ghost small"
-                @click="showKey = !showKey"
-              >
-                {{ showKey ? t('providers.hideKey') : t('providers.showKey') }}
-              </button>
-              <button
-                v-if="selectedProvider.hasApiKey && !selectedProvider.clearApiKey"
-                type="button"
-                class="ghost small"
-                @click="clearSavedKey(selectedProvider)"
-              >
-                {{ t('providers.clearKey') }}
-              </button>
-              <button
-                v-else-if="selectedProvider.clearApiKey"
-                type="button"
-                class="ghost small"
-                @click="undoClearKey(selectedProvider)"
-              >
-                {{ t('providers.undoClearKey') }}
-              </button>
-            </div>
-            <small
-              v-if="selectedProvider.apiKeyRef && !selectedProvider.apiKeyHint"
-              class="hint"
-            >
-              {{ t('providers.envHint', { ref: selectedProvider.apiKeyRef }) }}
-            </small>
-            <small class="hint">{{ t('providers.keyStorageHint') }}</small>
-          </label>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <h2>{{ t('providers.models') }}</h2>
-              <p class="card-sub">
-                {{ t('providers.modelsHint') }}
-              </p>
-            </div>
+      <div class="layout">
+        <aside class="provider-list">
+          <div class="list-head">
+            <span>{{ t('providers.providerList') }}</span>
             <button
               type="button"
               class="ghost"
-              @click="addModel"
+              @click="addProvider"
             >
-              + {{ t('providers.addModel') }}
+              + {{ t('providers.addProvider') }}
             </button>
           </div>
-
-          <div
-            v-if="models.length === 0"
-            class="empty small"
+          <button
+            v-for="provider in providers"
+            :key="provider.id"
+            type="button"
+            class="provider-card"
+            :class="{ active: provider.id === selectedProviderId }"
+            @click="selectProvider(provider)"
           >
-            {{ t('providers.noModels') }}
+            <span
+              class="dot"
+              :class="{ on: provider.enabled }"
+            />
+            <span class="provider-text">
+              <span class="provider-name">{{ provider.label || provider.id }}</span>
+              <span class="provider-meta">{{ provider.baseUrl }}</span>
+            </span>
+            <span class="provider-count">{{ providerModelCount(provider.id) }}</span>
+          </button>
+          <div
+            v-if="providers.length === 0"
+            class="list-empty"
+          >
+            {{ t('providers.noProviders') }}
           </div>
+        </aside>
+
+        <section class="detail">
           <div
-            v-else
-            class="model-list"
+            v-if="selectedProvider"
+            class="card"
           >
-            <div
-              v-for="model in models"
-              :key="model.id + model.provider"
-              class="model-card"
-            >
-              <div class="model-fields">
-                <label class="field">
-                  <span>{{ t('providers.provider') }}</span>
-                  <select v-model="model.provider">
-                    <option
-                      v-for="provider in providerOptions"
-                      :key="provider.id"
-                      :value="provider.id"
-                    >
-                      {{ provider.label }}
-                    </option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>{{ t('providers.modelName') }}</span>
+            <div class="card-head">
+              <h2>{{ t('providers.providerConfig') }}</h2>
+              <div class="card-actions">
+                <label class="switch">
                   <input
-                    v-model="model.id"
-                    type="text"
-                    spellcheck="false"
+                    v-model="selectedProvider.enabled"
+                    type="checkbox"
                   >
+                  <span>{{ t('providers.enabled') }}</span>
                 </label>
-                <label class="field">
-                  <span>{{ t('providers.modelId') }}</span>
-                  <input
-                    v-model="model.modelId"
-                    type="text"
-                    spellcheck="false"
+                <button
+                  type="button"
+                  class="danger ghost"
+                  @click="removeProvider(selectedProvider)"
+                >
+                  {{ confirmProviderId === selectedProvider.id ? t('providers.confirmDelete') : t('providers.delete') }}
+                </button>
+              </div>
+            </div>
+
+            <div class="grid two">
+              <label class="field">
+                <span>{{ t('providers.providerName') }}</span>
+                <input
+                  v-model="selectedProvider.label"
+                  type="text"
+                  :placeholder="t('providers.providerNamePlaceholder')"
+                >
+              </label>
+              <label class="field">
+                <span>{{ t('providers.format') }}</span>
+                <select v-model="selectedProvider.kind">
+                  <option value="openai-responses">
+                    OpenAI Responses
+                  </option>
+                  <option
+                    value="anthropic-messages"
+                    :disabled="selectedProvider.kind !== 'anthropic-messages'"
                   >
-                </label>
-                <label class="field">
-                  <span>{{ t('providers.contextK') }}</span>
-                  <input
-                    v-model.number="model.contextK"
-                    type="number"
-                    min="1"
-                  >
-                </label>
-                <label class="field">
-                  <span>{{ t('providers.compressAtK') }}</span>
-                  <input
-                    v-model.number="model.compressAtK"
-                    type="number"
-                    min="1"
-                  >
-                </label>
-                <label class="field">
-                  <span>{{ t('providers.thinking') }}</span>
-                  <input
-                    v-model="model.thinkingText"
-                    type="text"
-                    spellcheck="false"
-                    :placeholder="t('providers.thinkingPlaceholder')"
-                  >
-                </label>
+                    Anthropic Messages{{ selectedProvider.kind === 'anthropic-messages' ? '' : t('providers.anthropicSoon') }}
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <label class="field">
+              <span>{{ t('providers.baseUrl') }}</span>
+              <input
+                v-model="selectedProvider.baseUrl"
+                type="url"
+                spellcheck="false"
+                placeholder="https://api.openai.com/v1"
+              >
+            </label>
+
+            <label class="field">
+              <span>{{ t('providers.apiKey') }}</span>
+              <div class="key-row">
+                <input
+                  v-model="selectedProvider.apiKey"
+                  :type="showKey ? 'text' : 'password'"
+                  spellcheck="false"
+                  autocomplete="off"
+                  :placeholder="keyPlaceholder(selectedProvider)"
+                  :disabled="selectedProvider.clearApiKey"
+                  @input="onApiKeyInput(selectedProvider)"
+                >
+                <button
+                  type="button"
+                  class="ghost small"
+                  @click="showKey = !showKey"
+                >
+                  {{ showKey ? t('providers.hideKey') : t('providers.showKey') }}
+                </button>
+                <button
+                  v-if="selectedProvider.hasApiKey && !selectedProvider.clearApiKey"
+                  type="button"
+                  class="ghost small"
+                  @click="clearSavedKey(selectedProvider)"
+                >
+                  {{ t('providers.clearKey') }}
+                </button>
+                <button
+                  v-else-if="selectedProvider.clearApiKey"
+                  type="button"
+                  class="ghost small"
+                  @click="undoClearKey(selectedProvider)"
+                >
+                  {{ t('providers.undoClearKey') }}
+                </button>
+              </div>
+              <small
+                v-if="selectedProvider.apiKeyRef && !selectedProvider.apiKeyHint"
+                class="hint"
+              >
+                {{ t('providers.envHint', { ref: selectedProvider.apiKeyRef }) }}
+              </small>
+              <small class="hint">{{ t('providers.keyStorageHint') }}</small>
+            </label>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h2>{{ t('providers.models') }}</h2>
+                <p class="card-sub">
+                  {{ t('providers.modelsHint') }}
+                </p>
               </div>
               <button
                 type="button"
-                class="danger ghost small model-delete"
-                @click="removeModel(model)"
+                class="ghost"
+                @click="addModel"
               >
-                {{ confirmModelId === model.id ? t('providers.confirmDelete') : t('providers.delete') }}
+                + {{ t('providers.addModel') }}
               </button>
             </div>
-          </div>
-        </div>
 
-        <div class="card">
-          <div class="card-head">
-            <h2>{{ t('providers.defaults') }}</h2>
-          </div>
-          <div class="grid two">
-            <label class="field">
-              <span>{{ t('providers.defaultModel') }}</span>
-              <select v-model="defaultModel">
-                <option
-                  v-for="model in modelOptions"
-                  :key="model.id"
-                  :value="model.id"
-                >
-                  {{ model.label }}
-                </option>
-              </select>
-              <small class="hint">{{ t('providers.defaultModelHint') }}</small>
-            </label>
-            <label class="field">
-              <span>{{ t('providers.defaultThinking') }}</span>
-              <select v-model="defaultThinking">
-                <option
-                  v-for="level in defaultThinkingOptions"
-                  :key="level"
-                  :value="level"
-                >
-                  {{ level }}
-                </option>
-              </select>
-            </label>
-            <label class="field">
-              <span>{{ t('providers.subagentModel') }}</span>
-              <select v-model="subagentModel">
-                <option value="">
-                  {{ t('providers.subagentNone') }}
-                </option>
-                <option
-                  v-for="model in modelOptions"
-                  :key="model.id"
-                  :value="model.id"
-                >
-                  {{ model.label }}
-                </option>
-              </select>
-              <small class="hint">{{ t('providers.subagentHint') }}</small>
-            </label>
-            <label class="field">
-              <span>{{ t('providers.subagentThinking') }}</span>
-              <select
-                v-model="subagentThinking"
-                :disabled="!subagentModel"
+            <div
+              v-if="models.length === 0"
+              class="empty small"
+            >
+              {{ t('providers.noModels') }}
+            </div>
+            <div
+              v-else
+              class="model-list"
+            >
+              <div
+                v-for="(model, index) in models"
+                :key="index"
+                class="model-card"
               >
-                <option value="">
-                  {{ t('providers.subagentNone') }}
-                </option>
-                <option
-                  v-for="level in subagentThinkingOptions"
-                  :key="level"
-                  :value="level"
+                <div class="model-fields">
+                  <label class="field">
+                    <span>{{ t('providers.provider') }}</span>
+                    <select v-model="model.provider">
+                      <option
+                        v-for="provider in providerOptions"
+                        :key="provider.id"
+                        :value="provider.id"
+                      >
+                        {{ provider.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>{{ t('providers.modelName') }}</span>
+                    <input
+                      v-model="model.id"
+                      type="text"
+                      spellcheck="false"
+                    >
+                  </label>
+                  <label class="field">
+                    <span>{{ t('providers.modelId') }}</span>
+                    <input
+                      v-model="model.modelId"
+                      type="text"
+                      spellcheck="false"
+                    >
+                  </label>
+                  <label class="field">
+                    <span>{{ t('providers.contextK') }}</span>
+                    <input
+                      v-model.number="model.contextK"
+                      type="number"
+                      min="1"
+                    >
+                  </label>
+                  <label class="field">
+                    <span>{{ t('providers.compressAtK') }}</span>
+                    <input
+                      v-model.number="model.compressAtK"
+                      type="number"
+                      min="1"
+                    >
+                  </label>
+                  <label class="field">
+                    <span>{{ t('providers.thinking') }}</span>
+                    <input
+                      v-model="model.thinkingText"
+                      type="text"
+                      spellcheck="false"
+                      :placeholder="t('providers.thinkingPlaceholder')"
+                    >
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  class="danger ghost small model-delete"
+                  @click="removeModel(model, index)"
                 >
-                  {{ level }}
-                </option>
-              </select>
-            </label>
+                  {{ confirmModelIndex === index ? t('providers.confirmDelete') : t('providers.delete') }}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      </section>
-    </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>{{ t('providers.defaults') }}</h2>
+            </div>
+            <div class="grid two">
+              <label class="field">
+                <span>{{ t('providers.defaultModel') }}</span>
+                <select v-model="defaultModel">
+                  <option
+                    v-for="model in modelOptions"
+                    :key="model.id"
+                    :value="model.id"
+                  >
+                    {{ model.label }}
+                  </option>
+                </select>
+                <small class="hint">{{ t('providers.defaultModelHint') }}</small>
+              </label>
+              <label class="field">
+                <span>{{ t('providers.defaultThinking') }}</span>
+                <select v-model="defaultThinking">
+                  <option
+                    v-for="level in defaultThinkingOptions"
+                    :key="level"
+                    :value="level"
+                  >
+                    {{ level }}
+                  </option>
+                </select>
+              </label>
+              <label class="field">
+                <span>{{ t('providers.subagentModel') }}</span>
+                <select v-model="subagentModel">
+                  <option value="">
+                    {{ t('providers.subagentNone') }}
+                  </option>
+                  <option
+                    v-for="model in modelOptions"
+                    :key="model.id"
+                    :value="model.id"
+                  >
+                    {{ model.label }}
+                  </option>
+                </select>
+                <small class="hint">{{ t('providers.subagentHint') }}</small>
+              </label>
+              <label class="field">
+                <span>{{ t('providers.subagentThinking') }}</span>
+                <select
+                  v-model="subagentThinking"
+                  :disabled="!subagentModel"
+                >
+                  <option value="">
+                    {{ t('providers.subagentNone') }}
+                  </option>
+                  <option
+                    v-for="level in subagentThinkingOptions"
+                    :key="level"
+                    :value="level"
+                  >
+                    {{ level }}
+                  </option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </section>
+      </div>
+    </fieldset>
   </div>
 </template>
 
@@ -734,6 +741,13 @@ onMounted(load)
   width: 100%;
   max-width: 1180px;
   margin: 0 auto;
+}
+
+.form-body {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
 }
 
 .page-head {
