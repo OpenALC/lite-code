@@ -8,6 +8,7 @@ import CodeEditor from './components/CodeEditor.vue'
 import DbPanel from './components/DbPanel.vue'
 import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
+import ProvidersPanel from './components/ProvidersPanel.vue'
 import SearchView from './components/SearchView.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import TabBar from './components/TabBar.vue'
@@ -220,6 +221,7 @@ interface QuickItem {
 const commands = computed<QuickItem[]>(() => [
   { id: 'cmd:workspace', label: t('menu.openWorkspace'), detail: 'Ctrl+O', action: openWorkspaceDialog },
   { id: 'cmd:settings', label: t('activity.settings'), detail: 'Ctrl+,', action: openSettings },
+  { id: 'cmd:providers', label: t('activity.providers'), detail: '', action: openProviders },
   { id: 'cmd:git', label: t('activity.git'), detail: '', action: () => { rightTab.value = 'git'; rightVisible.value = true; void refreshGit() } },
   { id: 'cmd:db', label: t('activity.db'), detail: '', action: () => { rightTab.value = 'db'; rightVisible.value = true; void dbSession.refresh() } },
   { id: 'cmd:agent', label: t('activity.agent'), detail: '', action: () => { rightTab.value = 'agent'; rightVisible.value = true } },
@@ -355,8 +357,19 @@ function openSettings(): void {
   })
 }
 
+const PROVIDERS_TAB_ID = '__providers__'
+function openProviders(): void {
+  openTab({
+    id: PROVIDERS_TAB_ID,
+    title: t('providers.title'),
+    path: null,
+    content: '',
+  })
+}
+
 watch(locale, () => {
   renameTab(SETTINGS_TAB_ID, t('activity.settings'))
+  renameTab(PROVIDERS_TAB_ID, t('providers.title'))
 })
 
 // 主题 / 缩放 / 语言
@@ -431,6 +444,7 @@ onMounted(() => {
   locale.value = prefs.value.locale
   document.documentElement.lang = prefs.value.locale
   renameTab(SETTINGS_TAB_ID, t('activity.settings'))
+  renameTab(PROVIDERS_TAB_ID, t('providers.title'))
   window.addEventListener('keydown', onKey)
   window.addEventListener('click', () => { openMenu.value = null })
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
@@ -648,11 +662,11 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="act-btn"
-          :class="{ active: rightTab === 'agent' && rightVisible }"
-          :title="t('activity.agent')"
-          @click="selectRight('agent')"
+          :class="{ active: activeTabId === '__providers__' }"
+          :title="t('activity.providers')"
+          @click="openProviders"
         >
-          <AppIcon name="agent" />
+          <AppIcon name="providers" />
         </button>
         <div class="act-space" />
         <button
@@ -787,7 +801,11 @@ onBeforeUnmount(() => {
       <main class="editor-col">
         <TabBar />
         <div class="editor-card">
-          <SettingsPanel v-if="activeTabId === '__settings__'" />
+          <ProvidersPanel v-if="activeTabId === '__providers__'" />
+          <SettingsPanel
+            v-else-if="activeTabId === '__settings__'"
+            @manage-providers="openProviders"
+          />
           <CodeEditor v-else-if="openTabs.length > 0" />
           <div
             v-else
@@ -892,6 +910,7 @@ onBeforeUnmount(() => {
           <AgentPanel
             v-if="rightTab === 'agent'"
             :controller="agentSession"
+            @manage-providers="openProviders"
           />
           <TaskWorkbench
             v-else-if="rightTab === 'workbench'"

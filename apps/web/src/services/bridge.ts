@@ -131,6 +131,62 @@ export interface SearchRequestOptions {
   maxResults?: number
 }
 
+// 供应商管理（providers_load / providers_save）。密钥只以 hasApiKey/末四位提示
+// 回传；保存时空白 apiKey 表示保留旧值。
+export type ProviderKind = 'openai-responses' | 'anthropic-messages'
+
+export interface ProviderView {
+  id: string
+  kind: ProviderKind
+  label: string
+  baseUrl: string
+  enabled: boolean
+  apiKeyRef: string
+  hasApiKey: boolean
+  apiKeyHint: string | null
+}
+
+export interface ProviderModelConfig {
+  id: string
+  provider: string
+  modelId: string
+  thinking: string[]
+  contextK: number
+  compressAtK: number
+  capabilities: string[]
+}
+
+export interface ProvidersView {
+  providers: ProviderView[]
+  models: ProviderModelConfig[]
+  defaultModel: string | null
+  defaultThinking: string | null
+  subagentModel: string | null
+  subagentThinking: string | null
+}
+
+export interface ProviderSaveInput {
+  id: string
+  kind: ProviderKind
+  label: string
+  baseUrl: string
+  enabled: boolean
+  /** 新输入的密钥；留空表示保留旧值 */
+  apiKey?: string
+  /** 环境变量引用（兼容旧配置） */
+  apiKeyRef?: string
+  clearApiKey?: boolean
+}
+
+export interface ProvidersSaveInput {
+  providers: ProviderSaveInput[]
+  models: ProviderModelConfig[]
+  defaultModel: string | null
+  defaultThinking: string | null
+  subagentModel: string | null
+  subagentThinking: string | null
+}
+
 /** Tauri webview 注入的 IPC 内部入口（@tauri-apps/api 的 invoke 底层）。 */
 interface TauriInternals {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>
@@ -1482,12 +1538,110 @@ export async function downloadNodePortable(
   )
 }
 
+/** 非契约命令（providers_* / fs_search）的通用 invoke：原样返回 serde 载荷。 */
+async function invokeCustom<T>(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<BridgeResult<T>> {
+  const tauri = internals()
+  if (!tauri) {
+    return { ok: false, error: internalError(`${command} 需要 Tauri 运行时`), fallback: false }
+  }
+  try {
+    return { ok: true, data: await tauri.invoke<T>(command, args), fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
 async function call(command: string, args: Record<string, unknown>): Promise<BridgeResult<CommandResult>> {
   try {
     return { ok: true, data: await invokeContract(command, args), fallback: false }
   } catch (raw) {
     return { ok: false, error: asErrorBody(raw), fallback: false }
   }
+}
+
+// ==== 供应商管理 ====
+
+function demoProvidersView(): ProvidersView {
+  return {
+    providers: [
+      {
+        id: 'openai',
+        kind: 'openai-responses',
+        label: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        enabled: true,
+        apiKeyRef: '',
+        hasApiKey: false,
+        apiKeyHint: null,
+      },
+    ],
+    models: [
+      {
+        id: 'gpt-5',
+        provider: 'openai',
+        modelId: 'gpt-5',
+        thinking: ['off', 'low', 'medium', 'high'],
+        contextK: 400,
+        compressAtK: 300,
+        capabilities: ['tools'],
+      },
+    ],
+    defaultModel: 'gpt-5',
+    defaultThinking: 'medium',
+    subagentModel: null,
+    subagentThinking: null,
+  }
+}
+
+/** 读取供应商配置；密钥只返回 hasApiKey 与末四位提示。 */
+export async function providersLoad(): Promise<BridgeResult<ProvidersView>> {
+  if (!isTauri()) {
+    return { ok: true, data: demoProvidersView(), fallback: true }
+  }
+  const res = await invokeCustom<ProvidersView>('providers_load')
+  if (!res.ok) return res
+  if (!Array.isArray(res.data.providers) || !Array.isArray(res.data.models)) {
+    return { ok: false, error: internalError('providers_load 返回了非预期载荷'), fallback: false }
+  }
+  return res
+}
+
+/** 保存供应商配置。空白 apiKey 表示保留旧值；clearApiKey 显式清除。 */
+export async function providersSave(
+  input: ProvidersSaveInput,
+): Promise<BridgeResult<ProvidersView>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: {
+        providers: input.providers.map(provider => ({
+          id: provider.id,
+          kind: provider.kind,
+          label: provider.label,
+          baseUrl: provider.baseUrl,
+          enabled: provider.enabled,
+          apiKeyRef: provider.apiKeyRef ?? '',
+          hasApiKey: Boolean(provider.apiKey && provider.apiKey.trim()),
+          apiKeyHint: null,
+        })),
+        models: input.models,
+        defaultModel: input.defaultModel,
+        defaultThinking: input.defaultThinking,
+        subagentModel: input.subagentModel,
+        subagentThinking: input.subagentThinking,
+      },
+      fallback: true,
+    }
+  }
+  const res = await invokeCustom<ProvidersView>('providers_save', { input })
+  if (!res.ok) return res
+  if (!Array.isArray(res.data.providers) || !Array.isArray(res.data.models)) {
+    return { ok: false, error: internalError('providers_save 返回了非预期载荷'), fallback: false }
+  }
+  return res
 }
 
 // ==== 浏览器 dev 占位数据（fallback === true 时返回） ====

@@ -775,6 +775,10 @@ fn runtime_error_body(error: RuntimeError) -> ErrorBody {
             ErrorCode::NotFound,
             format!("环境变量 {name} 未设置：请导出该变量，或设置 LC_API_KEY"),
         ),
+        RuntimeError::MissingApiKey => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            "供应商未配置 API Key：请在左侧“供应商”页面填写，或设置 LC_API_KEY",
+        ),
         RuntimeError::UnsupportedKind(kind) => ErrorBody::new(
             ErrorCode::InvalidArgument,
             format!(

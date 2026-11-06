@@ -13,6 +13,7 @@
 mod agent;
 mod db;
 mod git;
+mod providers;
 mod task;
 mod updater;
 
@@ -37,6 +38,7 @@ use lc_core::runtime::portable::{self, VersionSpec};
 use lc_proto::{
     CommandResult, ContractMeta, ErrorBody, ErrorCode, NodeHealth, NodeRuntimeInfo, NodeStatus,
 };
+use providers::{providers_load, providers_save};
 use task::{
     TaskEvents, TaskState, task_apply, task_bind_session, task_cancel, task_create, task_diff,
     task_discard, task_list, task_start,
@@ -716,6 +718,8 @@ pub fn run() {
             fs_rename,
             fs_reveal,
             fs_search,
+            providers_load,
+            providers_save,
             session_create,
             agent_send,
             agent_cancel,

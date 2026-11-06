@@ -28,7 +28,11 @@ harness、编辑器与 Git 不依赖 Node；MCP、数据库等可选集成才需
 
 ## Agent 模式
 
-在 Agent 面板里选择模式（`plan` / `chat` / `auto` / `yolo`），输入任务即可。会话默认使用 `~/.lite-code/providers.json` 里的 `defaultModel`：
+在 Agent 面板里选择模式（`plan` / `chat` / `auto` / `yolo`），输入任务即可。左侧活动栏的
+**供应商**页面可以管理供应商（OpenAI Responses；Anthropic Messages 即将支持）、Base URL、
+API Key、模型列表（上下文窗口/压缩阈值/思考强度）以及默认与 Subagent 模型。API Key 默认
+保存在本机 `~/.lite-code/providers.json`（Unix 权限 0600），不会写入日志；也支持环境变量
+`LC_API_KEY` 与 `apiKeyRef: env:NAME`。会话默认使用 `~/.lite-code/providers.json` 里的 `defaultModel`：
 
 ```json
 {

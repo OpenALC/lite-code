@@ -21,6 +21,7 @@ import {
 
 const appVersion = __APP_VERSION__
 const { t, locale } = useI18n()
+const emit = defineEmits<{ 'manage-providers': [] }>()
 const prefs = ref(uiPrefs())
 const unsub = subscribePrefs(next => {
   prefs.value = next
@@ -181,6 +182,13 @@ function changeLocale(value: string): void {
         {{ t('settings.agentHint') }}
       </p>
       <code class="path">~/.lite-code/providers.json</code>
+      <button
+        type="button"
+        class="manage"
+        @click="emit('manage-providers')"
+      >
+        {{ t('settings.manageProviders') }}
+      </button>
       <div class="row">
         <span>{{ t('settings.db') }}</span>
         <span class="muted">SQLite · PostgreSQL · MySQL · SQL Server</span>
@@ -320,6 +328,23 @@ code {
 .ghost {
   color: var(--fg-dim);
   font-size: 11px;
+}
+
+.manage {
+  align-self: flex-start;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.manage:hover {
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
 }
 
 select {

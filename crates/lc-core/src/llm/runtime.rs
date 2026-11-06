@@ -45,6 +45,8 @@ pub enum RuntimeError {
     UnresolvedKeyRef(String),
     #[error("环境变量 {0} 未设置")]
     MissingEnv(String),
+    #[error("供应商未配置 API Key：请在供应商页面填写，或设置 LC_API_KEY / apiKeyRef")]
+    MissingApiKey,
     #[error("endpoint {0:?} 的流式客户端尚未实现（P3 仅支持 openai-responses）")]
     UnsupportedKind(ProviderKind),
 }
@@ -114,7 +116,14 @@ fn runtime_from_str(
         .find(|provider| provider.id == model.provider && provider.enabled)
         .ok_or_else(|| RuntimeError::ProviderUnavailable(model.provider.clone()))?;
 
-    let api_key = match non_empty(env("LC_API_KEY")) {
+    // 优先级：环境变量（CI/临时覆盖）> 供应商页保存的本地密钥 > apiKeyRef。
+    let direct_key = provider
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string);
+    let api_key = match non_empty(env("LC_API_KEY")).or(direct_key) {
         Some(key) => key,
         None => resolve_key_ref(&provider.api_key_ref, env)?,
     };
@@ -137,6 +146,9 @@ fn resolve_key_ref(
 ) -> Result<String, RuntimeError> {
     if let Some(name) = reference.strip_prefix("env:") {
         return non_empty(env(name)).ok_or_else(|| RuntimeError::MissingEnv(name.into()));
+    }
+    if reference.trim().is_empty() {
+        return Err(RuntimeError::MissingApiKey);
     }
     Err(RuntimeError::UnresolvedKeyRef(reference.into()))
 }
@@ -230,6 +242,30 @@ mod tests {
         )
         .expect("load");
         assert_eq!(rt.api_key, "global-key");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn local_api_key_wins_over_reference() {
+        let config = CONFIG.replace(
+            "\"apiKeyRef\":\"env:TEST_OPENAI_KEY\"",
+            "\"apiKey\":\"sk-local\",\"apiKeyRef\":\"env:TEST_OPENAI_KEY\"",
+        );
+        let path = temp_file("local-key", &config);
+        let rt = load_from(&path, env_of(&[])).expect("load");
+        assert_eq!(rt.api_key, "sk-local");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn empty_key_config_reports_missing_api_key() {
+        let config = CONFIG.replace(
+            "\"apiKeyRef\":\"env:TEST_OPENAI_KEY\"",
+            "\"apiKeyRef\":\"\"",
+        );
+        let path = temp_file("empty-key", &config);
+        let err = load_from(&path, env_of(&[])).expect_err("no key");
+        assert_eq!(err, RuntimeError::MissingApiKey);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

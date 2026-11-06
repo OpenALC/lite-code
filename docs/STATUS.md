@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-06，main HEAD：preview.8 发布提交（见 `git log`）；版本 `0.6.1-preview.8`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-06，main HEAD：preview.9 发布提交（见 `git log`）；版本 `0.6.1-preview.9`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4` 已发布；`preview.7` 已发布；`preview.8` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4`/`preview.7`/`preview.8` 已发布；`preview.9` 发布中。
 
 ## 当前位置一览
 
@@ -72,15 +72,16 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `v0.6.1-preview.4` / `v0.6.1-preview.7` 已发布（各 10 资产）；`v0.6.1-preview.8` 发布中 |
+| P6 发布 | ✅ `preview.4/7/8` 已发布；`preview.9` 发布中 |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `1f71e6f` 全绿；preview.8 门禁全绿，等待推送后 CI |
+| main CI | ✅ `84c9aae` 全绿；preview.9 门禁全绿，等待推送后 CI |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
+| 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏与 0600 |
 
 ## 本轮完成
 
@@ -267,6 +268,17 @@ preview.6 的基础上补一处交互修复：快速打开面板打开后点击�
 
 真机复验：大小写 11→0→11，Ctrl+, 设置页，视图切换保留查询；其余 UI 项沿用 preview.5 验证。
 
+## preview.9：供应商管理
+
+1. **页面**：活动栏 Agent 入口替换为「供应商」，打开编辑器区 `__providers__` 页签；
+   供应商列表 + 配置卡 + 模型卡片 + 默认/Subagent 模型。
+2. **配置**：`providers.json` 新增可选 `apiKey`，与 `apiKeyRef` 并存；新增
+   `subagentModel` / `subagentThinking`。保存走 `write_atomic` + `.bak`，Unix 0600。
+3. **安全**：`providers_load` 只返回 `hasApiKey` 与末四位提示；空白 Key 保留旧值，
+   `clearApiKey` 显式删除；运行时 `LC_API_KEY` > `apiKey` > `apiKeyRef`。
+4. **验证**：临时 `LC_PROVIDERS_FILE` 真机走通新建/保存/重启恢复/保留/清除/脱敏；
+   中英文、设置页与 Agent 空态入口正常。Anthropic 仍 fail-closed，Subagent 字段仅持久化。
+
 ## P6 外部依赖（阻塞项）
 
 P6 出口要求包含无法在本会话/本机完成的项，需维护者或外部环境：
@@ -313,5 +325,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 419 · lc-cli 33 · lc-proto 10 · lc-desktop 82 · web 316（17 文件）· 合计 **862**（含 `db_agent` 集成 2 项、`fs::search` 14 项）。
+lc-core 424 · lc-cli 33 · lc-proto 10 · lc-desktop 86 · web 320（17 文件）· 合计 **875**（含 `db_agent` 集成 2 项、`fs::search` 14 项）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。

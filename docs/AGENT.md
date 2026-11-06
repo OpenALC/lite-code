@@ -81,7 +81,7 @@ enum LlmEvent {
 }
 ```
 
-密钥存 `SecretStore`。**日志默认不记录 prompt / 响应内容**，只记模型、token 数、耗时、工具名。开源项目不做这条，issue 区迟早出现带密钥的日志。
+密钥优先 `apiKey`（供应商管理页填写的本地明文，Unix 文件权限 0600），其次 `apiKeyRef`（`env:NAME`）；运行时 `LC_API_KEY` 环境变量优先级最高。SecretStore 尚未落地，接入后把本地明文迁移过去。**日志默认不记录 prompt / 响应内容**，只记模型、token 数、耗时、工具名。开源项目不做这条，issue 区迟早出现带密钥的日志。
 
 ### 3.1 供应商与模型配置
 
@@ -95,7 +95,8 @@ enum LlmEvent {
       "kind": "openai-responses",        // 端点类型，决定协议实现
       "label": "OpenAI",
       "baseUrl": "https://api.openai.com/v1",
-      "apiKeyRef": "keyring://lite-code/openai",
+      "apiKey": "sk-...",              // 可选：本地明文密钥（0600）
+      "apiKeyRef": "env:OPENAI_API_KEY", // 可选：环境变量引用
       "enabled": true
     }
   ],
@@ -111,7 +112,9 @@ enum LlmEvent {
     }
   ],
   "defaultModel": "gpt-5",               // 用于压缩与风险判定
-  "defaultThinking": "medium"
+  "defaultThinking": "medium",
+  "subagentModel": "gpt-5-mini",         // 子 Agent 模型（当前仅持久化）
+  "subagentThinking": "low"
 }
 ```
 
@@ -120,6 +123,8 @@ enum LlmEvent {
 | 字段 | 含义 | 约束 |
 |---|---|---|
 | `id` | 显示 id | 唯一，可自由改名（"我的便宜模型"），仅本地生效 |
+| `subagentModel` | 子 Agent 模型 | 必须是已配置的模型 id；留空跟随默认模型 |
+| `subagentThinking` | 子 Agent 思考挡位 | 必须是所选模型 `thinking` 列表中的值 |
 | `modelId` | 实际 id | 发往 API 的原值，不校验格式——服务商可能随时加新模型 |
 | `thinking` | 支持挡位 | 至少一项；不含 `off` 的模型，UI 隐藏关闭选项 |
 | `contextK` | 上下文窗口 | > 0；仅影响预算计算，不向上游校验 |

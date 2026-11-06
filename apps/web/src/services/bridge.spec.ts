@@ -31,6 +31,8 @@ import {
   isTauri,
   onCoreEvent,
   openWorkspace,
+  providersLoad,
+  providersSave,
   readFile,
   readDir,
   resolveApproval,
@@ -184,6 +186,112 @@ describe('fallback 占位（浏览器 dev）', () => {
       expect(res.data.totalMatches).toBe(0)
       expect(res.data.truncated).toBe(false)
     }
+  })
+})
+
+describe('供应商管理（providers_*）', () => {
+  const view = {
+    providers: [
+      {
+        id: 'openai',
+        kind: 'openai-responses' as const,
+        label: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        enabled: true,
+        apiKeyRef: '',
+        hasApiKey: true,
+        apiKeyHint: '••••6789',
+      },
+    ],
+    models: [
+      {
+        id: 'gpt-5',
+        provider: 'openai',
+        modelId: 'gpt-5',
+        thinking: ['off', 'high'],
+        contextK: 400,
+        compressAtK: 300,
+        capabilities: ['tools'],
+      },
+    ],
+    defaultModel: 'gpt-5',
+    defaultThinking: 'off',
+    subagentModel: 'gpt-5',
+    subagentThinking: 'high',
+  }
+
+  it('浏览器 dev 返回演示供应商', async () => {
+    const res = await providersLoad()
+    expect(res.ok).toBe(true)
+    expect(res.fallback).toBe(true)
+    if (res.ok) {
+      expect(res.data.providers[0].label).toBe('OpenAI')
+      expect(res.data.models[0].id).toBe('gpt-5')
+    }
+  })
+
+  it('Tauri 路径调用 providers_load 原样返回脱敏视图', async () => {
+    const calls: string[] = []
+    installTauri({
+      invoke: async cmd => {
+        calls.push(cmd)
+        return view
+      },
+    })
+    const res = await providersLoad()
+    expect(calls).toEqual(['providers_load'])
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.data.providers[0].apiKeyHint).toBe('••••6789')
+  })
+
+  it('providers_save 以 input 包装提交并返回新视图', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return view
+      },
+    })
+    const input = {
+      providers: [
+        {
+          id: 'openai',
+          kind: 'openai-responses' as const,
+          label: 'OpenAI',
+          baseUrl: 'https://api.openai.com/v1',
+          enabled: true,
+          apiKey: 'sk-123456789',
+          apiKeyRef: '',
+        },
+      ],
+      models: view.models,
+      defaultModel: 'gpt-5',
+      defaultThinking: 'off',
+      subagentModel: 'gpt-5',
+      subagentThinking: 'high',
+    }
+    const res = await providersSave(input)
+    expect(calls[0].cmd).toBe('providers_save')
+    expect(calls[0].args).toEqual({ input })
+    expect(res.ok).toBe(true)
+  })
+
+  it('保存错误转成 ErrorBody 分支', async () => {
+    installTauri({
+      invoke: async () => {
+        throw { code: 'invalid_argument', message: 'compressAtK 必须小于 contextK' }
+      },
+    })
+    const res = await providersSave({
+      providers: [],
+      models: [],
+      defaultModel: null,
+      defaultThinking: null,
+      subagentModel: null,
+      subagentThinking: null,
+    })
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error.code).toBe('invalid_argument')
   })
 })
 

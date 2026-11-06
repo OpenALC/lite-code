@@ -13,6 +13,7 @@ import type { AgentSessionController } from '../services/agentSession'
 import { isTauri } from '../services/bridge'
 
 const props = defineProps<{ controller: AgentSessionController }>()
+const emit = defineEmits<{ 'manage-providers': [] }>()
 const { t } = useI18n()
 
 const MODES: SessionMode[] = ['plan', 'chat', 'auto', 'yolo']
@@ -288,6 +289,13 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       >
         <h3>{{ t('agent.emptyTitle') }}</h3>
         <p>{{ t('agent.emptyDesc') }}</p>
+        <button
+          type="button"
+          class="manage-providers"
+          @click="emit('manage-providers')"
+        >
+          {{ t('agent.manageProviders') }}
+        </button>
         <p
           v-if="!tauri"
           class="demo"
@@ -1111,5 +1119,22 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .send:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.manage-providers {
+  margin-top: 8px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.manage-providers:hover {
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
 }
 </style>

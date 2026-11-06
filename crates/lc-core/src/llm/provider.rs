@@ -1,7 +1,15 @@
-//! 供应商与模型配置（docs/AGENT.md §3.1）。密钥不在这里：只存 `apiKeyRef`。
+//! 供应商与模型配置（docs/AGENT.md §3.1）。
+//!
+//! 密钥有两种来源：`apiKey`（供应商管理页填写的本地明文，文件权限 0600）与
+//! `apiKeyRef`（`env:NAME`）。运行时优先 `LC_API_KEY` 环境变量，其次 `apiKey`，
+//! 最后解析 `apiKeyRef`。两者都不写入日志。
+
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::config::write_atomic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderKind {
@@ -20,6 +28,11 @@ pub struct ProviderConfig {
     pub kind: ProviderKind,
     pub label: String,
     pub base_url: String,
+    /** 本地明文密钥（可选）；UI 保存时为空表示保留旧值。 */
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /** 环境变量引用（兼容旧配置）：`env:NAME`。 */
+    #[serde(default)]
     pub api_key_ref: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -43,7 +56,7 @@ pub struct ModelConfig {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvidersFile {
     #[serde(default)]
@@ -54,6 +67,12 @@ pub struct ProvidersFile {
     pub default_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_thinking: Option<String>,
+    /// 子 Agent 使用的模型 alias（未来 subagent lane 读取；当前仅持久化）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_model: Option<String>,
+    /// 子 Agent 的思考挡位（同上）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_thinking: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -68,10 +87,18 @@ pub enum ProviderError {
     UnknownProvider { model: String, provider: String },
     #[error("model {0} 的 compressAtK 必须大于 0 且小于 contextK")]
     InvalidBudget(String),
+    #[error("provider {0} 的 id/label/baseUrl 不能为空，baseUrl 需以 http:// 或 https:// 开头")]
+    InvalidProvider(String),
+    #[error("model {0} 的 id/provider/modelId 不能为空，contextK 必须大于 0")]
+    InvalidModel(String),
     #[error("defaultModel {0} 不存在")]
     UnknownDefaultModel(String),
+    #[error("subagentModel {0} 不存在")]
+    UnknownSubagentModel(String),
     #[error("配置缺少 provider 或 model")]
     Empty,
+    #[error("读写 providers 配置失败：{0}")]
+    Io(String),
 }
 
 impl ProvidersFile {
@@ -83,18 +110,50 @@ impl ProvidersFile {
         serde_json::to_string_pretty(self).expect("ProvidersFile 序列化不可能失败")
     }
 
+    /// 读取配置文件；文件不存在返回 `Ok(None)`（首次配置）。
+    pub fn load_path(path: &Path) -> Result<Option<Self>, ProviderError> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text).map(Some),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ProviderError::Io(e.to_string())),
+        }
+    }
+
+    /// 校验后原子写入（备份 `.bak`）。Unix 下把文件与备份收紧到 0600：
+    /// 供应商页允许直接保存 API Key，不能依赖默认 umask。
+    pub fn save_path(&self, path: &Path) -> Result<(), ProviderError> {
+        self.validate()?;
+        write_atomic(path, &self.serialize()).map_err(|e| ProviderError::Io(e.to_string()))?;
+        restrict_permissions(path);
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), ProviderError> {
         if self.providers.is_empty() || self.models.is_empty() {
             return Err(ProviderError::Empty);
         }
         let mut provider_ids = std::collections::HashSet::new();
         for provider in &self.providers {
+            if provider.id.trim().is_empty()
+                || provider.label.trim().is_empty()
+                || !(provider.base_url.starts_with("http://")
+                    || provider.base_url.starts_with("https://"))
+            {
+                return Err(ProviderError::InvalidProvider(provider.id.clone()));
+            }
             if !provider_ids.insert(provider.id.as_str()) {
                 return Err(ProviderError::DuplicateProvider(provider.id.clone()));
             }
         }
         let mut model_ids = std::collections::HashSet::new();
         for model in &self.models {
+            if model.id.trim().is_empty()
+                || model.provider.trim().is_empty()
+                || model.model_id.trim().is_empty()
+                || model.context_k == 0
+            {
+                return Err(ProviderError::InvalidModel(model.id.clone()));
+            }
             if !model_ids.insert(model.id.as_str()) {
                 return Err(ProviderError::DuplicateModel(model.id.clone()));
             }
@@ -113,9 +172,26 @@ impl ProvidersFile {
         {
             return Err(ProviderError::UnknownDefaultModel(default.clone()));
         }
+        if let Some(subagent) = &self.subagent_model
+            && !model_ids.contains(subagent.as_str())
+        {
+            return Err(ProviderError::UnknownSubagentModel(subagent.clone()));
+        }
         Ok(())
     }
 }
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    let mut bak = path.as_os_str().to_owned();
+    bak.push(".bak");
+    let _ = std::fs::set_permissions(Path::new(&bak), std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -213,5 +289,78 @@ mod tests {
         assert_eq!(file.models[1].provider, "anthropic");
         let roundtrip = ProvidersFile::parse(&file.serialize()).expect("roundtrip");
         assert_eq!(roundtrip, file);
+    }
+
+    #[test]
+    fn parses_local_api_key_and_subagent_fields() {
+        const CONFIG: &str = r#"{
+          "providers": [
+            {"id":"openai","kind":"openai-responses","label":"OpenAI","baseUrl":"https://api.openai.com/v1","apiKey":"sk-local","enabled":true}
+          ],
+          "models": [
+            {"id":"gpt-5","provider":"openai","modelId":"gpt-5","thinking":["off","high"],"contextK":400,"compressAtK":300}
+          ],
+          "defaultModel":"gpt-5",
+          "defaultThinking":"off",
+          "subagentModel":"gpt-5",
+          "subagentThinking":"high"
+        }"#;
+        let file = ProvidersFile::parse(CONFIG).expect("parse");
+        file.validate().expect("valid");
+        assert_eq!(file.providers[0].api_key.as_deref(), Some("sk-local"));
+        assert_eq!(file.subagent_model.as_deref(), Some("gpt-5"));
+        assert_eq!(file.subagent_thinking.as_deref(), Some("high"));
+        let roundtrip = ProvidersFile::parse(&file.serialize()).expect("roundtrip");
+        assert_eq!(roundtrip, file);
+    }
+
+    #[test]
+    fn validates_provider_model_and_subagent_references() {
+        let mut file = ProvidersFile::parse(VALID).expect("parse");
+        file.subagent_model = Some("ghost".into());
+        assert!(matches!(
+            file.validate(),
+            Err(ProviderError::UnknownSubagentModel(_))
+        ));
+
+        let mut file = ProvidersFile::parse(VALID).expect("parse");
+        file.providers[0].base_url = "ftp://example.test".into();
+        assert!(matches!(
+            file.validate(),
+            Err(ProviderError::InvalidProvider(_))
+        ));
+
+        let mut file = ProvidersFile::parse(VALID).expect("parse");
+        file.models[0].context_k = 0;
+        assert!(matches!(
+            file.validate(),
+            Err(ProviderError::InvalidModel(_))
+        ));
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_with_missing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "lc-provider-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("providers.json");
+
+        assert_eq!(ProvidersFile::load_path(&path).unwrap(), None);
+        let mut file = ProvidersFile::parse(VALID).expect("parse");
+        file.save_path(&path).expect("save");
+        assert_eq!(ProvidersFile::load_path(&path).unwrap().unwrap(), file);
+        assert!(!path.with_extension("json.bak").exists());
+
+        file.providers[0].api_key = Some("sk-updated".into());
+        file.save_path(&path).expect("save again");
+        assert_eq!(ProvidersFile::load_path(&path).unwrap().unwrap(), file);
+        assert!(path.with_extension("json.bak").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

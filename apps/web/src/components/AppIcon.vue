@@ -68,6 +68,14 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 })
       />
       <path d="M9 11h.01M15 11h.01M9 15h6" />
     </template>
+    <template v-else-if="name === 'providers'">
+      <circle
+        cx="8"
+        cy="8"
+        r="3.2"
+      />
+      <path d="m10.4 10.4 9.1 9.1M14.8 14.8l-2 2M17.8 17.8l-2 2" />
+    </template>
     <template v-else-if="name === 'settings'">
       <circle
         cx="12"
