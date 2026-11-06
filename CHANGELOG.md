@@ -50,4 +50,8 @@
 - 复验补丁：DB 审批按 connection_id 隔离、shell/DB/git 子进程剥离 provider 密钥、CI audit 缓存修复
 - 审计 Medium：CREATE TRIGGER DML 检查、LIMIT/TOP 识别、DB bridge 流式取样、不可信边界转义、task key FNV-1a 64
 - 审批 UX：write_file/edit_file 展示内容/替换摘要，AllowSession 按内容隔离
+- UI 重构：VS Code 式活动栏/侧栏/编辑器/右侧功能栏、自定义无边框标题栏、亮/暗主题、页面缩放、设置面板、快速打开、原生文件夹选择
+- 文件树：项目名、打开的编辑器、右键菜单（中文）、拖拽移动、VCS 目录过滤；编辑器中文右键菜单
+- 数据库：PostgreSQL / MySQL / SQL Server 驱动打包为单文件 bundle，与 SQLite 共用 JSON-RPC
+
 

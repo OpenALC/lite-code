@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-06，main HEAD：`0f55395`；版本 `0.6.1-preview.3`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-06，main HEAD：`db15b4f`；版本 `0.6.1-preview.4`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -71,7 +71,9 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `v0.6.1-preview.3` **已发布**（非 draft）：x64/arm64 安装包、三个 CLI、`latest.json`、SHA256SUMS（10 资产） |
+| P6 发布 | ✅ `v0.6.1-preview.3` 已发布；`v0.6.1-preview.4` 将包含 UI 重构与多数据库驱动 |
+| UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
+| DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
 | main CI | ✅ `4780f68` 全绿（含 audit / updater manifest / arm64 release） |
@@ -267,5 +269,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 399 · lc-cli 33 · lc-proto 10 · lc-desktop 76 · web 277（15 文件）· 合计 **797**（含 `db_agent` 集成 2 项）。
+lc-core 405 · lc-cli 33 · lc-proto 10 · lc-desktop 82 · web 298（15 文件）· 合计 **830**（含 `db_agent` 集成 2 项）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
