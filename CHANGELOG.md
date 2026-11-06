@@ -42,3 +42,9 @@
 - Agent DB 闭环：真实 SQLite 建表 → 写入 → 查询，结果回填后继续
 - 安全边界：DB/MCP 工具输出加不可信数据标记；Tauri CSP 允许预览 iframe 并收紧 object/base
 - HarmonyOS spike：ArkWeb + NAPI 通过；Monaco 内存/IME 未过，首版降级只读+对话
+- P6 A 类：Linux arm64（ubuntu-24.04-arm）AppImage/deb/CLI 进入发布矩阵
+- P6 A 类：`update_check`、`latest.json` 生成器、updater-manifest 与回滚文档
+- 安全修复：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过、VCS 写保护、取消、记忆路径/大小、task 按工作区隔离与 ignored 文件保护
+- 发布加固：签名 fail-closed、最小权限、资产/checksums 一致性校验、CI audit 与 updater manifest 测试
+- 依赖：`dompurify` override 至 3.4.17，`pnpm audit --prod` 清零
+

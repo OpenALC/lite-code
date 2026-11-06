@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-05，main HEAD：`d34521d`；版本 `0.5.1-preview.1`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-06，main HEAD：`f20b9f5`；版本 `0.5.1-preview.1`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -63,12 +63,16 @@
 | P5 DB UI | ✅ 连接列表、schema 树、SQL 编辑器、结果网格、EXPLAIN、untrusted 提示 |
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
-| P5 发布 | ✅ `v0.5.1-preview.1` draft：NSIS、AppImage、deb、两个 `lc-cli`、SHA256SUMS（6 资产） |
+| P5 发布 | ✅ `v0.5.1-preview.1` **已发布**（非 draft）：6 资产 |
 | P6 鸿蒙 | ✅ spike 完成（DevEco 26/API26）：ArkWeb 跑通前端、NAPI 传 handle；Monaco 内存/IME 未过 → 首版只读+对话 |
 | P6 本地安全整改 | ✅ CSP frame-src/object-src；DB/MCP 输出不可信边界；审计范围写入 `docs/SECURITY-AUDIT.md` |
-| P6 其余 | ⏳ 见 `docs/RELEASE-GATES.md`：A 类（arm64、更新器）可开工；B 类（soak、审计、签名、Win11 验收）由维护者关闭 |
+| P6 A 类 arm64 | ✅ release.yml 新增 `ubuntu-24.04-arm` 构建、arm64 资产校验与 `lc-cli-arm64`；待 tag 验证 |
+| P6 A 类 更新器 | ✅ `update_check` + `latest.json` 生成器 + 回滚文档；无签名密钥时 `signed:false`，签名门禁未完全关闭 |
+| P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验等 |
+| P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
+| P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭 |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ P4 `preview.2` 全绿；P5 提交由后台 watcher 验证 |
+| main CI | ⏳ P6 安全修复与版本提交待后台验证 |
 
 ## 本轮完成
 
@@ -202,6 +206,19 @@
 4. `activeRssMb` 缺 UI 自动化入口未测；cold/warm 终点是“窗口可见”而非应用内“可交互”。
 5. `@lc-proto` 目前只有 tsconfig 别名，未来若生成运行时常量需补 Vite alias。
 
+## P6 审计与门禁进展（2026-11-06）
+
+- 独立审计（只读）发现 3 Critical / 6 High / 10 Medium / 6 Low；完整报告在会话记录，范围见 `docs/SECURITY-AUDIT.md`。
+- 已合入修复：
+  - MCP：项目 `.mcp.json` 默认忽略（`LC_MCP_ALLOW_PROJECT=1` 显式开启）、环境 allowlist、server 上限 8、1MiB 上限。
+  - SQL：SQLite 方言（`\` 不再转义单引号）、sidecar 强制行数上限、PRAGMA 只读白名单。
+  - Agent：审批逐项重新授权、真实参数摘要、`.git`/`.hg`/`.svn` 写保护、取消 token、工具错误不可信边界。
+  - 记忆：根校验 + 拒绝 symlink/reparse + 1MiB 上限 + 不可信边界。
+  - Task：按 workspace 隔离 `tasks.json`、apply/discard 保护 ignored 文件。
+  - 发布：签名 fail-closed、最小权限、更新器 `latest.json`、资产/checksums 一致性校验；CI 增加 audit 与 updater manifest 测试。
+- 依赖：`dompurify` 覆盖至 3.4.17，`pnpm audit --prod` 清零。
+- 仍待 tag 验证：arm64 runner、release 资产命名、`latest.json` 上传、签名关闭时的 `signed:false` 提示。
+
 ## P6 外部依赖（阻塞项）
 
 P6 出口要求包含无法在本会话/本机完成的项，需维护者或外部环境：
@@ -248,5 +265,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 343 · lc-cli 33 · lc-proto 10 · lc-desktop 64 · web 277（15 文件）· 合计 **727**。
+lc-core 376 · lc-cli 33 · lc-proto 10 · lc-desktop 76 · web 277（15 文件）· 合计 **774**（含 `db_agent` 集成 2 项）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
