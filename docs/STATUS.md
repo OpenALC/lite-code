@@ -74,7 +74,7 @@
 | P6 发布 | ✅ `v0.6.1-preview.3` **已发布**（非 draft）：x64/arm64 安装包、三个 CLI、`latest.json`、SHA256SUMS（10 资产） |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ⏳ P6 安全修复与版本提交待后台验证 |
+| main CI | ✅ `4780f68` 全绿（含 audit / updater manifest / arm64 release） |
 
 ## 本轮完成
 
