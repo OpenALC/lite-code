@@ -3,7 +3,8 @@
 轻量级桌面 Agent 工作台：Tauri 2 + Rust 核心 + Vue 3 / Monaco。
 不是 Claude Code / Codex 的 GUI 套壳——Agent harness、文件系统、进程与运行时都在 Rust 侧，前端只是可替换的视图层。
 
-> 当前处于 **P6 稳定化预览**：P3 Agent、P4 任务工作台、P5 数据库/Git、P6 arm64 与更新器检查可用。
+> 当前处于 **P6 稳定化预览**：P3 Agent、P4 任务工作台、P5 数据库/Git、P6 arm64 与更新器检查可用；
+> 工作区全文搜索、编辑器区设置页与亮/暗主题已进入预览版。
 > 鸿蒙首版为只读预览 + 对话；签名、soak、第三方审计由维护者关闭。
 > OpenAI Responses 为默认端点；Anthropic Messages 已完成事件解码，传输层在后续版本接入。
 
@@ -58,12 +59,13 @@ lc-cli agent run --prompt "读 src/lib.rs，修格式并跑测试" --workspace .
 
 ## 数据库与 Git
 
-- **数据库面板**（顶部栏）：连接 SQLite 文件、浏览 schema、写 SQL、查询/执行/EXPLAIN。
+- **数据库面板**（右侧功能栏）：连接 SQLite 文件、PostgreSQL / MySQL / SQL Server，浏览 schema、写 SQL、查询/执行/EXPLAIN。
   - 查询结果默认只回样本（最多 1000 行），并标记 `untrusted`；数据库内容不能当指令。
   - 无 `WHERE` 的 `UPDATE`/`DELETE`、多语句、DDL 黑名单会被 SQL 闸门直接拒绝。
   - Agent 工具：`db_list` / `db_schema` / `db_query` / `db_explain` / `db_execute`，调用前走审批。
-  - 目前仅 SQLite（Node 22.5+ 内置 `node:sqlite`）；pg/mysql/mssql 配置可保存但暂不可连接。
-- **Git 面板**（顶部栏）：分支/ahead-behind、staged/unstaged 文件、diff、暂存/取消暂存、提交与最近提交。
+  - SQLite 走 Node 22.5+ 内置 `node:sqlite`；PostgreSQL（pg）、MySQL（mysql2）、SQL Server（mssql）驱动已打包为单文件 bundle。
+  - pg/mysql/mssql 已通过驱动加载、参数映射与失败路径测试，但**尚未用真实服务器做端到端验证**。
+- **Git 面板**（右侧功能栏）：分支/ahead-behind、staged/unstaged 文件、diff、暂存/取消暂存、提交与最近提交。
 
 ## 开发
 
