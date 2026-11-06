@@ -408,7 +408,8 @@
     "regex": "Use regular expression",
     "loading": "Searching…",
     "demo": "Browser demo: no real filesystem",
-    "searchInFiles": "Search in files for “{query}”"
+    "searchInFiles": "Search in files for “{query}”",
+    "invalidRegex": "Invalid regular expression"
   },
   "welcome": {
     "title": "Welcome to Lite Code",

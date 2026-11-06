@@ -73,7 +73,7 @@ const unsubPrefs = subscribePrefs(next => {
 
 // 右侧功能栏：Agent / 任务工作台 / Git / 数据库，四者共用一栏，编辑器始终保留。
 type RightTab = 'agent' | 'workbench' | 'git' | 'db'
-type SidebarView = 'explorer' | 'search' | 'tasks' | 'settings'
+type SidebarView = 'explorer' | 'search' | 'tasks'
 const rightTab = ref<RightTab>('agent')
 const sidebarView = ref<SidebarView>('explorer')
 const sidebarVisible = ref(true)
@@ -205,7 +205,7 @@ function activateEditor(id: string): void {
 
 // 顶部快速打开 / 命令面板
 const quickQuery = ref('')
-const searchSeed = ref('')
+const searchSeed = ref({ query: '', seq: 0 })
 const quickInput = ref<HTMLInputElement | null>(null)
 const quickOpen = ref(false)
 const quickIndex = ref(0)
@@ -245,7 +245,7 @@ const quickResults = computed<QuickItem[]>(() => {
     label: t('search.searchInFiles', { query: queryText }),
     detail: '',
     action: () => {
-      searchSeed.value = queryText
+      searchSeed.value = { query: queryText, seq: searchSeed.value.seq + 1 }
       sidebarVisible.value = true
       sidebarView.value = 'search'
     },
@@ -267,12 +267,15 @@ function runQuick(item: QuickItem | undefined): void {
   if (!item) return
   quickOpen.value = false
   quickQuery.value = ''
+  quickInput.value?.blur()
   void item.action()
 }
 
 function onQuickKey(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     quickOpen.value = false
+    quickQuery.value = ''
+    quickInput.value?.blur()
     return
   }
   if (event.key === 'ArrowDown') {
@@ -308,7 +311,7 @@ const menuItems = computed(() => ({
     { label: t('menu.toggleBottom'), action: () => { bottomVisible.value = !bottomVisible.value } },
   ],
   help: [
-    { label: t('menu.about'), action: () => { sidebarView.value = 'settings' } },
+    { label: t('menu.about'), action: openSettings },
   ],
 }))
 
@@ -398,8 +401,7 @@ function onKey(event: KeyboardEvent): void {
     bottomVisible.value = !bottomVisible.value
   } else if (mod && event.key === ',') {
     event.preventDefault()
-    sidebarView.value = 'settings'
-    sidebarVisible.value = true
+    openSettings()
   }
 }
 
@@ -501,6 +503,7 @@ onBeforeUnmount(() => {
           spellcheck="false"
           @focus="quickOpen = true"
           @keydown="onQuickKey"
+          @input="quickOpen = true"
         >
         <div
           v-if="quickOpen && quickQuery && quickResults.length"
@@ -641,7 +644,7 @@ onBeforeUnmount(() => {
       </nav>
 
       <aside
-        v-if="sidebarVisible"
+        v-show="sidebarVisible"
         class="sidebar"
         :style="{ width: `${sidebarWidth}px` }"
       >
@@ -734,13 +737,13 @@ onBeforeUnmount(() => {
         </div>
 
         <SearchView
-          v-else-if="sidebarView === 'search'"
+          v-show="sidebarView === 'search'"
           :root="projectRoot"
           :seed="searchSeed"
         />
 
         <div
-          v-else-if="sidebarView === 'tasks'"
+          v-if="sidebarView === 'tasks'"
           class="view tasks-view"
         >
           <TaskList
@@ -918,7 +921,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="status-item"
-        @click="selectSidebar('settings')"
+        @click="openSettings"
       >
         {{ t('activity.settings') }}
       </button>

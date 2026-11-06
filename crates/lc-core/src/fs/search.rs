@@ -113,12 +113,15 @@ pub fn search_workspace(
     }
 
     let limit = options.max_results.max(1);
+    // 多探一条用于区分“恰好 N 条”与“被截断”，避免满额时误报。
+    let probe = limit.saturating_add(1);
     let mut files = Vec::new();
     let mut total_matches = 0usize;
+    let mut truncated = false;
     let mut scanned_files = 0usize;
 
     for entry in WalkBuilder::new(&canonical).build() {
-        if total_matches >= limit {
+        if total_matches >= probe {
             break;
         }
         let Ok(de) = entry else { continue };
@@ -142,8 +145,13 @@ pub fn search_workspace(
         };
         scanned_files += 1;
 
-        let remaining = limit - total_matches;
-        let matches = collect_file_matches(&matcher, &text, remaining.min(PER_FILE_LIMIT));
+        let remaining = probe - total_matches;
+        let want = remaining.min(PER_FILE_LIMIT);
+        let mut matches = collect_file_matches(&matcher, &text, want + 1);
+        if matches.len() > want {
+            matches.truncate(want);
+            truncated = true;
+        }
         if matches.is_empty() {
             continue;
         }
@@ -154,11 +162,22 @@ pub fn search_workspace(
         });
     }
 
+    if total_matches > limit {
+        truncated = true;
+        let overflow = total_matches - limit;
+        if let Some(last) = files.last_mut() {
+            let keep = last.matches.len().saturating_sub(overflow);
+            last.matches.truncate(keep);
+        }
+        files.retain(|file| !file.matches.is_empty());
+        total_matches = limit;
+    }
+
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(SearchResult {
         files,
         total_matches,
-        truncated: total_matches >= limit,
+        truncated,
         scanned_files,
     })
 }
@@ -353,6 +372,38 @@ mod tests {
             },
         );
         assert_eq!(result.total_matches, 7);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn exact_limit_is_not_reported_as_truncated() {
+        let root = temp_root("exact");
+        fs::write(root.join("a.txt"), "hit\n".repeat(7)).unwrap();
+        let result = run(
+            &root,
+            &SearchOptions {
+                query: "hit".into(),
+                max_results: 7,
+                ..SearchOptions::default()
+            },
+        );
+        assert_eq!(result.total_matches, 7);
+        assert!(!result.truncated, "{result:?}");
+    }
+
+    #[test]
+    fn per_file_cap_marks_truncated() {
+        let root = temp_root("per-file");
+        fs::write(root.join("a.txt"), "hit\n".repeat(PER_FILE_LIMIT + 50)).unwrap();
+        let result = run(
+            &root,
+            &SearchOptions {
+                query: "hit".into(),
+                max_results: 500,
+                ..SearchOptions::default()
+            },
+        );
+        assert_eq!(result.total_matches, PER_FILE_LIMIT);
         assert!(result.truncated);
     }
 

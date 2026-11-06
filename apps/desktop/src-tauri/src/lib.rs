@@ -380,8 +380,12 @@ fn fs_reveal(
 /// 工作区全文搜索（搜索侧栏）。默认大小写不敏感、字面量匹配；`regex=true`
 /// 时按正则解释，非法正则返回 `invalid_argument`。遍历与忽略规则在 lc-core，
 /// 薄壳只做参数收敛与错误映射。
-#[tauri::command]
-fn fs_search(
+///
+/// `rename_all = "snake_case"` 与前端 `searchWorkspace` 的入参一致；不写时
+/// Tauri 2 默认按 camelCase 取键，`case_sensitive` / `max_results` 会被静默丢弃。
+/// 搜索要遍历并读取文件，必须走 `spawn_blocking`，不能占用 Tauri 主线程。
+#[tauri::command(async, rename_all = "snake_case")]
+async fn fs_search(
     query: String,
     case_sensitive: Option<bool>,
     regex: Option<bool>,
@@ -397,7 +401,11 @@ fn fs_search(
             .unwrap_or(lc_core::fs::DEFAULT_MAX_RESULTS)
             .clamp(1, 5000),
     };
-    search_workspace(&root, &RealPathResolver, &options).map_err(|e| fs_error_body(&e))
+    tauri::async_runtime::spawn_blocking(move || {
+        search_workspace(&root, &RealPathResolver, &options).map_err(|e| fs_error_body(&e))
+    })
+    .await
+    .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("搜索任务失败：{e}")))?
 }
 
 // ==== 纯逻辑层（无 Tauri 运行时依赖，单测直接覆盖） ====

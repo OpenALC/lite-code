@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import type * as monacoNs from 'monaco-editor'
 
 import { writeFile } from '../services/bridge'
-import { currentReveal, subscribeReveal } from '../services/editorReveal'
+import { consumeReveal, subscribeReveal } from '../services/editorReveal'
 import { languageForPath } from '../services/editorLanguage'
 import type { EditorFileStrategy } from '../services/largeFile'
 import { activeTab, markSaved, tabsStore, updateContent } from '../services/tabs'
@@ -23,6 +23,16 @@ let removeContext: (() => void) | null = null
 let currentTabId: string | null = null
 /** setValue 触发的 onDidChangeContent 不应回写 store */
 let applying = false
+/** 卸载后到达的异步挂载（Monaco 动态 import）不得再创建编辑器 */
+let disposed = false
+
+function onWindowClick(): void {
+  contextMenu.value = null
+}
+
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') contextMenu.value = null
+}
 
 /** 每个标签独立 model：undo/redo、光标与折叠状态随 model 保留。 */
 const models = new Map<string, monacoNs.editor.ITextModel>()
@@ -89,8 +99,9 @@ function applyStrategy(strategy: EditorFileStrategy): void {
 
 /** 搜索/问题面板的"打开到某行"：只对当前激活标签生效，行号做模型边界收敛。 */
 function applyReveal(): void {
-  const target = currentReveal()
-  if (!editor || !target || target.tabId !== currentTabId) return
+  if (!editor || !currentTabId) return
+  const target = consumeReveal(currentTabId)
+  if (!target) return
   const model = editor.getModel()
   if (!model) return
   const line = Math.min(Math.max(1, target.line), model.getLineCount())
@@ -208,6 +219,7 @@ onMounted(async () => {
     getWorker: createEditorWorker,
   }
   const monaco = await import('monaco-editor')
+  if (disposed || !host.value) return
   monacoRef = monaco
   monaco.editor.defineTheme('lite-code-dark', {
     base: 'vs-dark',
@@ -264,11 +276,9 @@ onMounted(async () => {
     event.stopPropagation()
     contextMenu.value = { x: event.clientX, y: event.clientY }
   }
-  window.addEventListener('click', () => { contextMenu.value = null })
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') contextMenu.value = null
-  })
-  host.value!.addEventListener('contextmenu', openMenu, true)
+  window.addEventListener('click', onWindowClick)
+  window.addEventListener('keydown', onWindowKeydown)
+  host.value.addEventListener('contextmenu', openMenu, true)
   removeContext = () => host.value?.removeEventListener('contextmenu', openMenu, true)
 
   syncFromStore(tabsStore.get())
@@ -276,7 +286,10 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   window.removeEventListener('keydown', onSaveKeydown)
+  window.removeEventListener('click', onWindowClick)
+  window.removeEventListener('keydown', onWindowKeydown)
   unsubTabs?.()
   unsubPrefs?.()
   unsubReveal?.()

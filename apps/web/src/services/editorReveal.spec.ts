@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentReveal, requestReveal, subscribeReveal } from './editorReveal'
+import { consumeReveal, currentReveal, requestReveal, subscribeReveal } from './editorReveal'
 
 describe('editorReveal', () => {
   it('requestReveal 收敛行/列并递增 seq', () => {
@@ -43,5 +43,16 @@ describe('editorReveal', () => {
     requestReveal('e.ts', 10)
 
     expect(seen).toEqual(['c.ts:4', 'd.ts:8'])
+  })
+
+  it('consumeReveal 只消费一次，且不消费其它标签的请求', () => {
+    requestReveal('f.ts', 30, 2)
+    expect(consumeReveal('g.ts')).toBeNull()
+    const first = consumeReveal('f.ts')
+    expect(first?.line).toBe(30)
+    expect(consumeReveal('f.ts')).toBeNull()
+
+    requestReveal('f.ts', 40)
+    expect(consumeReveal('f.ts')?.line).toBe(40)
   })
 })

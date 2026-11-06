@@ -14,6 +14,8 @@ export interface RevealTarget {
 const store: Store<RevealTarget | null> = createStore<RevealTarget | null>(null)
 
 let seq = 0
+/** 已被编辑器消费的最大 seq：组件重挂载时不会重放旧定位。 */
+let consumedSeq = 0
 
 export function requestReveal(tabId: string, line: number, column = 1): void {
   if (!tabId) return
@@ -28,6 +30,17 @@ export function requestReveal(tabId: string, line: number, column = 1): void {
 
 export function currentReveal(): RevealTarget | null {
   return store.get()
+}
+
+/**
+ * 取一次尚未消费、且属于 `tabId` 的定位请求。编辑器应用后即标记已消费，
+ * 避免从设置页/其它标签返回时又跳回上一次命中。
+ */
+export function consumeReveal(tabId: string): RevealTarget | null {
+  const target = store.get()
+  if (!target || target.tabId !== tabId || target.seq <= consumedSeq) return null
+  consumedSeq = target.seq
+  return target
 }
 
 export function subscribeReveal(fn: (target: RevealTarget | null) => void): () => void {

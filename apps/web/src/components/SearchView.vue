@@ -10,7 +10,7 @@ import { resolveEditorStrategy } from '../services/largeFile'
 import { activateTab, openTab, tabsStore } from '../services/tabs'
 import AppIcon from './AppIcon.vue'
 
-const props = defineProps<{ root: string; seed?: string }>()
+const props = defineProps<{ root: string; seed?: { query: string; seq: number } }>()
 
 const { t } = useI18n()
 const query = ref('')
@@ -39,7 +39,9 @@ async function run(q: string): Promise<void> {
   if (current !== requestSeq) return
   loading.value = false
   if (!res.ok) {
-    error.value = res.error.message
+    // 非法正则用本地化文案，不把 Rust 的中文错误直接暴露到英文界面。
+    error.value =
+      res.error.code === 'invalid_argument' ? t('search.invalidRegex') : res.error.message
     result.value = null
     return
   }
@@ -56,6 +58,7 @@ function schedule(): void {
     result.value = null
     error.value = null
     loading.value = false
+    isFallback.value = false
     return
   }
   error.value = null
@@ -69,13 +72,26 @@ watch([query, caseSensitive, regex], schedule)
 
 // 顶部快速打开里的“在文件中搜索”：把关键词带进侧栏并立即执行。
 watch(
-  () => props.seed,
-  seed => {
-    if (!seed) return
-    query.value = seed
+  () => props.seed?.seq,
+  () => {
+    const seed = props.seed
+    if (!seed || !seed.query) return
+    query.value = seed.query
     schedule()
   },
   { immediate: true },
+)
+
+// 切换工作区后旧命中路径已不在新根内：清空结果并按当前关键词重跑。
+watch(
+  () => props.root,
+  () => {
+    requestSeq += 1
+    result.value = null
+    error.value = null
+    isFallback.value = false
+    if (query.value.trim()) schedule()
+  },
 )
 
 function relativePath(path: string): string {
