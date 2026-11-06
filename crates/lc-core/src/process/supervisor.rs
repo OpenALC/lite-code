@@ -151,6 +151,7 @@ impl RealProcessSupervisor {
         capture: bool,
     ) -> Result<(TrackedChild, Option<ChildStdout>, Option<ChildStderr>), ProcessError> {
         let mut cmd = Command::new(program);
+        super::scrub_secret_env(&mut cmd);
         cmd.args(args)
             // stdin 恒 null：非交互执行不允许等待输入
             .stdin(Stdio::null());

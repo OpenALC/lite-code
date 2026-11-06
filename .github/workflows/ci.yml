@@ -210,6 +210,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # setup-node 的 pnpm cache 需要 store 存在；先安装依赖再 audit。
+      - name: install deps for audit
+        run: pnpm install --frozen-lockfile --ignore-scripts
       # 网络失败与 high/critical 漏洞都必须让 job 失败；不允许 continue-on-error
       # 静默通过。--prod 只审计会进入安装包的生产依赖。
       - name: pnpm audit (prod, high+)

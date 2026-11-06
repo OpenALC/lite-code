@@ -773,7 +773,10 @@ mod tests {
             panic!("expected approval, got {outcome:?}");
         };
         assert_eq!(approval.tool, "db_execute");
-        assert_eq!(approval.command.as_deref(), Some("DELETE FROM users"));
+        assert_eq!(
+            approval.command.as_deref(),
+            Some("connection main:\nDELETE FROM users")
+        );
 
         let outcome = loop_
             .resolve_approval(approval.id, ApprovalDecision::AllowOnce, &mut |_| {})

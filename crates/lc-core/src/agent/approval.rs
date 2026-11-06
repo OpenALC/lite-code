@@ -16,16 +16,24 @@ pub type ApprovalId = u64;
 /// 的真实参数不是它，伪造的 `command` 会让审批卡与缓存键偏离实际执行内容。
 ///
 /// - `shell`：`command`
-/// - `db_*`：`sql`（无 SQL 的 `db_list` / `db_schema` 回退到完整参数）
+/// - `db_*`：`connection_id` + `sql`（无 SQL 的 `db_list` / `db_schema` 回退到完整参数）
 /// - `write_file` / `edit_file`：`path`
 /// - 其它工具（含 MCP）：紧凑 JSON 参数
 ///
 /// 参数缺失或类型不对时回退到紧凑 JSON，保证摘要始终反映实际参数。
 pub(crate) fn approval_summary(tool: &str, args: &Value) -> Option<String> {
+    if tool.starts_with("db_")
+        && let Some(sql) = args.get("sql").and_then(Value::as_str)
+    {
+        let connection = args
+            .get("connection_id")
+            .and_then(Value::as_str)
+            .unwrap_or("(unknown)");
+        return Some(format!("connection {connection}:\n{sql}"));
+    }
     let field = match tool {
         "shell" => Some("command"),
         "write_file" | "edit_file" => Some("path"),
-        name if name.starts_with("db_") => Some("sql"),
         _ => None,
     };
     if let Some(field) = field
@@ -173,6 +181,27 @@ mod tests {
     }
 
     #[test]
+    fn db_session_cache_is_scoped_to_connection() {
+        use serde_json::json;
+        let dev = approval_summary(
+            "db_execute",
+            &json!({"connection_id": "dev", "sql": "DELETE FROM users WHERE id=1"}),
+        )
+        .expect("dev summary");
+        let prod = approval_summary(
+            "db_execute",
+            &json!({"connection_id": "prod", "sql": "DELETE FROM users WHERE id=1"}),
+        )
+        .expect("prod summary");
+        assert_ne!(dev, prod);
+
+        let mut cache = ApprovalCache::default();
+        cache.allow_session("db_execute", Some(&dev));
+        assert!(cache.allows("db_execute", Some(&dev)));
+        assert!(!cache.allows("db_execute", Some(&prod)));
+    }
+
+    #[test]
     fn approval_summary_uses_actual_execution_arguments() {
         use serde_json::json;
 
@@ -191,7 +220,7 @@ mod tests {
                 &json!({"connection_id": "main", "sql": "DELETE FROM t", "command": "echo safe"})
             )
             .as_deref(),
-            Some("DELETE FROM t")
+            Some("connection main:\nDELETE FROM t")
         );
         assert_eq!(
             approval_summary(
@@ -199,7 +228,7 @@ mod tests {
                 &json!({"connection_id": "main", "sql": "SELECT 1", "command": "echo safe"})
             )
             .as_deref(),
-            Some("SELECT 1")
+            Some("connection main:\nSELECT 1")
         );
         // 无 SQL 的数据库工具按完整参数归类。
         assert_eq!(

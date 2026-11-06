@@ -128,6 +128,7 @@ impl DbSidecar {
 
     fn start(node_path: &Path, script: &Path) -> Result<Self, DbError> {
         let mut command = Command::new(node_path);
+        crate::process::scrub_secret_env(&mut command);
         command
             .arg(script)
             .stdin(Stdio::piped())

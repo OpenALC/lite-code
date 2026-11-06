@@ -34,8 +34,92 @@ mod tests;
 
 pub use supervisor::{CapturedChild, RealProcessSupervisor, TrackedChild};
 
+/// 从子进程环境中移除 provider / CI 凭据，避免 shell、DB、git 子进程把
+/// `LC_API_KEY`、`OPENAI_API_KEY` 等通过 `env` 泄漏给模型或日志。
+///
+/// 采用黑名单而不是 `env_clear()`：用户 shell 仍需要 PATH、代理、语言环境等。
+pub fn scrub_secret_env(cmd: &mut Command) {
+    let explicit: Vec<std::ffi::OsString> =
+        cmd.get_envs().map(|(key, _)| key.to_os_string()).collect();
+    for key in explicit {
+        if is_secret_env_name(&key.to_string_lossy()) {
+            cmd.env_remove(&key);
+        }
+    }
+    for (key, _) in std::env::vars_os() {
+        if is_secret_env_name(&key.to_string_lossy()) {
+            cmd.env_remove(&key);
+        }
+    }
+}
+
+fn is_secret_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    const EXACT: &[&str] = &[
+        "LC_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "MOONSHOT_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "NPM_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AZURE_CLIENT_SECRET",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    ];
+    EXACT.contains(&upper.as_str())
+        || upper.ends_with("_API_KEY")
+        || upper.ends_with("_ACCESS_KEY")
+        || upper.ends_with("_SECRET")
+        || upper.ends_with("_SECRET_KEY")
+        || upper.ends_with("_TOKEN")
+        || upper.ends_with("_PASSWORD")
+        || upper.ends_with("_CREDENTIALS")
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    #[test]
+    fn scrub_removes_provider_credentials_but_keeps_path() {
+        let mut cmd = Command::new("does-not-run");
+        cmd.env("LC_API_KEY", "secret")
+            .env("OPENAI_API_KEY", "secret")
+            .env("MY_SERVICE_TOKEN", "secret")
+            .env("PATH", "/usr/bin")
+            .env("KEEP_ME", "ok");
+        scrub_secret_env(&mut cmd);
+        let names: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, value)| value.is_some())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.iter().any(|name| name == "LC_API_KEY"));
+        assert!(!names.iter().any(|name| name == "OPENAI_API_KEY"));
+        assert!(!names.iter().any(|name| name == "MY_SERVICE_TOKEN"));
+        assert!(names.iter().any(|name| name == "PATH"));
+        assert!(names.iter().any(|name| name == "KEEP_ME"));
+    }
+
+    #[test]
+    fn secret_names_are_case_insensitive_and_suffix_based() {
+        assert!(is_secret_env_name("openai_api_key"));
+        assert!(is_secret_env_name("MY_TOKEN"));
+        assert!(is_secret_env_name("db_password"));
+        assert!(!is_secret_env_name("PATH"));
+        assert!(!is_secret_env_name("CARGO_HOME"));
+    }
+}
+
 use std::path::Path;
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus};
 
 use lc_proto::{ErrorBody, ErrorCode};
 

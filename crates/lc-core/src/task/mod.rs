@@ -168,6 +168,7 @@ pub(crate) fn run_git(
     timeout: Duration,
 ) -> Result<GitOutput, TaskError> {
     let mut command = Command::new("git");
+    crate::process::scrub_secret_env(&mut command);
     command
         .arg("-C")
         .arg(dir)
