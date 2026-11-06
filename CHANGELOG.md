@@ -47,4 +47,5 @@
 - 安全修复：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过、VCS 写保护、取消、记忆路径/大小、task 按工作区隔离与 ignored 文件保护
 - 发布加固：签名 fail-closed、最小权限、资产/checksums 一致性校验、CI audit 与 updater manifest 测试
 - 依赖：`dompurify` override 至 3.4.17，`pnpm audit --prod` 清零
+- 复验补丁：DB 审批按 connection_id 隔离、shell/DB/git 子进程剥离 provider 密钥、CI audit 缓存修复
 

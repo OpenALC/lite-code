@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-06，main HEAD：`f20b9f5`；版本 `0.5.1-preview.1`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-06，main HEAD：`f20b9f5`；版本 `0.6.1-preview.2`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -265,5 +265,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 376 · lc-cli 33 · lc-proto 10 · lc-desktop 76 · web 277（15 文件）· 合计 **774**（含 `db_agent` 集成 2 项）。
+lc-core 379 · lc-cli 33 · lc-proto 10 · lc-desktop 76 · web 277（15 文件）· 合计 **777**（含 `db_agent` 集成 2 项）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
