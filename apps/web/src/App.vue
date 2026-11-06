@@ -281,6 +281,16 @@ function onDocumentPointerDown(event: PointerEvent): void {
   }
 }
 
+/** Tab/Shift+Tab 离开快速打开区域时收起；结果项之间移动焦点不关闭。 */
+function onQuickFocusOut(event: FocusEvent): void {
+  const wrap = event.currentTarget
+  const next = event.relatedTarget
+  if (!(wrap instanceof Node)) return
+  if (next instanceof Node && wrap.contains(next)) return
+  quickOpen.value = false
+  quickQuery.value = ''
+}
+
 function onQuickKey(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     quickOpen.value = false
@@ -506,6 +516,7 @@ onBeforeUnmount(() => {
       <div
         class="quick-wrap"
         data-tauri-drag-region="false"
+        @focusout="onQuickFocusOut"
       >
         <input
           ref="quickInput"

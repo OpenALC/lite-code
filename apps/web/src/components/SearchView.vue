@@ -197,7 +197,7 @@ onBeforeUnmount(() => {
         <span
           v-if="result.truncated"
           class="warn"
-        >{{ t('search.truncated') }}</span>
+        >{{ t('search.truncated', { shown: result.totalMatches }) }}</span>
       </div>
       <div
         v-if="isFallback"

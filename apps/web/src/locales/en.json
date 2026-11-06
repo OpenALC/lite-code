@@ -403,7 +403,7 @@
     "workspacePlaceholder": "Search workspace…",
     "workspaceHint": "Search across the workspace. Toggle case sensitivity or regular expressions.",
     "summary": "{matches} results · {files} files",
-    "truncated": "Showing the first 500 results",
+    "truncated": "Results truncated; showing first {shown}",
     "caseSensitive": "Match case",
     "regex": "Use regular expression",
     "loading": "Searching…",

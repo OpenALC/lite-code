@@ -408,6 +408,59 @@ mod tests {
     }
 
     #[test]
+    fn per_file_exact_cap_is_not_truncated() {
+        let root = temp_root("per-file-exact");
+        fs::write(root.join("a.txt"), "hit\n".repeat(PER_FILE_LIMIT)).unwrap();
+        let result = run(
+            &root,
+            &SearchOptions {
+                query: "hit".into(),
+                max_results: 500,
+                ..SearchOptions::default()
+            },
+        );
+        assert_eq!(result.total_matches, PER_FILE_LIMIT);
+        assert!(!result.truncated, "{result:?}");
+    }
+
+    #[test]
+    fn cross_file_exact_limit_is_not_truncated() {
+        let root = temp_root("cross-exact");
+        fs::write(root.join("a.txt"), "hit\n".repeat(4)).unwrap();
+        fs::write(root.join("b.txt"), "hit\n".repeat(3)).unwrap();
+        let result = run(
+            &root,
+            &SearchOptions {
+                query: "hit".into(),
+                max_results: 7,
+                ..SearchOptions::default()
+            },
+        );
+        assert_eq!(result.total_matches, 7);
+        assert!(!result.truncated, "{result:?}");
+        assert_eq!(result.files.len(), 2);
+    }
+
+    #[test]
+    fn cross_file_over_limit_truncates_last_file() {
+        let root = temp_root("cross-over");
+        fs::write(root.join("a.txt"), "hit\n".repeat(4)).unwrap();
+        fs::write(root.join("b.txt"), "hit\n".repeat(4)).unwrap();
+        let result = run(
+            &root,
+            &SearchOptions {
+                query: "hit".into(),
+                max_results: 7,
+                ..SearchOptions::default()
+            },
+        );
+        assert_eq!(result.total_matches, 7);
+        assert!(result.truncated);
+        assert_eq!(result.files.len(), 2);
+        assert_eq!(result.files[1].matches.len(), 3);
+    }
+
+    #[test]
     fn empty_query_returns_empty_without_scanning() {
         let root = temp_root("empty");
         fs::write(root.join("a.txt"), "anything\n").unwrap();

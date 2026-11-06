@@ -403,7 +403,7 @@
     "workspacePlaceholder": "搜索工作区内容…",
     "workspaceHint": "输入关键词搜索整个工作区；支持区分大小写与正则表达式。",
     "summary": "{matches} 个结果 · {files} 个文件",
-    "truncated": "仅显示前 500 条",
+    "truncated": "结果已截断，仅显示前 {shown} 条",
     "caseSensitive": "区分大小写",
     "regex": "使用正则表达式",
     "loading": "搜索中…",
