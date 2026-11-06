@@ -818,7 +818,10 @@ mod tests {
             panic!("expected approval, got {outcome:?}");
         };
         assert_eq!(approval.tool, "write_file");
-        assert_eq!(approval.command.as_deref(), Some("../outside.txt"));
+        assert_eq!(
+            approval.command.as_deref(),
+            Some("write ../outside.txt (1 bytes)\nx")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

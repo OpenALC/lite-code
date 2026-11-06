@@ -17,10 +17,18 @@ pub type ApprovalId = u64;
 ///
 /// - `shell`：`command`
 /// - `db_*`：`connection_id` + `sql`（无 SQL 的 `db_list` / `db_schema` 回退到完整参数）
-/// - `write_file` / `edit_file`：`path`
+/// - `write_file` / `edit_file`：路径 + 内容/替换摘要（AllowSession 因此按内容隔离）
 /// - 其它工具（含 MCP）：紧凑 JSON 参数
 ///
 /// 参数缺失或类型不对时回退到紧凑 JSON，保证摘要始终反映实际参数。
+fn preview(text: &str, max_chars: usize) -> String {
+    let mut out: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        out.push('…');
+    }
+    out.replace('\n', "\\n")
+}
+
 pub(crate) fn approval_summary(tool: &str, args: &Value) -> Option<String> {
     if tool.starts_with("db_")
         && let Some(sql) = args.get("sql").and_then(Value::as_str)
@@ -31,9 +39,32 @@ pub(crate) fn approval_summary(tool: &str, args: &Value) -> Option<String> {
             .unwrap_or("(unknown)");
         return Some(format!("connection {connection}:\n{sql}"));
     }
+    if matches!(tool, "write_file" | "edit_file") {
+        let path = args
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("(unknown)");
+        if tool == "write_file" {
+            let content = args.get("content").and_then(Value::as_str).unwrap_or("");
+            return Some(format!(
+                "write {path} ({} bytes)
+{}",
+                content.len(),
+                preview(content, 200)
+            ));
+        }
+        let old = args.get("old_string").and_then(Value::as_str).unwrap_or("");
+        let new = args.get("new_string").and_then(Value::as_str).unwrap_or("");
+        return Some(format!(
+            "edit {path}
+- {}
++ {}",
+            preview(old, 200),
+            preview(new, 200)
+        ));
+    }
     let field = match tool {
         "shell" => Some("command"),
-        "write_file" | "edit_file" => Some("path"),
         _ => None,
     };
     if let Some(field) = field
@@ -237,11 +268,22 @@ mod tests {
         );
         assert_eq!(
             approval_summary("write_file", &json!({"path": "src/a.ts", "content": "x"})).as_deref(),
-            Some("src/a.ts")
+            Some(
+                "write src/a.ts (1 bytes)
+x"
+            )
         );
         assert_eq!(
-            approval_summary("edit_file", &json!({"path": "a.ts", "old_string": "a"})).as_deref(),
-            Some("a.ts")
+            approval_summary(
+                "edit_file",
+                &json!({"path": "a.ts", "old_string": "a", "new_string": "b"})
+            )
+            .as_deref(),
+            Some(
+                "edit a.ts
+- a
++ b"
+            )
         );
         // MCP 等动态工具：完整紧凑 JSON，参数变化即换缓存键。
         assert_eq!(
