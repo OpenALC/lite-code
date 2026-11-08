@@ -72,3 +72,4 @@
 - Agent 上下文预算：无会话时展示所选模型 `contextK` 与压缩阈值；新增“新会话”重置消息流
 - Agent 文本附件：原生文件选择器，UTF-8、10 个/256 KiB/总 1 MiB 上限，chips 展示与移除
 - 选中代码加入 Agent：编辑器右键菜单追加 `路径:行号` + 围栏代码块；演示缓冲区回退标题，20k 截断
+- Agent 修复：`sessionCreate` 适配层曾把模型误传为 `taskId`，真机发送报 `task not found`；已显式转接
