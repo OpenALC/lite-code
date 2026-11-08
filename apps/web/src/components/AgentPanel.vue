@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { ApprovalDecision, ApprovalSource, SessionMode } from '@lc-proto'
@@ -10,7 +10,7 @@ import {
   type ToolCard,
 } from '../services/agentStore'
 import type { AgentSessionController } from '../services/agentSession'
-import { isTauri } from '../services/bridge'
+import { isTauri, providersLoad } from '../services/bridge'
 
 const props = defineProps<{ controller: AgentSessionController }>()
 const emit = defineEmits<{ 'manage-providers': [] }>()
@@ -28,6 +28,38 @@ const unsubscribe = props.controller.subscribe(next => {
 
 const tauri = isTauri()
 const agent = computed(() => state.value.agent)
+const providerReady = ref(false)
+const providerSummary = ref('')
+
+async function refreshProviderState(): Promise<void> {
+  const res = await providersLoad()
+  if (!res.ok) {
+    providerReady.value = false
+    providerSummary.value = ''
+    return
+  }
+  const provider = res.data.providers.find(item => item.enabled)
+  const models = provider
+    ? res.data.models.filter(model => model.provider === provider.id)
+    : []
+  const hasKey = Boolean(
+    provider &&
+      (provider.hasApiKey || provider.apiKeyRef.startsWith('env:')),
+  )
+  providerReady.value = Boolean(provider && models.length > 0 && hasKey)
+  providerSummary.value = provider
+    ? `${provider.label} · ${res.data.defaultModel ?? models[0]?.id ?? ''}`
+    : ''
+}
+
+function onProvidersChanged(): void {
+  void refreshProviderState()
+}
+
+onMounted(() => {
+  void refreshProviderState()
+  window.addEventListener('providers:changed', onProvidersChanged)
+})
 const messages = computed(() => agent.value?.messages ?? [])
 const tools = computed(() => agent.value?.tools ?? [])
 const approvals = computed(() => agent.value?.approvals ?? [])
@@ -129,6 +161,7 @@ watch(
 )
 onBeforeUnmount(() => {
   unsubscribe()
+  window.removeEventListener('providers:changed', onProvidersChanged)
   if (flashTimer !== null) clearTimeout(flashTimer)
 })
 
@@ -287,8 +320,8 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         v-if="!agent"
         class="empty"
       >
-        <h3>{{ t('agent.emptyTitle') }}</h3>
-        <p>{{ t('agent.emptyDesc') }}</p>
+        <h3>{{ providerReady ? t('agent.readyTitle') : t('agent.emptyTitle') }}</h3>
+        <p>{{ providerReady ? t('agent.readyDesc', { summary: providerSummary }) : t('agent.emptyDesc') }}</p>
         <button
           type="button"
           class="manage-providers"
@@ -463,6 +496,10 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     >
       <span class="error-code">{{ state.error.code }}</span>
       <span class="error-message">{{ state.error.message }}</span>
+      <span
+        v-if="/40[13]/.test(state.error.message)"
+        class="error-hint"
+      >{{ t('agent.authHint') }}</span>
     </div>
 
     <div class="composer">
@@ -1136,5 +1173,12 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .manage-providers:hover {
   background: var(--accent);
   color: var(--accent-fg, #fff);
+}
+
+.error-hint {
+  flex-basis: 100%;
+  color: var(--fg-dim);
+  font-size: 10px;
+  line-height: 1.5;
 }
 </style>

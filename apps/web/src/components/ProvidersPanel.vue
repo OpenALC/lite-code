@@ -363,6 +363,7 @@ async function save(): Promise<void> {
   }
   isFallback.value = res.fallback
   applyView(res.data)
+  window.dispatchEvent(new Event('providers:changed'))
   success.value = res.fallback ? t('providers.savedDemo') : t('providers.saved')
 }
 
