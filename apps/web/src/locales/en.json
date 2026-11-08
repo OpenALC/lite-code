@@ -115,6 +115,24 @@
     "manageProviders": "Open provider manager",
     "browserDemo": "Browser demo mode: commands and agent events are disabled.",
     "thinking": "Thinking",
+    "model": "Model",
+    "noModels": "No models available",
+    "reasoningEffort": "Reasoning",
+    "thinkingLevels": {
+      "off": "Off",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "max": "Max"
+    },
+    "modelLocked": "Applies to new sessions",
+    "newSession": "New session",
+    "newSessionHint": "Clears the current stream; the next message starts a session with the selected model and reasoning level",
+    "addAttachment": "Add file",
+    "removeAttachment": "Remove attachment",
+    "attachmentHint": "Pick UTF-8 text files; up to 256 KiB each and 10 files",
+    "attachmentLimit": "At most {max} attachments",
+    "contextHintUnknown": "Select a model to see the context budget",
     "tool": {
       "running": "Running",
       "approval": "Approval",
@@ -377,7 +395,9 @@
     "cut": "Cut",
     "copy": "Copy",
     "paste": "Paste",
-    "selectAll": "Select All"
+    "selectAll": "Select All",
+    "addToAgent": "Add to Agent chat",
+    "addToAgentTruncated": "… (selection too long, truncated)"
   },
   "activity": {
     "explorer": "Explorer",

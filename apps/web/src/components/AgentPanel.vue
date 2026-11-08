@@ -9,17 +9,40 @@ import {
   type CompactionRecord,
   type ToolCard,
 } from '../services/agentStore'
+import {
+  consumeAgentContext,
+  drainAgentContexts,
+  subscribeAgentContext,
+  type AgentCodeContext,
+} from '../services/agentContext'
 import type { AgentSessionController } from '../services/agentSession'
-import { isTauri, providersLoad } from '../services/bridge'
+import {
+  agentPickFiles,
+  isTauri,
+  providersLoad,
+  type AgentAttachment,
+  type ProviderView,
+} from '../services/bridge'
 
 const props = defineProps<{ controller: AgentSessionController }>()
 const emit = defineEmits<{ 'manage-providers': [] }>()
-const { t } = useI18n()
+const { t, te } = useI18n()
 
 const MODES: SessionMode[] = ['plan', 'chat', 'auto', 'yolo']
 const TOOL_PREVIEW_CHARS = 600
 const TOOL_PREVIEW_LINES = 8
 const COMPACTION_FLASH_MS = 600
+const MAX_ATTACHMENTS = 10
+const DEFAULT_THINKING = ['off', 'low', 'medium', 'high']
+
+interface ModelChoice {
+  id: string
+  label: string
+  provider: string
+  contextK: number
+  compressAtK: number
+  thinking: string[]
+}
 
 const state = ref(props.controller.getState())
 const unsubscribe = props.controller.subscribe(next => {
@@ -28,37 +51,102 @@ const unsubscribe = props.controller.subscribe(next => {
 
 const tauri = isTauri()
 const agent = computed(() => state.value.agent)
-const providerReady = ref(false)
+const modelChoices = ref<ModelChoice[]>([])
+const defaultModelId = ref<string | null>(null)
+const defaultThinking = ref<string | null>(null)
 const providerSummary = ref('')
+const providerReady = computed(() => modelChoices.value.length > 0)
+
+function hasProviderKey(provider: ProviderView): boolean {
+  return provider.hasApiKey || provider.apiKeyRef.startsWith('env:')
+}
+
+function thinkingLevelsFor(modelId: string): string[] {
+  const info = modelChoices.value.find(item => item.id === modelId)
+  return info && info.thinking.length > 0 ? info.thinking : DEFAULT_THINKING
+}
+
+function chosenModelId(): string {
+  const configured = state.value.model ?? defaultModelId.value
+  if (configured && modelChoices.value.some(item => item.id === configured)) {
+    return configured
+  }
+  return modelChoices.value[0]?.id ?? ''
+}
+
+/** 无会话时把模型/思考偏好同步到控制器；已有会话只影响下一次新会话。 */
+function syncSelection(): void {
+  if (state.value.agent) return
+  const model = chosenModelId()
+  const levels = thinkingLevelsFor(model)
+  const preferred = state.value.thinking ?? defaultThinking.value
+  const thinking = preferred && levels.includes(preferred) ? preferred : levels[0] ?? null
+  const nextModel = model || null
+  if (nextModel !== state.value.model || thinking !== state.value.thinking) {
+    props.controller.setModel(nextModel, thinking)
+  }
+}
 
 async function refreshProviderState(): Promise<void> {
   const res = await providersLoad()
   if (!res.ok) {
-    providerReady.value = false
+    modelChoices.value = []
     providerSummary.value = ''
     return
   }
-  const provider = res.data.providers.find(item => item.enabled)
-  const models = provider
-    ? res.data.models.filter(model => model.provider === provider.id)
-    : []
-  const hasKey = Boolean(
-    provider &&
-      (provider.hasApiKey || provider.apiKeyRef.startsWith('env:')),
+  const enabled = new Map(
+    res.data.providers
+      .filter(provider => provider.enabled)
+      .map(provider => [provider.id, provider]),
   )
-  providerReady.value = Boolean(provider && models.length > 0 && hasKey)
-  providerSummary.value = provider
-    ? `${provider.label} · ${res.data.defaultModel ?? models[0]?.id ?? ''}`
+  const choices: ModelChoice[] = []
+  for (const model of res.data.models) {
+    const provider = enabled.get(model.provider)
+    if (!provider || !hasProviderKey(provider) || !model.id.trim()) continue
+    choices.push({
+      id: model.id,
+      label: model.id,
+      provider: provider.label || provider.id,
+      contextK: model.contextK,
+      compressAtK: model.compressAtK,
+      thinking: model.thinking.length > 0 ? [...model.thinking] : DEFAULT_THINKING,
+    })
+  }
+  modelChoices.value = choices
+  defaultModelId.value = res.data.defaultModel
+  defaultThinking.value = res.data.defaultThinking
+  const first = choices[0]
+  providerSummary.value = first
+    ? `${first.provider} · ${res.data.defaultModel ?? first.id}`
     : ''
+  syncSelection()
 }
 
 function onProvidersChanged(): void {
   void refreshProviderState()
 }
 
+/** 把编辑器选区作为围栏代码块追加到草稿，保留路径与行号。 */
+function appendCodeContext(context: AgentCodeContext): void {
+  const header = `${context.path}:${context.startLine}-${context.endLine}`
+  const block = `\`\`\`${context.language}\n${context.text}\n\`\`\``
+  const draft = state.value.draft.trimEnd()
+  props.controller.setDraft(draft ? `${draft}\n\n${header}\n${block}` : `${header}\n${block}`)
+}
+
+let offAgentContext: (() => void) | null = null
+
 onMounted(() => {
   void refreshProviderState()
   window.addEventListener('providers:changed', onProvidersChanged)
+  for (const context of drainAgentContexts()) {
+    appendCodeContext(context)
+    consumeAgentContext(context)
+  }
+  offAgentContext = subscribeAgentContext(context => {
+    appendCodeContext(context)
+    consumeAgentContext(context)
+  })
 })
 const messages = computed(() => agent.value?.messages ?? [])
 const tools = computed(() => agent.value?.tools ?? [])
@@ -90,8 +178,46 @@ const contextPct = computed(() => Math.round(ratio.value * 100))
 const contextBeyond = computed(() =>
   agent.value ? beyondCompressThreshold(agent.value) : false,
 )
-const contextK = computed(() => agent.value?.contextK ?? 0)
-const compressAtK = computed(() => agent.value?.compressAtK ?? 0)
+const modelLocked = computed(() => Boolean(agent.value) || streaming.value)
+const selectedModelInfo = computed(
+  () => modelChoices.value.find(item => item.id === selectedModel.value) ?? null,
+)
+const thinkingLevels = computed(() => {
+  const info = selectedModelInfo.value
+  return info && info.thinking.length > 0 ? info.thinking : []
+})
+
+const selectedModel = computed({
+  get: () => chosenModelId(),
+  set: (value: string) => {
+    if (modelLocked.value) return
+    const levels = thinkingLevelsFor(value)
+    const thinking = levels.includes(state.value.thinking ?? '')
+      ? state.value.thinking
+      : levels[0] ?? null
+    props.controller.setModel(value || null, thinking)
+  },
+})
+
+const selectedThinking = computed({
+  get: () => {
+    const levels = thinkingLevels.value
+    const current = state.value.thinking
+    if (current && levels.includes(current)) return current
+    return levels[0] ?? ''
+  },
+  set: (value: string) => {
+    if (modelLocked.value) return
+    props.controller.setModel(selectedModel.value || null, value || null)
+  },
+})
+
+const contextK = computed(
+  () => agent.value?.contextK ?? selectedModelInfo.value?.contextK ?? 0,
+)
+const compressAtK = computed(
+  () => agent.value?.compressAtK ?? selectedModelInfo.value?.compressAtK ?? 0,
+)
 const thresholdPct = computed(() => {
   if (!Number.isFinite(contextK.value) || contextK.value <= 0) return 0
   if (!Number.isFinite(compressAtK.value) || compressAtK.value <= 0) return 0
@@ -100,8 +226,15 @@ const thresholdPct = computed(() => {
 const contextThresholdTitle = computed(() =>
   t('agent.contextThreshold', { threshold: compressAtK.value }),
 )
+const contextBudgetTitle = computed(() =>
+  contextK.value > 0
+    ? t('agent.contextHint', { k: contextK.value })
+    : t('agent.contextHintUnknown'),
+)
 const contextText = computed(() =>
-  agent.value ? `${formatTokens(usedTokens.value)} / ${contextK.value}k` : '—',
+  contextK.value > 0
+    ? `${formatTokens(usedTokens.value)} / ${contextK.value}k`
+    : '—',
 )
 const turnText = computed(() =>
   agent.value ? `${agent.value.turn}/${agent.value.maxTurns}` : '—',
@@ -118,8 +251,11 @@ const sendDisabled = computed(
     streaming.value ||
     approvalPending.value ||
     switching.value ||
-    draft.value.trim().length === 0,
+    (draft.value.trim().length === 0 && attachments.value.length === 0),
 )
+
+const attachments = ref<AgentAttachment[]>([])
+const attachmentError = ref('')
 
 const streamSignature = computed(() => {
   const current = agent.value
@@ -162,12 +298,26 @@ watch(
 onBeforeUnmount(() => {
   unsubscribe()
   window.removeEventListener('providers:changed', onProvidersChanged)
+  offAgentContext?.()
+  offAgentContext = null
   if (flashTimer !== null) clearTimeout(flashTimer)
 })
 
 function formatTokens(tokens: number): string {
   if (!Number.isFinite(tokens)) return '—'
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(Math.round(tokens))
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${bytes} B`
+}
+
+function thinkingLabel(level: string): string {
+  const key = `agent.thinkingLevels.${level}`
+  return te(key) ? t(key) : level
 }
 
 function compactionTitle(record: CompactionRecord): string {
@@ -238,7 +388,45 @@ async function confirmYolo(): Promise<void> {
 
 async function submit(): Promise<void> {
   if (sendDisabled.value) return
-  await props.controller.send()
+  const files = [...attachments.value]
+  await props.controller.send(undefined, files)
+  if (!props.controller.getState().error) {
+    attachments.value = []
+    attachmentError.value = ''
+  }
+}
+
+async function pickFiles(): Promise<void> {
+  if (!tauri || streaming.value) return
+  attachmentError.value = ''
+  const res = await agentPickFiles()
+  if (!res.ok) {
+    attachmentError.value = res.error.message
+    return
+  }
+  if (res.data.length === 0) return
+  const byPath = new Map(attachments.value.map(file => [file.path, file]))
+  for (const file of res.data) {
+    if (byPath.size >= MAX_ATTACHMENTS && !byPath.has(file.path)) {
+      attachmentError.value = t('agent.attachmentLimit', { max: MAX_ATTACHMENTS })
+      break
+    }
+    byPath.set(file.path, file)
+  }
+  attachments.value = [...byPath.values()]
+}
+
+function removeAttachment(path: string): void {
+  attachments.value = attachments.value.filter(file => file.path !== path)
+  if (attachments.value.length === 0) attachmentError.value = ''
+}
+
+function newSession(): void {
+  if (streaming.value || approvalPending.value) return
+  if (props.controller.resetSession()) {
+    attachments.value = []
+    attachmentError.value = ''
+  }
 }
 
 function cancel(): void {
@@ -285,9 +473,64 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       </div>
     </div>
 
+    <div class="model-row">
+      <label class="model-field">
+        <span class="field-label">{{ t('agent.model') }}</span>
+        <select
+          v-model="selectedModel"
+          :disabled="modelLocked || modelChoices.length === 0"
+        >
+          <option
+            v-if="modelChoices.length === 0"
+            value=""
+          >{{ t('agent.noModels') }}</option>
+          <option
+            v-for="choice in modelChoices"
+            :key="choice.id"
+            :value="choice.id"
+            :title="`${choice.provider} · ${choice.id}`"
+          >
+            {{ choice.label }}
+          </option>
+        </select>
+      </label>
+      <label
+        v-if="thinkingLevels.length > 0"
+        class="model-field narrow"
+      >
+        <span class="field-label">{{ t('agent.reasoningEffort') }}</span>
+        <select
+          v-model="selectedThinking"
+          :disabled="modelLocked || modelChoices.length === 0"
+        >
+          <option
+            v-for="level in thinkingLevels"
+            :key="level"
+            :value="level"
+          >
+            {{ thinkingLabel(level) }}
+          </option>
+        </select>
+      </label>
+      <span
+        v-if="modelLocked"
+        class="model-note"
+      >{{ t('agent.modelLocked') }}</span>
+      <button
+        v-if="agent"
+        type="button"
+        class="new-session"
+        :disabled="streaming || approvalPending"
+        :title="t('agent.newSessionHint')"
+        @click="newSession"
+      >
+        {{ t('agent.newSession') }}
+      </button>
+    </div>
+
     <div
       class="context-row"
-      :title="t('agent.contextHint', { k: contextK })"
+      :title="contextBudgetTitle"
     >
       <span class="context-label">{{ t('agent.contextLabel') }}</span>
       <span class="context-track">
@@ -297,7 +540,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           :style="{ width: `${contextPct}%` }"
         />
         <span
-          v-if="agent && thresholdPct > 0"
+          v-if="thresholdPct > 0"
           class="context-threshold"
           role="img"
           :aria-label="contextThresholdTitle"
@@ -307,7 +550,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       </span>
       <span class="context-text">{{ contextText }}</span>
       <span
-        v-if="agent"
+        v-if="contextK > 0 && thresholdPct > 0"
         class="context-note"
       >{{ contextThresholdTitle }}</span>
     </div>
@@ -503,6 +746,34 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     </div>
 
     <div class="composer">
+      <div
+        v-if="attachments.length > 0 || attachmentError"
+        class="attachments"
+      >
+        <span
+          v-for="file in attachments"
+          :key="file.path"
+          class="attachment-chip"
+        >
+          <span
+            class="chip-name"
+            :title="file.path"
+          >{{ file.name }}</span>
+          <span class="chip-size">{{ formatBytes(file.bytes) }}</span>
+          <button
+            type="button"
+            class="chip-remove"
+            :aria-label="t('agent.removeAttachment')"
+            @click="removeAttachment(file.path)"
+          >×</button>
+        </span>
+        <p
+          v-if="attachmentError"
+          class="attachment-error"
+        >
+          {{ attachmentError }}
+        </p>
+      </div>
       <textarea
         v-model="draft"
         rows="2"
@@ -512,6 +783,15 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         @keydown.meta.enter.prevent="submit"
       />
       <div class="composer-foot">
+        <button
+          type="button"
+          class="attach"
+          :disabled="!tauri || streaming"
+          :title="t('agent.attachmentHint')"
+          @click="pickFiles"
+        >
+          {{ t('agent.addAttachment') }}
+        </button>
         <span class="hint">{{ composerHint }}</span>
         <button
           type="button"
@@ -1180,5 +1460,148 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   color: var(--fg-dim);
   font-size: 10px;
   line-height: 1.5;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+  padding: 0 8px 6px;
+}
+
+.model-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field-label {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.model-field select {
+  min-width: 0;
+  max-width: 220px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+}
+
+.model-field.narrow select {
+  max-width: 96px;
+}
+
+.model-field select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.model-note {
+  color: var(--fg-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.new-session {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.new-session:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.new-session:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.attachments {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--fg-dim);
+  font-size: 10px;
+}
+
+.chip-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-size {
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.chip-remove {
+  padding: 0 4px;
+  border-radius: 999px;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.chip-remove:hover {
+  color: var(--red);
+}
+
+.attachment-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--red);
+  font-size: 10px;
+}
+
+.attach {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.attach:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.attach:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 </style>

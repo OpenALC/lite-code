@@ -58,6 +58,7 @@ import { LAYOUT_LIMITS, clamp } from './services/layoutProfile'
 import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { createTaskController } from './services/taskStore'
 import { extensionsExecuteCommand, extensionsList } from './services/extensions'
+import { subscribeAgentContext } from './services/agentContext'
 import { setFileDiagnostics } from './services/lspDiagnostics'
 import { activateTab, closeTab, openTab, renameTab, tabsStore } from './services/tabs'
 import {
@@ -75,6 +76,11 @@ const { t, locale } = useI18n()
 const prefs = ref(uiPrefs())
 const unsubLsp = onLspDiagnostics(event => {
   setFileDiagnostics(event.path, event.serverId, event.diagnostics)
+})
+
+const unsubAgentContext = subscribeAgentContext(() => {
+  rightTab.value = 'agent'
+  rightVisible.value = true
 })
 
 const unsubPrefs = subscribePrefs(next => {
@@ -531,6 +537,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   unsubPrefs()
   unsubLsp()
+  unsubAgentContext()
   unsubTabs()
   agentSession.dispose()
   taskSession.dispose()

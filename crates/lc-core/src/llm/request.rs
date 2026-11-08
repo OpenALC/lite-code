@@ -77,6 +77,8 @@ pub struct LlmRequest {
     pub tools: Vec<Value>,
     pub max_output_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// OpenAI Responses 的 reasoning.effort（off 时不写入）。
+    pub reasoning: Option<String>,
 }
 
 impl LlmRequest {
@@ -88,6 +90,7 @@ impl LlmRequest {
             tools: Vec::new(),
             max_output_tokens: None,
             temperature: None,
+            reasoning: None,
         }
     }
 
@@ -108,6 +111,11 @@ impl LlmRequest {
         if let Some(temperature) = self.temperature {
             body["temperature"] = json!(temperature);
         }
+        if let Some(effort) = &self.reasoning
+            && effort != "off"
+        {
+            body["reasoning"] = json!({ "effort": effort });
+        }
         body
     }
 }
@@ -124,6 +132,7 @@ mod tests {
         request.tools = vec![json!({"type":"function","name":"read_file"})];
         request.max_output_tokens = Some(128);
         request.temperature = Some(0.2);
+        request.reasoning = Some("high".into());
 
         let body = request.to_openai_body();
         assert_eq!(body["model"], "gpt-5");
@@ -133,6 +142,7 @@ mod tests {
         assert_eq!(body["input"][0]["content"], "hi");
         assert_eq!(body["tools"][0]["name"], "read_file");
         assert_eq!(body["max_output_tokens"], 128);
+        assert_eq!(body["reasoning"]["effort"], "high");
     }
 
     #[test]
@@ -156,5 +166,6 @@ mod tests {
         assert!(body.get("instructions").is_none());
         assert!(body.get("max_output_tokens").is_none());
         assert!(body.get("temperature").is_none());
+        assert!(body.get("reasoning").is_none());
     }
 }

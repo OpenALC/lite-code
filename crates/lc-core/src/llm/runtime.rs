@@ -27,6 +27,8 @@ pub struct AgentRuntime {
     pub model_id: String,
     pub context_k: u32,
     pub compress_at_k: u32,
+    /// 模型支持的思考挡位（来自 providers.json；用于 UI/校验）。
+    pub thinking: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -37,6 +39,8 @@ pub enum RuntimeError {
     Config(#[from] ProviderError),
     #[error("providers 配置没有可用模型")]
     NoModel,
+    #[error("模型 {0} 不存在")]
+    UnknownModel(String),
     #[error("provider {0} 不存在或未启用")]
     ProviderUnavailable(String),
     #[error(
@@ -78,7 +82,12 @@ pub fn providers_path() -> Result<PathBuf, RuntimeError> {
 
 /// 默认加载：读配置文件；缺失则环境变量兜底。
 pub fn load_default() -> Result<AgentRuntime, RuntimeError> {
-    load_from(&providers_path()?, |name| std::env::var(name).ok())
+    load_for_model(None)
+}
+
+/// 按模型显示 id 加载；`None` 时使用 `defaultModel`/第一个模型。
+pub fn load_for_model(model: Option<&str>) -> Result<AgentRuntime, RuntimeError> {
+    load_from_model(&providers_path()?, model, |name| std::env::var(name).ok())
 }
 
 /// 从指定路径加载，并注入环境变量查找函数（测试可完全离线）。
@@ -90,8 +99,17 @@ pub fn load_from(
     path: &Path,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<AgentRuntime, RuntimeError> {
+    load_from_model(path, None, env)
+}
+
+/// 显式路径 + 模型 alias（测试与 `load_for_model` 共用）。
+pub fn load_from_model(
+    path: &Path,
+    model: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<AgentRuntime, RuntimeError> {
     match ProvidersFile::load_path(path) {
-        Ok(Some(file)) => runtime_from_file(&file, env),
+        Ok(Some(file)) => runtime_from_file(&file, model, env),
         Ok(None) => fallback_from_env(env),
         Err(e) => Err(RuntimeError::Config(e)),
     }
@@ -99,16 +117,25 @@ pub fn load_from(
 
 fn runtime_from_file(
     file: &ProvidersFile,
+    model: Option<&str>,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<AgentRuntime, RuntimeError> {
     file.validate()?;
 
-    let model = file
-        .default_model
-        .as_deref()
-        .and_then(|id| file.models.iter().find(|model| model.id == id))
-        .or_else(|| file.models.first())
-        .ok_or(RuntimeError::NoModel)?;
+    let selected = match model {
+        Some(alias) => file
+            .models
+            .iter()
+            .find(|model| model.id == alias)
+            .ok_or_else(|| RuntimeError::UnknownModel(alias.to_string()))?,
+        None => file
+            .default_model
+            .as_deref()
+            .and_then(|id| file.models.iter().find(|model| model.id == id))
+            .or_else(|| file.models.first())
+            .ok_or(RuntimeError::NoModel)?,
+    };
+    let model = selected;
     let provider = file
         .providers
         .iter()
@@ -136,6 +163,7 @@ fn runtime_from_file(
         model_id: model.model_id.clone(),
         context_k: model.context_k,
         compress_at_k: model.compress_at_k,
+        thinking: model.thinking.clone(),
     })
 }
 
@@ -165,6 +193,7 @@ fn fallback_from_env(env: impl Fn(&str) -> Option<String>) -> Result<AgentRuntim
         model_id: non_empty(env("LC_MODEL")).unwrap_or_else(|| DEFAULT_MODEL.into()),
         context_k: parse_k(env("LC_CONTEXT_K"), DEFAULT_CONTEXT_K),
         compress_at_k: parse_k(env("LC_COMPRESS_AT_K"), DEFAULT_COMPRESS_AT_K),
+        thinking: Vec::new(),
     })
 }
 
@@ -324,6 +353,34 @@ mod tests {
         let path = temp_file("invalid", r#"{"providers":[],"models":[]}"#);
         let err = load_from(&path, env_of(&[])).expect_err("invalid");
         assert!(matches!(err, RuntimeError::Config(ProviderError::Empty)));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn explicit_model_alias_overrides_default() {
+        let path = temp_file("explicit-model", CONFIG);
+        let rt = load_from_model(
+            &path,
+            Some("claude"),
+            env_of(&[("TEST_ANTHROPIC_KEY", "sk-ant")]),
+        )
+        .expect("load");
+        assert_eq!(rt.model_alias, "claude");
+        assert_eq!(rt.model_id, "claude-real");
+        assert_eq!(rt.kind, ProviderKind::AnthropicMessages);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn unknown_model_alias_is_reported() {
+        let path = temp_file("unknown-model", CONFIG);
+        let err = load_from_model(
+            &path,
+            Some("no-such-model"),
+            env_of(&[("TEST_OPENAI_KEY", "sk-test")]),
+        )
+        .expect_err("unknown model");
+        assert_eq!(err, RuntimeError::UnknownModel("no-such-model".into()));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

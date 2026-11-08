@@ -20,6 +20,7 @@ mod providers;
 mod task;
 mod updater;
 
+use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -42,6 +43,7 @@ use lc_proto::{
     CommandResult, ContractMeta, ErrorBody, ErrorCode, NodeHealth, NodeRuntimeInfo, NodeStatus,
 };
 use providers::{providers_load, providers_save};
+use serde::Serialize;
 use task::{
     TaskEvents, TaskState, task_apply, task_bind_session, task_cancel, task_create, task_diff,
     task_discard, task_list, task_start,
@@ -156,6 +158,91 @@ async fn workspace_pick(
     Ok(CommandResult::WorkspaceRoot {
         root: Some(display),
     })
+}
+
+const MAX_ATTACHMENT_FILES: usize = 10;
+const MAX_ATTACHMENT_BYTES: u64 = 256 * 1024;
+const MAX_ATTACHMENT_TOTAL_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentAttachmentFile {
+    name: String,
+    path: String,
+    text: String,
+    bytes: usize,
+}
+
+/// 选择文件并读取文本，作为 Agent 对话附件。路径由用户显式选择，不限制在工作区内；
+/// 单文件/总量有上限，二进制按 InvalidArgument 拒绝。
+#[tauri::command]
+async fn agent_pick_files() -> Result<Vec<AgentAttachmentFile>, ErrorBody> {
+    let picked = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("添加文件到 Agent 对话")
+            .pick_files()
+    })
+    .await
+    .map_err(|error| ErrorBody::new(ErrorCode::Internal, error.to_string()))?;
+    let Some(paths) = picked else {
+        return Ok(Vec::new());
+    };
+    if paths.len() > MAX_ATTACHMENT_FILES {
+        return Err(ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("一次最多添加 {MAX_ATTACHMENT_FILES} 个文件"),
+        ));
+    }
+
+    let mut files = Vec::with_capacity(paths.len());
+    let mut total = 0usize;
+    for path in paths {
+        let meta = fs::metadata(&path).map_err(|error| {
+            ErrorBody::new(
+                ErrorCode::Io,
+                format!("读取 {} 失败：{error}", path.display()),
+            )
+        })?;
+        if meta.len() > MAX_ATTACHMENT_BYTES {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "{} 超过 {} KiB，无法添加",
+                    path.display(),
+                    MAX_ATTACHMENT_BYTES / 1024
+                ),
+            ));
+        }
+        let bytes = fs::read(&path).map_err(|error| {
+            ErrorBody::new(
+                ErrorCode::Io,
+                format!("读取 {} 失败：{error}", path.display()),
+            )
+        })?;
+        total += bytes.len();
+        if total > MAX_ATTACHMENT_TOTAL_BYTES {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidArgument,
+                format!("附件总量超过 {} KiB", MAX_ATTACHMENT_TOTAL_BYTES / 1024),
+            ));
+        }
+        let text = String::from_utf8(bytes).map_err(|_| {
+            ErrorBody::new(
+                ErrorCode::InvalidArgument,
+                format!("{} 不是 UTF-8 文本，无法添加", path.display()),
+            )
+        })?;
+        files.push(AgentAttachmentFile {
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string()),
+            path: lc_core::fs::display_path(&path),
+            bytes: text.len(),
+            text,
+        });
+    }
+    Ok(files)
 }
 
 /// 转发 lc-core 的 Node 探测。惰性触发由前端控制，这里不做缓存。
@@ -713,6 +800,7 @@ pub fn run() {
             workspace_root,
             workspace_open,
             workspace_pick,
+            agent_pick_files,
             fs_read_dir,
             fs_read_file,
             fs_write_file,

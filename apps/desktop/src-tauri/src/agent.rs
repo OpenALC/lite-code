@@ -21,7 +21,7 @@ use lc_core::agent::{
     LoopError, LoopOutcome, Session, SessionError, ToolError, ToolOutput, ToolRegistry, llm_event,
     loop_outcome, mode_from_contract, session_info, session_instructions,
 };
-use lc_core::llm::{LlmEvent, RuntimeError, load_default};
+use lc_core::llm::{LlmEvent, RuntimeError, load_for_model};
 use lc_core::mcp::{McpConfig, McpExecutor, McpHost};
 use lc_core::task::TaskError;
 use lc_proto::{
@@ -544,6 +544,8 @@ fn spawn_worker(
 pub(crate) fn session_create(
     mode: SessionMode,
     task_id: Option<String>,
+    model: Option<String>,
+    thinking: Option<String>,
     app: tauri::AppHandle,
     workspace: tauri::State<'_, WorkspaceState>,
     sessions: tauri::State<'_, AgentSessions>,
@@ -560,7 +562,8 @@ pub(crate) fn session_create(
         .as_ref()
         .map_or_else(|| workspace_root.clone(), |target| target.root.clone());
 
-    let runtime = load_default().map_err(runtime_error_body)?;
+    let runtime = load_for_model(model.as_deref()).map_err(runtime_error_body)?;
+    let reasoning = reasoning_effort(thinking.as_deref(), &runtime.thinking)?;
     let client = runtime.openai_client().map_err(runtime_error_body)?;
 
     let session = new_session(sessions.allocate_id(), mode)
@@ -607,6 +610,7 @@ pub(crate) fn session_create(
         runtime.model_id,
     )
     .with_instructions(instructions)
+    .with_reasoning(reasoning)
     .with_tools(tools);
 
     let sink = sessions.event_sink(app.clone());
@@ -747,6 +751,32 @@ fn approval_decision(decision: ApprovalDecision) -> CoreApprovalDecision {
 
 /// provider 配置失败 → 可操作的契约错误。失败发生在会话创建前，码限定在
 /// `InvalidArgument` / `NotFound`（不是运行时 IO 事件）。
+/// 思考挡位 → Responses `reasoning.effort`；`off` 不发送，`max` 归一到 high。
+fn reasoning_effort(
+    thinking: Option<&str>,
+    supported: &[String],
+) -> Result<Option<String>, ErrorBody> {
+    let Some(level) = thinking.map(str::trim).filter(|level| !level.is_empty()) else {
+        return Ok(None);
+    };
+    if !supported.is_empty() && !supported.iter().any(|item| item == level) {
+        return Err(ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("思考挡位 {level} 不在模型支持的列表中"),
+        ));
+    }
+    match level {
+        "off" => Ok(None),
+        "low" => Ok(Some("low".into())),
+        "medium" => Ok(Some("medium".into())),
+        "high" | "max" => Ok(Some("high".into())),
+        other => Err(ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("不支持的思考挡位：{other}"),
+        )),
+    }
+}
+
 fn runtime_error_body(error: RuntimeError) -> ErrorBody {
     match error {
         RuntimeError::Io(detail) => ErrorBody::new(
@@ -763,6 +793,10 @@ fn runtime_error_body(error: RuntimeError) -> ErrorBody {
         RuntimeError::NoModel => ErrorBody::new(
             ErrorCode::InvalidArgument,
             "providers 配置没有可用模型：请在 models 中添加模型并设置 defaultModel",
+        ),
+        RuntimeError::UnknownModel(model) => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("模型 {model} 不存在：请在供应商页面选择已配置的模型"),
         ),
         RuntimeError::ProviderUnavailable(provider) => ErrorBody::new(
             ErrorCode::NotFound,
@@ -2095,5 +2129,38 @@ mod tests {
         assert_eq!(json["event"]["task"]["task_id"], "task-1");
         assert_eq!(json["event"]["task"]["status"], "review");
         assert_eq!(json["event"]["task"]["session_id"], "s-1");
+    }
+
+    #[test]
+    fn reasoning_effort_maps_thinking_levels() {
+        let supported = ["off", "low", "medium", "high", "max"].map(String::from);
+        assert_eq!(reasoning_effort(None, &supported).expect("none"), None);
+        assert_eq!(
+            reasoning_effort(Some("off"), &supported).expect("off"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort(Some("low"), &supported).expect("low"),
+            Some("low".into())
+        );
+        assert_eq!(
+            reasoning_effort(Some("medium"), &supported).expect("medium"),
+            Some("medium".into())
+        );
+        assert_eq!(
+            reasoning_effort(Some("high"), &supported).expect("high"),
+            Some("high".into())
+        );
+        assert_eq!(
+            reasoning_effort(Some("max"), &supported).expect("max"),
+            Some("high".into())
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_rejects_unsupported_level() {
+        let supported = ["off", "high"].map(String::from);
+        let err = reasoning_effort(Some("low"), &supported).expect_err("unsupported");
+        assert_eq!(err.code, lc_proto::ErrorCode::InvalidArgument);
     }
 }

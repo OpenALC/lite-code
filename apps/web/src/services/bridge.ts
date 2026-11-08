@@ -423,9 +423,24 @@ const BROWSER_SESSION_ID = 'browser-demo'
  * 浏览器 dev 返回带 `fallback: true` 的占位会话。
  * 真实 provider 配置与轮次由 Rust 侧决定（docs/AGENT.md §5）。
  */
+export interface AgentAttachment {
+  name: string
+  path: string
+  text: string
+  bytes: number
+}
+
+/** 原生文件选择器：返回 UTF-8 文本附件，由用户显式选择。 */
+export async function agentPickFiles(): Promise<BridgeResult<AgentAttachment[]>> {
+  if (!isTauri()) return { ok: true, data: [], fallback: true }
+  return invokeCustom<AgentAttachment[]>('agent_pick_files')
+}
+
 export async function sessionCreate(
   mode: SessionMode,
   taskId: string | null = null,
+  model: string | null = null,
+  thinking: string | null = null,
 ): Promise<BridgeResult<SessionResult>> {
   if (!isTauri()) {
     return {
@@ -445,7 +460,7 @@ export async function sessionCreate(
       fallback: true,
     }
   }
-  const res = await call('session_create', { mode, task_id: taskId })
+  const res = await call('session_create', { mode, task_id: taskId, model, thinking })
   if (!res.ok) return res
   if (res.data.kind !== 'session') {
     return { ok: false, error: internalError(`session_create 返回 kind=${String(res.data.kind)}`), fallback: false }

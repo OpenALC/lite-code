@@ -591,7 +591,10 @@ describe('Agent 会话命令', () => {
     expect((await resolveApproval('s1', 3, 'allow_session')).ok).toBe(true)
 
     expect(calls).toEqual([
-      { cmd: 'session_create', args: { mode: 'auto', task_id: null } },
+      {
+        cmd: 'session_create',
+        args: { mode: 'auto', task_id: null, model: null, thinking: null },
+      },
       { cmd: 'agent_send', args: { session_id: 's1', text: 'hello' } },
       { cmd: 'agent_cancel', args: { session_id: 's1' } },
       {
@@ -612,7 +615,28 @@ describe('Agent 会话命令', () => {
 
     expect((await sessionCreate('auto', 'task-7')).ok).toBe(true)
     expect(calls).toEqual([
-      { cmd: 'session_create', args: { mode: 'auto', task_id: 'task-7' } },
+      {
+        cmd: 'session_create',
+        args: { mode: 'auto', task_id: 'task-7', model: null, thinking: null },
+      },
+    ])
+  })
+
+  it('Tauri：session_create 透传模型与思考挡位', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { kind: 'session', session }
+      },
+    })
+
+    expect((await sessionCreate('auto', null, 'gpt-5', 'high')).ok).toBe(true)
+    expect(calls).toEqual([
+      {
+        cmd: 'session_create',
+        args: { mode: 'auto', task_id: null, model: 'gpt-5', thinking: 'high' },
+      },
     ])
   })
 

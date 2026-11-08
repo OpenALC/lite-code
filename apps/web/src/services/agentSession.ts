@@ -10,7 +10,7 @@ import {
   type AgentError,
   type AgentState,
 } from './agentStore'
-import type { AckResult, BridgeResult, SessionResult } from './bridge'
+import type { AckResult, AgentAttachment, BridgeResult, SessionResult } from './bridge'
 
 export interface AgentSessionState {
   /** 当前（或下一次创建会话时使用的）模式；会话建立后以 SessionInfo 为准。 */
@@ -20,6 +20,10 @@ export interface AgentSessionState {
   streaming: boolean
   /** Composer 的待发送文本（跨 docked / 居中两个视图共享）。 */
   draft: string
+  /** 下一次创建会话使用的模型显示 id；null = 配置默认模型。 */
+  model: string | null
+  /** 下一次创建会话使用的思考挡位；null = 配置默认。 */
+  thinking: string | null
   /** 命令失败或核心 error 事件；UI 用它渲染错误 banner。 */
   error: AgentError | null
   /** 正在提交的审批 id，多个视图共享禁用态。 */
@@ -28,7 +32,11 @@ export interface AgentSessionState {
 
 /** 桥接函数与事件订阅均由调用方注入，单测不发真实 IPC。 */
 export interface AgentSessionDeps {
-  sessionCreate: (mode: SessionMode) => Promise<BridgeResult<SessionResult>>
+  sessionCreate: (
+    mode: SessionMode,
+    model?: string | null,
+    thinking?: string | null,
+  ) => Promise<BridgeResult<SessionResult>>
   agentSend: (sessionId: string, text: string) => Promise<BridgeResult<AckResult>>
   agentCancel: (sessionId: string) => Promise<BridgeResult<AckResult>>
   resolveApproval: (
@@ -50,7 +58,11 @@ export interface AgentSessionController {
   getState(): AgentSessionState
   subscribe(listener: (state: AgentSessionState) => void): () => void
   setDraft(text: string): void
-  send(text?: string): Promise<void>
+  /** 选择下一次会话的模型/思考挡位；已有会话时不改变当前会话。 */
+  setModel(model: string | null, thinking: string | null): void
+  /** 丢弃当前会话（不取消运行中的轮次），下一次发送重新创建。 */
+  resetSession(): boolean
+  send(text?: string, attachments?: AgentAttachment[]): Promise<void>
   cancel(): Promise<void>
   resolve(approvalId: number, decision: ApprovalDecision): Promise<void>
   switchMode(mode: SessionMode, options?: SwitchModeOptions): Promise<boolean>
@@ -75,6 +87,8 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     agent: null,
     streaming: false,
     draft: '',
+    model: null,
+    thinking: null,
     error: null,
     resolvingApprovals: [],
   }
@@ -123,18 +137,30 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     commit({ ...state, agent, mode: agent.mode, streaming })
   })
 
-  async function send(text?: string): Promise<void> {
+  function setModel(model: string | null, thinking: string | null): void {
+    if (disposed || state.agent) return
+    commit({ ...state, model, thinking })
+  }
+
+  function resetSession(): boolean {
+    if (disposed || state.streaming) return false
+    if (state.agent && state.agent.approvals.length > 0) return false
+    commit({ ...state, agent: null, streaming: false, error: null })
+    return true
+  }
+
+  async function send(text?: string, attachments: AgentAttachment[] = []): Promise<void> {
     if (disposed || state.streaming || sending) return
     // 审批挂起时本轮处于暂停态，但不应允许再插一条用户消息。
     if (state.agent && state.agent.approvals.length > 0) return
     const content = (text ?? state.draft).trim()
-    if (!content) return
+    if (!content && attachments.length === 0) return
 
     sending = true
     try {
       let current = state.agent
       if (!current) {
-        const created = await deps.sessionCreate(state.mode)
+        const created = await deps.sessionCreate(state.mode, state.model, state.thinking)
         if (disposed) return
         if (!created.ok) {
           patch({ error: toAgentError(created.error) })
@@ -146,12 +172,24 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
 
       if (state.streaming) return
       const sessionId = current.sessionId
-      const agent = appendUserMessage(current, content)
+      const attachmentNames = attachments.map(file => file.name).join(', ')
+      const display = [content, attachmentNames ? `[附件: ${attachmentNames}]` : '']
+        .filter(Boolean)
+        .join('\n\n')
+      const wire = [
+        content,
+        ...attachments.map(
+          file => `<attachment name="${file.name}" path="${file.path}">\n${file.text}\n</attachment>`,
+        ),
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+      const agent = appendUserMessage(current, display)
       // 乐观更新：用户消息立即入流、草稿清空、进入 streaming；
       // agentSend 失败时再回退 streaming 并保留错误 banner。
       commit({ ...state, agent, streaming: true, draft: '', error: null })
 
-      const sent = await deps.agentSend(sessionId, content)
+      const sent = await deps.agentSend(sessionId, wire)
       if (disposed) return
       if (!sent.ok) {
         // 只回退本轮；若已切到新会话则不动新会话状态。
@@ -240,7 +278,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     }
 
     // 契约暂无会话内切模式命令：建新会话替换旧会话（消息流清空）。
-    const created = await deps.sessionCreate(mode)
+    const created = await deps.sessionCreate(mode, state.model, state.thinking)
     if (disposed) return false
     if (!created.ok) {
       patch({ error: toAgentError(created.error) })
@@ -280,6 +318,8 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     getState: () => state,
     subscribe,
     setDraft,
+    setModel,
+    resetSession,
     send,
     cancel,
     resolve,

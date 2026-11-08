@@ -71,6 +71,7 @@ interface HarnessOptions {
 
 function harness(options: HarnessOptions = {}) {
   const created: SessionMode[] = []
+  const selections: Array<{ model: string | null; thinking: string | null }> = []
   const sent: Array<{ sessionId: string; text: string }> = []
   const cancelled: string[] = []
   const approvals: Array<{
@@ -89,8 +90,9 @@ function harness(options: HarnessOptions = {}) {
   const approvalResult = options.approvalResult ?? (() => okAck())
 
   const deps: AgentSessionDeps = {
-    sessionCreate: async mode => {
+    sessionCreate: async (mode, model = null, thinking = null) => {
       created.push(mode)
+      selections.push({ model, thinking })
       return createResult(mode)
     },
     agentSend: async (sessionId, text) => {
@@ -125,6 +127,7 @@ function harness(options: HarnessOptions = {}) {
   return {
     controller,
     created,
+    selections,
     sent,
     cancelled,
     approvals,
@@ -198,6 +201,60 @@ describe('会话创建与发送', () => {
 
     expect(h.created).toHaveLength(0)
     expect(h.sent).toHaveLength(0)
+  })
+
+  it('无会话时 setModel 生效，首次发送透传模型与思考挡位', async () => {
+    const h = harness()
+    h.controller.setModel('gpt-5', 'high')
+
+    expect(h.controller.getState().model).toBe('gpt-5')
+    await h.controller.send('hello')
+
+    expect(h.selections).toEqual([{ model: 'gpt-5', thinking: 'high' }])
+  })
+
+  it('已有会话时 setModel 被忽略，resetSession 后新会话生效', async () => {
+    const h = harness()
+    await h.controller.send('first')
+    h.emit(done())
+
+    h.controller.setModel('other', 'low')
+    expect(h.controller.getState().model).toBeNull()
+
+    expect(h.controller.resetSession()).toBe(true)
+    expect(h.controller.getState().agent).toBeNull()
+    h.controller.setModel('other', 'low')
+    await h.controller.send('second')
+
+    expect(h.selections).toEqual([
+      { model: null, thinking: null },
+      { model: 'other', thinking: 'low' },
+    ])
+  })
+
+  it('运行中 resetSession 返回 false', async () => {
+    const h = harness()
+    await h.controller.send('first')
+
+    expect(h.controller.resetSession()).toBe(false)
+    expect(h.controller.getState().agent).not.toBeNull()
+  })
+
+  it('仅附件也能发送：wire 携带 attachment 标签，展示只列文件名', async () => {
+    const h = harness()
+
+    await h.controller.send(undefined, [
+      { name: 'notes.txt', path: 'D:/tmp/notes.txt', text: 'file body', bytes: 9 },
+    ])
+
+    expect(h.sent).toHaveLength(1)
+    expect(h.sent[0]?.text).toContain(
+      '<attachment name="notes.txt" path="D:/tmp/notes.txt">',
+    )
+    expect(h.sent[0]?.text).toContain('file body')
+    const state = h.controller.getState()
+    expect(state.agent?.messages[0]?.text).toBe('[附件: notes.txt]')
+    expect(state.draft).toBe('')
   })
 })
 
@@ -420,6 +477,7 @@ describe('模式切换与 yolo 确认', () => {
       createResult: mode =>
         okSession(sessionInfo({ session_id: `s${++next}`, mode })),
     })
+    h.controller.setModel('gpt-5', 'high')
     await h.controller.send('hi')
     h.emit(done())
     expect(h.controller.getState().agent?.sessionId).toBe('s1')
@@ -427,6 +485,10 @@ describe('模式切换与 yolo 确认', () => {
     expect(await h.controller.switchMode('yolo', { confirmed: true })).toBe(true)
 
     expect(h.created).toEqual(['auto', 'yolo'])
+    expect(h.selections).toEqual([
+      { model: 'gpt-5', thinking: 'high' },
+      { model: 'gpt-5', thinking: 'high' },
+    ])
     expect(h.confirmCalls).toHaveLength(0)
     const state = h.controller.getState()
     expect(state.agent?.sessionId).toBe('s2')

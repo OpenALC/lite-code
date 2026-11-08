@@ -78,6 +78,7 @@ pub struct AgentLoop {
     registry: ToolRegistry,
     root: PathBuf,
     model: String,
+    reasoning: Option<String>,
     instructions: Option<String>,
     tools: Vec<Value>,
     messages: Vec<LlmInput>,
@@ -108,6 +109,7 @@ impl AgentLoop {
             registry,
             root: root.into(),
             model: model.into(),
+            reasoning: None,
             instructions: None,
             tools: Vec::new(),
             messages: Vec::new(),
@@ -145,6 +147,12 @@ impl AgentLoop {
     /// 注册工具结果观察者（每个 call 执行后调用一次，含失败）。
     pub fn with_tool_observer(mut self, observer: ToolResultObserver) -> Self {
         self.tool_observer = Some(observer);
+        self
+    }
+
+    /// OpenAI Responses 的 reasoning.effort；`None`/`off` 不发送。
+    pub fn with_reasoning(mut self, reasoning: Option<String>) -> Self {
+        self.reasoning = reasoning;
         self
     }
 
@@ -322,6 +330,7 @@ impl AgentLoop {
                 tools: self.tools.clone(),
                 max_output_tokens: None,
                 temperature: None,
+                reasoning: self.reasoning.clone(),
             };
 
             let mut collector = TurnCollector::new();

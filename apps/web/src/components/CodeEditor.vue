@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import type * as monacoNs from 'monaco-editor'
 
 import { lspDidChange, lspDidClose, lspDidOpen, writeFile } from '../services/bridge'
+import { pushAgentContext } from '../services/agentContext'
 import { consumeReveal, subscribeReveal } from '../services/editorReveal'
 import { languageForPath } from '../services/editorLanguage'
 import { diagnosticsFor, subscribeDiagnostics } from '../services/lspDiagnostics'
@@ -47,6 +48,9 @@ type SaveState = { kind: 'saved' | 'demo' | 'error' | 'sample' | 'readonly'; tex
 const saveState = ref<SaveState | null>(null)
 const activeStrategy = ref<EditorFileStrategy | null>(null)
 const contextMenu = ref<{ x: number; y: number } | null>(null)
+const hasSelection = ref(false)
+/** 右键加入 Agent 的选区上限，避免整文件 Ctrl+A 撑爆草稿与上下文。 */
+const MAX_CONTEXT_CHARS = 20_000
 
 function currentTab(): Tab | null {
   return activeTab(tabsStore.get())
@@ -273,6 +277,27 @@ function createEditorWorker(): Worker {
   )
 }
 
+function addSelectionToAgent(): void {
+  const tab = currentTab()
+  const model = editor?.getModel()
+  const selection = editor?.getSelection()
+  if (!tab || !model || !selection || selection.isEmpty()) return
+  let text = model.getValueInRange(selection)
+  if (!text.trim()) return
+  if (text.length > MAX_CONTEXT_CHARS) {
+    text = `${text.slice(0, MAX_CONTEXT_CHARS)}\n${t('menu.addToAgentTruncated')}`
+  }
+  pushAgentContext({
+    // 未落盘的演示/临时缓冲区没有路径，用标签标题作为来源标识。
+    path: tab.path ?? tab.title,
+    language: model.getLanguageId(),
+    text,
+    startLine: selection.startLineNumber,
+    endLine: selection.endLineNumber,
+  })
+  contextMenu.value = null
+}
+
 function menuAction(action: string): void {
   contextMenu.value = null
   editor?.trigger('context-menu', action, null)
@@ -340,6 +365,8 @@ onMounted(async () => {
   const openMenu = (event: MouseEvent): void => {
     event.preventDefault()
     event.stopPropagation()
+    const selection = editor?.getSelection()
+    hasSelection.value = Boolean(selection && !selection.isEmpty())
     contextMenu.value = { x: event.clientX, y: event.clientY }
   }
   window.addEventListener('click', onWindowClick)
@@ -443,6 +470,17 @@ onBeforeUnmount(() => {
         >
           {{ t('menu.selectAll') }}
         </button>
+        <button
+          v-if="hasSelection"
+          type="button"
+          @click="addSelectionToAgent"
+        >
+          {{ t('menu.addToAgent') }}
+        </button>
+        <div
+          v-if="hasSelection"
+          class="menu-sep"
+        />
         <button
           type="button"
           @click="menuAction('actions.find')"
