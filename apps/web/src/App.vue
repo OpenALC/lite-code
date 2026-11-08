@@ -96,7 +96,8 @@ const sidebarVisible = ref(true)
 const rightVisible = ref(true)
 
 const agentSession = createAgentSession({
-  sessionCreate,
+  // 控制器只关心 mode/model/thinking；task 绑定由任务工作台单独处理。
+  sessionCreate: (mode, model, thinking) => sessionCreate(mode, null, model, thinking),
   agentSend,
   agentCancel,
   resolveApproval,
