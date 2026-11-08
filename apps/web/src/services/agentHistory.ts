@@ -59,7 +59,7 @@ export function createHistoryRecorder(
   getWorkspace: () => string,
 ): HistoryRecorder {
   let timer: ReturnType<typeof setTimeout> | null = null
-  let pending: AgentSessionState | null = null
+  let pending: { state: AgentSessionState; workspace: string } | null = null
   let lastSaved = ''
 
   async function savePending(): Promise<void> {
@@ -67,9 +67,12 @@ export function createHistoryRecorder(
       clearTimeout(timer)
       timer = null
     }
-    const state = pending ?? controller.getState()
+    const queued = pending
     pending = null
-    const snapshot = compactSnapshot(state, getWorkspace())
+    // 工作区可能在防抖窗口内被切换；以快照产生时的工作区为准。
+    const state = queued?.state ?? controller.getState()
+    const workspace = queued?.workspace ?? getWorkspace()
+    const snapshot = compactSnapshot(state, workspace)
     if (!snapshot) return
     const json = JSON.stringify(snapshot)
     if (json === lastSaved) return
@@ -80,7 +83,7 @@ export function createHistoryRecorder(
   const unsubscribe = controller.subscribe(state => {
     if (!state.agent || state.streaming || state.archived) return
     if (state.agent.messages.length === 0) return
-    pending = state
+    pending = { state, workspace: getWorkspace() }
     if (timer !== null) clearTimeout(timer)
     timer = setTimeout(() => {
       void savePending()
