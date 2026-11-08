@@ -244,7 +244,7 @@ const turnText = computed(() =>
 const sessionLabel = computed(() => {
   const firstUser = agent.value?.messages.find(message => message.role === 'user')
   const line = firstUser?.text.split('\n')[0]?.trim() ?? ''
-  return line ? line.slice(0, 32) : t('agent.newSession')
+  return line ? line.slice(0, 32) : t('agent.noSession')
 })
 const selectedModelLabel = computed(
   () => selectedModelInfo.value?.label ?? selectedModel.value ?? t('agent.noModels'),
@@ -497,6 +497,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       >{{ sessionLabel }}</span>
       <span class="spacer" />
       <span
+        v-if="agent"
         class="turn"
         :title="t('agent.turn')"
       >{{ turnText }}</span>

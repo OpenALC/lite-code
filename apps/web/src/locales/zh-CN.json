@@ -129,6 +129,7 @@
     },
     "modelLocked": "新会话生效",
     "newSession": "新会话",
+    "noSession": "未开始会话",
     "newSessionHint": "清空当前消息流，下一次发送按所选模型与思考强度新建会话",
     "addAttachment": "添加文件",
     "removeAttachment": "移除附件",

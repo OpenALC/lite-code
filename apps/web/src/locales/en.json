@@ -129,6 +129,7 @@
     },
     "modelLocked": "Applies to new sessions",
     "newSession": "New session",
+    "noSession": "No session",
     "newSessionHint": "Clears the current stream; the next message starts a session with the selected model and reasoning level",
     "addAttachment": "Add file",
     "removeAttachment": "Remove attachment",
