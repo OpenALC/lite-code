@@ -115,6 +115,8 @@
     "manageProviders": "Open provider manager",
     "browserDemo": "Browser demo mode: commands and agent events are disabled.",
     "thinking": "Thinking",
+    "thinkingShort": "Think",
+    "compactedCount": "Compacted {count} messages",
     "model": "Model",
     "noModels": "No models available",
     "reasoningEffort": "Reasoning",

@@ -115,6 +115,8 @@
     "manageProviders": "打开供应商管理",
     "browserDemo": "浏览器演示模式：命令与 Agent 事件流不可用。",
     "thinking": "思考过程",
+    "thinkingShort": "思考",
+    "compactedCount": "已压缩 {count} 条消息",
     "model": "模型",
     "noModels": "暂无可用模型",
     "reasoningEffort": "思考强度",

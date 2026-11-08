@@ -73,3 +73,5 @@
 - Agent 文本附件：原生文件选择器，UTF-8、10 个/256 KiB/总 1 MiB 上限，chips 展示与移除
 - 选中代码加入 Agent：编辑器右键菜单追加 `路径:行号` + 围栏代码块；演示缓冲区回退标题，20k 截断
 - Agent 修复：`sessionCreate` 适配层曾把模型误传为 `taskId`，真机发送报 `task not found`；已显式转接
+- Agent UI 重构（对齐 `demo/index.html`）：会话头、消息流、工具卡/审批卡/压缩行、一体化 composer
+  （模式/模型/思考 pill、上下文条）、附件 chips 与图标发送按钮；AI 消息安全渲染 Markdown

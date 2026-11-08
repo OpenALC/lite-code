@@ -1,12 +1,13 @@
 <script setup lang="ts">
+/* eslint-disable vue/no-v-html -- renderMarkdown 先转义全文，只插入固定标签 */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import AppIcon from './AppIcon.vue'
 import type { ApprovalDecision, ApprovalSource, SessionMode } from '@lc-proto'
 import {
   beyondCompressThreshold,
   contextRatio,
-  type CompactionRecord,
   type ToolCard,
 } from '../services/agentStore'
 import {
@@ -16,6 +17,7 @@ import {
   type AgentCodeContext,
 } from '../services/agentContext'
 import type { AgentSessionController } from '../services/agentSession'
+import { renderMarkdown } from '../services/markdown'
 import {
   agentPickFiles,
   isTauri,
@@ -29,8 +31,6 @@ const emit = defineEmits<{ 'manage-providers': [] }>()
 const { t, te } = useI18n()
 
 const MODES: SessionMode[] = ['plan', 'chat', 'auto', 'yolo']
-const TOOL_PREVIEW_CHARS = 600
-const TOOL_PREVIEW_LINES = 8
 const COMPACTION_FLASH_MS = 600
 const MAX_ATTACHMENTS = 10
 const DEFAULT_THINKING = ['off', 'low', 'medium', 'high']
@@ -139,6 +139,8 @@ let offAgentContext: (() => void) | null = null
 onMounted(() => {
   void refreshProviderState()
   window.addEventListener('providers:changed', onProvidersChanged)
+  window.addEventListener('click', closeMenus)
+  window.addEventListener('keydown', onWindowKeydown)
   for (const context of drainAgentContexts()) {
     appendCodeContext(context)
     consumeAgentContext(context)
@@ -239,6 +241,49 @@ const contextText = computed(() =>
 const turnText = computed(() =>
   agent.value ? `${agent.value.turn}/${agent.value.maxTurns}` : '—',
 )
+const sessionLabel = computed(() => {
+  const firstUser = agent.value?.messages.find(message => message.role === 'user')
+  const line = firstUser?.text.split('\n')[0]?.trim() ?? ''
+  return line ? line.slice(0, 32) : t('agent.newSession')
+})
+const selectedModelLabel = computed(
+  () => selectedModelInfo.value?.label ?? selectedModel.value ?? t('agent.noModels'),
+)
+/** pill 只显示模型短名（去掉 vendor/ 前缀），完整 id 放在 title 与菜单里。 */
+const selectedModelShort = computed(() => {
+  const label = selectedModelLabel.value
+  const slash = label.lastIndexOf('/')
+  return slash >= 0 ? label.slice(slash + 1) : label
+})
+
+const openMenu = ref<'mode' | 'model' | 'thinking' | null>(null)
+
+function toggleMenu(menu: 'mode' | 'model' | 'thinking'): void {
+  openMenu.value = openMenu.value === menu ? null : menu
+}
+
+function closeMenus(): void {
+  openMenu.value = null
+}
+
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') closeMenus()
+}
+
+function selectModeFromMenu(mode: SessionMode): void {
+  closeMenus()
+  selectMode(mode)
+}
+
+function chooseModel(id: string): void {
+  closeMenus()
+  selectedModel.value = id
+}
+
+function chooseThinking(level: string): void {
+  closeMenus()
+  selectedThinking.value = level
+}
 const composerHint = computed(() => {
   if (!tauri) return t('agent.browserDemo')
   if (streaming.value) return t('agent.streaming')
@@ -298,6 +343,8 @@ watch(
 onBeforeUnmount(() => {
   unsubscribe()
   window.removeEventListener('providers:changed', onProvidersChanged)
+  window.removeEventListener('click', closeMenus)
+  window.removeEventListener('keydown', onWindowKeydown)
   offAgentContext?.()
   offAgentContext = null
   if (flashTimer !== null) clearTimeout(flashTimer)
@@ -320,12 +367,24 @@ function thinkingLabel(level: string): string {
   return te(key) ? t(key) : level
 }
 
-function compactionTitle(record: CompactionRecord): string {
-  return t('agent.compactionTitle', {
-    count: record.removedMessages,
-    before: formatTokens(record.beforeTokens),
-    after: formatTokens(record.afterTokens),
-  })
+const TOOL_ICONS: Record<string, string> = {
+  read_file: 'file',
+  write_file: 'pencil',
+  edit_file: 'pencil',
+  glob: 'search',
+  grep: 'search',
+  shell: 'terminal',
+}
+
+function toolIcon(name: string): string {
+  if (name.startsWith('db_')) return 'db'
+  return TOOL_ICONS[name] ?? 'smart'
+}
+
+/** 工具头部的单行摘要；参数/输出只取第一行，由 CSS 截断。 */
+function toolArg(tool: ToolCard): string {
+  const line = (tool.text ?? '').split('\n').find(item => item.trim())
+  return line?.trim().slice(0, 120) ?? ''
 }
 
 function toolStatusLabel(status: ToolCard['status']): string {
@@ -342,20 +401,6 @@ function isResolving(approvalId: number): boolean {
 
 function isToolExpanded(callId: string): boolean {
   return expandedTools.value.has(callId)
-}
-
-function isToolLong(tool: ToolCard): boolean {
-  const text = tool.text ?? ''
-  return text.length > TOOL_PREVIEW_CHARS || text.split('\n').length > TOOL_PREVIEW_LINES
-}
-
-function toolText(tool: ToolCard): string {
-  const text = tool.text ?? ''
-  if (!isToolLong(tool) || isToolExpanded(tool.callId)) return text
-  const byLines = text.split('\n').slice(0, TOOL_PREVIEW_LINES).join('\n')
-  const clipped =
-    byLines.length > TOOL_PREVIEW_CHARS ? byLines.slice(0, TOOL_PREVIEW_CHARS) : byLines
-  return `${clipped}…`
 }
 
 function toggleTool(callId: string): void {
@@ -440,127 +485,55 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 <template>
   <div class="agent-body">
-    <div class="agent-bar">
-      <div
-        class="mode-group"
-        role="radiogroup"
-        :aria-label="t('agent.modeLabel')"
-      >
-        <button
-          v-for="mode in MODES"
-          :key="mode"
-          type="button"
-          role="radio"
-          class="mode-btn"
-          :class="{ active: state.mode === mode, yolo: mode === 'yolo' }"
-          :aria-checked="state.mode === mode"
-          :disabled="switchDisabled"
-          @click="selectMode(mode)"
-        >
-          {{ t(`agent.modes.${mode}`) }}
-        </button>
-      </div>
-      <div class="bar-meta">
-        <span class="turn">{{ t('agent.turn') }} {{ turnText }}</span>
-        <button
-          v-if="streaming"
-          type="button"
-          class="stop"
-          @click="cancel"
-        >
-          {{ t('agent.stop') }}
-        </button>
-      </div>
-    </div>
-
-    <div class="model-row">
-      <label class="model-field">
-        <span class="field-label">{{ t('agent.model') }}</span>
-        <select
-          v-model="selectedModel"
-          :disabled="modelLocked || modelChoices.length === 0"
-        >
-          <option
-            v-if="modelChoices.length === 0"
-            value=""
-          >{{ t('agent.noModels') }}</option>
-          <option
-            v-for="choice in modelChoices"
-            :key="choice.id"
-            :value="choice.id"
-            :title="`${choice.provider} · ${choice.id}`"
-          >
-            {{ choice.label }}
-          </option>
-        </select>
-      </label>
-      <label
-        v-if="thinkingLevels.length > 0"
-        class="model-field narrow"
-      >
-        <span class="field-label">{{ t('agent.reasoningEffort') }}</span>
-        <select
-          v-model="selectedThinking"
-          :disabled="modelLocked || modelChoices.length === 0"
-        >
-          <option
-            v-for="level in thinkingLevels"
-            :key="level"
-            :value="level"
-          >
-            {{ thinkingLabel(level) }}
-          </option>
-        </select>
-      </label>
+    <header class="agent-head">
+      <span class="agent-title">Agent</span>
       <span
-        v-if="modelLocked"
-        class="model-note"
-      >{{ t('agent.modelLocked') }}</span>
+        class="sess-dot"
+        :class="{ running: streaming }"
+      />
+      <span
+        class="sess-name"
+        :title="sessionLabel"
+      >{{ sessionLabel }}</span>
+      <span class="spacer" />
+      <span
+        class="turn"
+        :title="t('agent.turn')"
+      >{{ turnText }}</span>
       <button
-        v-if="agent"
+        v-if="streaming"
         type="button"
-        class="new-session"
-        :disabled="streaming || approvalPending"
-        :title="t('agent.newSessionHint')"
+        class="icon-btn"
+        :title="t('agent.stop')"
+        :aria-label="t('agent.stop')"
+        @click="cancel"
+      >
+        <AppIcon
+          name="square"
+          :size="13"
+        />
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        :title="t('agent.newSession')"
+        :aria-label="t('agent.newSession')"
+        :disabled="!agent || streaming || approvalPending"
         @click="newSession"
       >
-        {{ t('agent.newSession') }}
+        <AppIcon
+          name="plus"
+          :size="15"
+        />
       </button>
-    </div>
-
-    <div
-      class="context-row"
-      :title="contextBudgetTitle"
-    >
-      <span class="context-label">{{ t('agent.contextLabel') }}</span>
-      <span class="context-track">
-        <span
-          class="context-fill"
-          :class="{ warn: contextBeyond, flash: compactionFlash }"
-          :style="{ width: `${contextPct}%` }"
-        />
-        <span
-          v-if="thresholdPct > 0"
-          class="context-threshold"
-          role="img"
-          :aria-label="contextThresholdTitle"
-          :title="contextThresholdTitle"
-          :style="{ left: `${thresholdPct}%` }"
-        />
-      </span>
-      <span class="context-text">{{ contextText }}</span>
-      <span
-        v-if="contextK > 0 && thresholdPct > 0"
-        class="context-note"
-      >{{ contextThresholdTitle }}</span>
-    </div>
+    </header>
 
     <div
       ref="streamEl"
       class="stream"
     >
       <div
-        v-if="!agent"
+        v-if="!agent || (!streaming && messages.length === 0 && tools.length === 0 && approvals.length === 0)"
         class="empty"
       >
         <h3>{{ providerReady ? t('agent.readyTitle') : t('agent.emptyTitle') }}</h3>
@@ -580,109 +553,123 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         </p>
       </div>
 
-      <template
+      <div
         v-for="message in messages"
         :key="message.id"
+        class="msg"
+        :class="message.role"
       >
-        <div
-          class="msg"
-          :class="message.role"
-        >
-          <details
-            v-if="message.thinking"
-            class="thinking"
-          >
-            <summary>{{ t('agent.thinking') }}</summary>
-            <pre>{{ message.thinking }}</pre>
-          </details>
-          <div
-            v-if="message.text"
-            class="bubble"
-          >
-            {{ message.text }}
-          </div>
-        </div>
-      </template>
-
-      <section
-        v-if="compactions.length > 0"
-        class="compactions"
-        :aria-label="t('agent.compactionLabel')"
-      >
-        <div class="compactions-head">
-          {{ t('agent.compactionLabel') }}
-        </div>
         <details
-          v-for="record in compactions"
-          :key="record.recordId"
-          class="compaction"
+          v-if="message.thinking"
+          class="thinking"
         >
-          <summary class="compaction-title">
-            {{ compactionTitle(record) }}
-          </summary>
-          <pre class="compaction-summary">{{ record.summary }}</pre>
+          <summary>{{ t('agent.thinking') }}</summary>
+          <pre>{{ message.thinking }}</pre>
         </details>
-      </section>
+        <div
+          v-if="message.text && message.role !== 'assistant'"
+          class="msg-text"
+        >
+          {{ message.text }}
+        </div>
+        <!-- eslint-disable-next-line vue/no-v-html -- renderMarkdown 已先转义全文 -->
+        <div
+          v-else-if="message.text"
+          class="msg-text markdown"
+          v-html="renderMarkdown(message.text)"
+        />
+      </div>
+
+      <details
+        v-for="record in compactions"
+        :key="record.recordId"
+        class="compact"
+      >
+        <summary class="compact-row">
+          <AppIcon
+            name="layers"
+            :size="13"
+          />
+          <span>{{ t('agent.compactedCount', { count: record.removedMessages }) }}</span>
+          <span class="r">{{ formatTokens(record.beforeTokens) }} → {{ formatTokens(record.afterTokens) }}</span>
+          <AppIcon
+            name="chevron-down"
+            :size="12"
+            class="chev"
+          />
+        </summary>
+        <div class="compact-body">
+          {{ record.summary }}
+        </div>
+      </details>
 
       <div
         v-for="tool in tools"
         :key="tool.callId"
-        class="tool-card"
-        :class="[`tool-${tool.status}`, { expanded: isToolExpanded(tool.callId) }]"
+        class="tool"
+        :class="[`tool-${tool.status}`, { open: isToolExpanded(tool.callId) }]"
       >
-        <div class="tool-head">
-          <span class="tool-name">{{ tool.name }}</span>
-          <span class="tool-status">{{ toolStatusLabel(tool.status) }}</span>
-        </div>
-        <pre
-          v-if="tool.text"
-          class="tool-result"
-        >{{ toolText(tool) }}</pre>
         <button
-          v-if="isToolLong(tool)"
           type="button"
-          class="link"
+          class="tool-head"
+          :aria-expanded="isToolExpanded(tool.callId)"
           @click="toggleTool(tool.callId)"
         >
-          {{ isToolExpanded(tool.callId) ? t('agent.tool.collapse') : t('agent.tool.expand') }}
+          <AppIcon
+            :name="toolIcon(tool.name)"
+            :size="13"
+            class="tool-ico"
+          />
+          <span class="tool-name">{{ tool.name }}</span>
+          <span class="tool-arg">{{ toolArg(tool) }}</span>
+          <span class="tool-dur">{{ toolStatusLabel(tool.status) }}</span>
+          <AppIcon
+            name="chevron-down"
+            :size="12"
+            class="chev"
+          />
         </button>
+        <pre
+          v-if="tool.text"
+          class="tool-body"
+        >{{ tool.text }}</pre>
       </div>
 
       <div
         v-for="approval in approvals"
         :key="approval.approvalId"
-        class="approval-card"
+        class="perm"
       >
-        <div class="approval-head">
-          <span class="approval-title">{{ t('agent.approval.title') }}</span>
-          <span class="approval-tool">{{ approval.tool }}</span>
-        </div>
-        <div
-          v-if="state.mode === 'yolo'"
-          class="approval-note"
-        >
-          {{ t('agent.approval.yoloNotice') }}
+        <div class="perm-title">
+          <AppIcon
+            name="shield"
+            :size="14"
+          />
+          <span>{{ t('agent.approval.title') }}</span>
+          <span class="perm-kind">{{ approval.tool }}</span>
         </div>
         <pre
           v-if="approval.command"
-          class="approval-command"
+          class="perm-cmd"
         >{{ approval.command }}</pre>
-        <dl class="approval-meta">
-          <dt>{{ t('agent.approval.source') }}</dt>
-          <dd>{{ sourceLabel(approval.source) }}</dd>
-          <dt>{{ t('agent.approval.reason') }}</dt>
-          <dd>{{ approval.reason }}</dd>
-        </dl>
-        <div class="approval-actions">
+        <div class="perm-meta">
+          {{ sourceLabel(approval.source) }} · {{ approval.reason }}
+          <template v-if="state.mode === 'yolo'">
+            · {{ t('agent.approval.yoloNotice') }}
+          </template>
+        </div>
+        <div class="perm-actions">
           <button
             type="button"
+            class="btn"
             :disabled="isResolving(approval.approvalId)"
-            @click="decide(approval.approvalId, 'allow_once')"
+            @click="decide(approval.approvalId, 'deny')"
           >
-            {{ t('agent.approval.allowOnce') }}
+            {{ t('agent.approval.deny') }}
           </button>
           <button
             type="button"
+            class="btn"
             :disabled="isResolving(approval.approvalId)"
             @click="decide(approval.approvalId, 'allow_session')"
           >
@@ -690,16 +677,18 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           </button>
           <button
             type="button"
-            class="deny"
+            class="btn primary"
             :disabled="isResolving(approval.approvalId)"
-            @click="decide(approval.approvalId, 'deny')"
+            @click="decide(approval.approvalId, 'allow_once')"
           >
-            {{ t('agent.approval.deny') }}
+            {{ t('agent.approval.allowOnce') }}
           </button>
-          <span
-            v-if="isResolving(approval.approvalId)"
-            class="resolving"
-          >{{ t('agent.approval.resolving') }}</span>
+        </div>
+        <div
+          v-if="isResolving(approval.approvalId)"
+          class="resolving"
+        >
+          {{ t('agent.approval.resolving') }}
         </div>
       </div>
     </div>
@@ -713,21 +702,22 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         <strong>{{ t('agent.yolo.title') }}</strong>
         <span>{{ t('agent.yolo.desc') }}</span>
       </div>
-      <div class="yolo-actions">
+      <div class="perm-actions">
         <button
           type="button"
-          class="danger"
-          :disabled="switching"
-          @click="confirmYolo"
-        >
-          {{ t('agent.yolo.confirm') }}
-        </button>
-        <button
-          type="button"
+          class="btn"
           :disabled="switching"
           @click="pendingYolo = false"
         >
           {{ t('agent.yolo.cancel') }}
+        </button>
+        <button
+          type="button"
+          class="btn primary"
+          :disabled="switching"
+          @click="confirmYolo"
+        >
+          {{ t('agent.yolo.confirm') }}
         </button>
       </div>
     </div>
@@ -746,61 +736,221 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     </div>
 
     <div class="composer">
-      <div
-        v-if="attachments.length > 0 || attachmentError"
-        class="attachments"
-      >
-        <span
-          v-for="file in attachments"
-          :key="file.path"
-          class="attachment-chip"
+      <div class="comp-box">
+        <div
+          v-if="attachments.length > 0 || attachmentError"
+          class="attach-row"
         >
           <span
-            class="chip-name"
-            :title="file.path"
-          >{{ file.name }}</span>
-          <span class="chip-size">{{ formatBytes(file.bytes) }}</span>
+            v-for="file in attachments"
+            :key="file.path"
+            class="attachment-chip"
+          >
+            <span
+              class="chip-name"
+              :title="file.path"
+            >{{ file.name }}</span>
+            <span class="chip-size">{{ formatBytes(file.bytes) }}</span>
+            <button
+              type="button"
+              class="chip-remove"
+              :aria-label="t('agent.removeAttachment')"
+              @click="removeAttachment(file.path)"
+            >
+              <AppIcon
+                name="x"
+                :size="11"
+              />
+            </button>
+          </span>
+          <p
+            v-if="attachmentError"
+            class="attachment-error"
+          >
+            {{ attachmentError }}
+          </p>
+        </div>
+        <textarea
+          v-model="draft"
+          rows="1"
+          spellcheck="false"
+          :placeholder="t('agent.composerPlaceholder')"
+          @keydown.ctrl.enter.prevent="submit"
+          @keydown.meta.enter.prevent="submit"
+        />
+        <div class="comp-ctrl">
+          <span class="pill-wrap">
+            <button
+              type="button"
+              class="pill"
+              :class="`mode-${state.mode}`"
+              :disabled="switchDisabled"
+              :title="t('agent.modeLabel')"
+              @click.stop="toggleMenu('mode')"
+            >
+              <AppIcon
+                name="smart"
+                :size="13"
+              />
+              <span class="pill-label">{{ t(`agent.modes.${state.mode}`) }}</span>
+              <AppIcon
+                name="chevron-down"
+                :size="11"
+                class="chev"
+              />
+            </button>
+            <div
+              v-if="openMenu === 'mode'"
+              class="pill-menu"
+            >
+              <button
+                v-for="mode in MODES"
+                :key="mode"
+                type="button"
+                class="pill-item"
+                :class="{ active: state.mode === mode, yolo: mode === 'yolo' }"
+                @click="selectModeFromMenu(mode)"
+              >
+                {{ t(`agent.modes.${mode}`) }}
+              </button>
+            </div>
+          </span>
+
+          <span class="pill-wrap">
+            <button
+              type="button"
+              class="pill"
+              :disabled="modelLocked || modelChoices.length === 0"
+              :title="modelLocked ? t('agent.modelLocked') : selectedModelLabel"
+              @click.stop="toggleMenu('model')"
+            >
+              <span class="pill-label">{{ selectedModelShort }}</span>
+              <AppIcon
+                name="chevron-down"
+                :size="11"
+                class="chev"
+              />
+            </button>
+            <div
+              v-if="openMenu === 'model'"
+              class="pill-menu model-menu"
+            >
+              <button
+                v-for="choice in modelChoices"
+                :key="choice.id"
+                type="button"
+                class="pill-item"
+                :class="{ active: choice.id === selectedModel }"
+                @click="chooseModel(choice.id)"
+              >
+                <span class="item-main">{{ choice.label }}</span>
+                <span class="item-sub">{{ choice.provider }} · {{ choice.contextK }}k</span>
+              </button>
+              <p
+                v-if="modelChoices.length === 0"
+                class="pill-empty"
+              >
+                {{ t('agent.noModels') }}
+              </p>
+            </div>
+          </span>
+
+          <span class="pill-wrap">
+            <button
+              type="button"
+              class="pill"
+              :disabled="modelLocked || thinkingLevels.length === 0"
+              :title="modelLocked ? t('agent.modelLocked') : t('agent.reasoningEffort')"
+              @click.stop="toggleMenu('thinking')"
+            >
+              <span class="pill-label">{{ t('agent.thinkingShort') }} {{ thinkingLabel(selectedThinking) }}</span>
+              <AppIcon
+                name="chevron-down"
+                :size="11"
+                class="chev"
+              />
+            </button>
+            <div
+              v-if="openMenu === 'thinking'"
+              class="pill-menu"
+            >
+              <button
+                v-for="level in thinkingLevels"
+                :key="level"
+                type="button"
+                class="pill-item"
+                :class="{ active: level === selectedThinking }"
+                @click="chooseThinking(level)"
+              >
+                {{ thinkingLabel(level) }}
+              </button>
+            </div>
+          </span>
+
+          <span class="spacer" />
+
           <button
             type="button"
-            class="chip-remove"
-            :aria-label="t('agent.removeAttachment')"
-            @click="removeAttachment(file.path)"
-          >×</button>
-        </span>
-        <p
-          v-if="attachmentError"
-          class="attachment-error"
-        >
-          {{ attachmentError }}
-        </p>
+            class="icon-btn attach-btn"
+            :disabled="!tauri || streaming"
+            :title="t('agent.addAttachment')"
+            :aria-label="t('agent.addAttachment')"
+            @click="pickFiles"
+          >
+            <AppIcon
+              name="paperclip"
+              :size="15"
+            />
+            <span
+              v-if="attachments.length > 0"
+              class="attach-count"
+            >{{ attachments.length }}</span>
+          </button>
+          <button
+            type="button"
+            class="send-btn"
+            :disabled="sendDisabled"
+            :title="composerHint"
+            :aria-label="t('agent.send')"
+            @click="submit"
+          >
+            <AppIcon
+              name="arrow-up"
+              :size="15"
+            />
+          </button>
+        </div>
       </div>
-      <textarea
-        v-model="draft"
-        rows="2"
-        spellcheck="false"
-        :placeholder="t('agent.composerPlaceholder')"
-        @keydown.ctrl.enter.prevent="submit"
-        @keydown.meta.enter.prevent="submit"
-      />
-      <div class="composer-foot">
-        <button
-          type="button"
-          class="attach"
-          :disabled="!tauri || streaming"
-          :title="t('agent.attachmentHint')"
-          @click="pickFiles"
-        >
-          {{ t('agent.addAttachment') }}
-        </button>
-        <span class="hint">{{ composerHint }}</span>
-        <button
-          type="button"
-          class="send"
-          :disabled="sendDisabled"
-          @click="submit"
-        >
-          {{ t('agent.send') }}
-        </button>
+
+      <div class="ctx">
+        <div class="ctx-top">
+          <span class="ctx-label">{{ t('agent.contextLabel') }}</span>
+          <div
+            class="ctx-bar"
+            role="progressbar"
+            :aria-label="t('agent.contextLabel')"
+            aria-valuemin="0"
+            :aria-valuemax="contextK"
+            :aria-valuenow="usedTokens"
+            :title="contextBudgetTitle"
+          >
+            <div
+              class="ctx-fill"
+              :class="{ warn: contextBeyond, flash: compactionFlash }"
+              :style="{ width: `${contextPct}%` }"
+            />
+            <div
+              v-if="thresholdPct > 0"
+              class="ctx-tick"
+              :style="{ left: `${thresholdPct}%` }"
+              :title="contextThresholdTitle"
+            />
+          </div>
+        </div>
+        <div class="ctx-meta">
+          <span class="ctx-val">{{ contextText }}</span>
+          <span v-if="compressAtK > 0">{{ contextThresholdTitle }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -813,218 +963,97 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: var(--panel);
 }
 
-.agent-bar {
+/* 会话头 */
+.agent-head {
+  flex: none;
+  height: 36px;
   display: flex;
   align-items: center;
-  gap: 4px 6px;
-  flex-wrap: wrap;
-  min-width: 0;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border);
 }
 
-.mode-group {
-  display: flex;
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  gap: 2px;
-  min-width: 0;
-  padding: 2px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-}
-
-.mode-btn {
-  padding: 2px 7px;
-  border-radius: 3px;
+.agent-title {
   color: var(--fg-dim);
   font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.sess-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.sess-dot.running {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: dot-pulse 1.6s infinite;
+}
+
+@keyframes dot-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.sess-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mode-btn:hover:not(:disabled) {
+.spacer {
+  flex: 1;
+}
+
+.turn {
+  color: var(--fg-faint);
+  font: 10.5px var(--font-mono);
+  white-space: nowrap;
+}
+
+.icon-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--panel-3);
   color: var(--fg);
 }
 
-.mode-btn.active {
-  color: var(--accent-fg);
-  background: var(--accent);
-}
-
-.mode-btn.yolo {
-  color: var(--yellow);
-}
-
-.mode-btn.yolo.active {
-  color: var(--accent);
-  background: var(--accent-soft);
-  outline: 1px solid var(--accent-line);
-}
-
-.mode-btn:disabled {
-  opacity: 0.5;
+.icon-btn:disabled {
+  opacity: 0.4;
   cursor: default;
 }
 
-.bar-meta {
-  flex: 0 0 auto;
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  color: var(--fg-faint);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.stop {
-  padding: 2px 8px;
-  border: 1px solid rgb(217 122 112 / 40%);
-  border-radius: var(--r-sm);
-  color: var(--red);
-  font-size: 11px;
-}
-
-.stop:hover {
-  color: var(--fg);
-  border-color: var(--red);
-}
-
-.context-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px 6px;
-  min-width: 0;
-  padding: 0 8px 6px;
-  color: var(--fg-faint);
-  font-size: 10px;
-}
-
-.context-track {
-  position: relative;
-  flex: 0 1 96px;
-  min-width: 40px;
-  height: 4px;
-  background: var(--panel-3);
-  border-radius: 2px;
-}
-
-.context-fill {
-  display: block;
-  height: 100%;
-  border-radius: 2px;
-  background: var(--accent);
-  transition: background-color 160ms ease, width 160ms ease;
-}
-
-.context-fill.warn {
-  background: var(--yellow);
-}
-
-/* 压缩阈值刻度：绝对定位在 compressAtK / contextK 处，颜色与轨道区分。 */
-.context-threshold {
-  position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--fg-2);
-  box-shadow: 0 0 0 1px var(--bg);
-  pointer-events: none;
-  transform: translateX(-1px);
-}
-
-.context-fill.flash {
-  animation: context-flash 600ms ease-out;
-}
-
-@keyframes context-flash {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  40% {
-    opacity: 0.25;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .context-fill {
-    transition: none;
-  }
-
-  .context-fill.flash {
-    animation: none;
-    outline: 1px solid var(--accent);
-    outline-offset: 1px;
-  }
-}
-
-.context-text {
-  color: var(--fg-dim);
-  font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.context-note {
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-.compactions {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 8px;
-  border: 1px dashed var(--yellow);
-  border-radius: var(--r-sm);
-  background: var(--panel-2);
-}
-
-.compactions-head {
-  color: var(--yellow);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.compaction {
-  padding-left: 8px;
-  border-left: 2px solid var(--yellow);
-}
-
-.compaction-title {
-  cursor: pointer;
-  color: var(--fg-2);
-  font-size: 11px;
-  user-select: none;
-}
-
-.compaction-summary {
-  margin: 4px 0 0;
-  color: var(--fg-dim);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
+/* 消息流 */
 .stream {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px;
+  gap: 12px;
+  padding: 12px;
 }
 
 .empty {
@@ -1043,7 +1072,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 .empty p {
   margin: 0;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.6;
 }
 
@@ -1052,43 +1081,113 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   color: var(--yellow);
 }
 
+.manage-providers {
+  margin-top: 10px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+}
+
+.manage-providers:hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
 .msg {
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .msg.user {
   align-items: flex-end;
 }
 
-.bubble {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--panel-2);
-  font-size: 12px;
-  line-height: 1.6;
+.msg-text {
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.msg.user .bubble {
-  max-width: 85%;
-  background: var(--panel-3);
+.msg.user .msg-text {
+  max-width: 86%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-2);
 }
 
-.msg.assistant .bubble {
-  width: 100%;
+.msg.assistant .msg-text {
+  font-size: 13px;
 }
 
-.msg.system .bubble {
-  background: var(--panel);
+.msg-text.markdown {
+  white-space: normal;
+}
+
+.msg-text.markdown p {
+  margin: 0 0 8px;
+}
+
+.msg-text.markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.msg-text.markdown ul {
+  margin: 0 0 8px;
+  padding-left: 17px;
+}
+
+.msg-text.markdown li {
+  margin: 2px 0;
+}
+
+.msg-text.markdown code {
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--fg-2);
+  font: 11.5px var(--font-mono);
+}
+
+.msg-text.markdown .md-h {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.msg-text.markdown pre.md-code {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  overflow: auto;
+}
+
+.msg-text.markdown pre.md-code code {
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--fg-dim);
+  font: 11.5px/1.6 var(--font-mono);
+  white-space: pre;
+}
+
+.msg.system .msg-text {
+  color: var(--fg-dim);
+  font-size: 11.5px;
 }
 
 .thinking {
-  padding: 2px 0 2px 8px;
+  padding-left: 9px;
   border-left: 2px solid var(--border-strong);
   color: var(--fg-dim);
   font-size: 11px;
@@ -1102,258 +1201,285 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 .thinking pre {
   margin: 4px 0 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
+  font: 11px/1.55 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.tool-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 8px;
+/* 工具卡 */
+.tool {
   border: 1px solid var(--border);
-  border-left: 2px solid var(--fg-faint);
-  border-radius: var(--r-sm);
+  border-radius: var(--r);
   background: var(--panel-2);
+  overflow: hidden;
+  transition: border-color var(--dur) var(--ease);
 }
 
-.tool-running {
-  border-left-color: var(--accent);
-}
-
-.tool-approval {
-  border-left-color: var(--yellow);
-}
-
-.tool-ok {
-  border-left-color: var(--green);
-}
-
-.tool-error {
-  border-left-color: var(--red);
+.tool:hover {
+  border-color: var(--border-strong);
 }
 
 .tool-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  width: 100%;
+  height: 31px;
+  padding: 0 9px;
+  color: var(--fg-2);
+  text-align: left;
+}
+
+.tool-head:hover {
+  background: var(--panel-3);
+}
+
+.tool-ico {
+  flex: none;
+  color: var(--fg-faint);
 }
 
 .tool-name {
-  color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  flex: none;
+  color: var(--accent);
+  font: 11.5px var(--font-mono);
 }
 
-.tool-status {
-  margin-left: auto;
+.tool-arg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font: 11.5px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-dur {
+  flex: none;
   color: var(--fg-faint);
-  font-size: 10px;
+  font: 10.5px var(--font-mono);
 }
 
-.tool-running .tool-status {
+.tool .chev {
+  flex: none;
+  color: var(--fg-faint);
+  transition: transform 120ms var(--ease);
+}
+
+.tool.open .chev {
+  transform: rotate(180deg);
+}
+
+.tool-running .tool-name {
   color: var(--accent);
 }
 
-.tool-approval .tool-status {
+.tool-approval .tool-name {
   color: var(--yellow);
 }
 
-.tool-ok .tool-status {
-  color: var(--green);
-}
-
-.tool-error .tool-status {
+.tool-error .tool-name {
   color: var(--red);
 }
 
-.tool-result {
+.tool-body {
   margin: 0;
+  padding: 0 10px 8px;
   color: var(--fg-dim);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  font: 11.5px/1.6 var(--font-mono);
+  white-space: pre;
+  overflow: auto;
+  max-height: calc(5 * 1.6em + 4px);
+  mask-image: linear-gradient(#000 72%, transparent);
 }
 
-.link {
-  align-self: flex-start;
-  padding: 0;
-  color: var(--accent);
-  font-size: 10px;
+.tool.open .tool-body {
+  max-height: none;
+  mask-image: none;
 }
 
-.link:hover {
-  text-decoration: underline;
+/* 压缩记录 */
+.compact {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: transparent;
+  overflow: hidden;
 }
 
-.approval-card {
+.compact-row {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--yellow);
-  border-radius: var(--r-sm);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  text-align: left;
+  list-style: none;
+  cursor: pointer;
+}
+
+.compact-row::-webkit-details-marker {
+  display: none;
+}
+
+.compact-row:hover {
   background: var(--panel-2);
 }
 
-.approval-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.approval-title {
-  color: var(--yellow);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.approval-tool {
+.compact-row .r {
   margin-left: auto;
-  color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  color: var(--fg-faint);
+  font: 10.5px var(--font-mono);
 }
 
-.approval-note {
-  color: var(--yellow);
-  font-size: 10px;
+.compact-row .chev {
+  color: var(--fg-faint);
+  transition: transform 120ms var(--ease);
 }
 
-.approval-command {
-  margin: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--bg);
-  color: var(--fg-2);
-  font-family: var(--font-mono);
+.compact[open] .compact-row .chev {
+  transform: rotate(180deg);
+}
+
+.compact-body {
+  padding: 0 10px 8px 30px;
+  color: var(--fg-faint);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.approval-meta {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 8px;
-  margin: 0;
-  font-size: 11px;
+/* 审批卡 */
+.perm {
+  padding: 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  animation: fade-in 140ms var(--ease);
 }
 
-.approval-meta dt {
-  color: var(--fg-faint);
+.perm-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.approval-meta dd {
-  margin: 0;
+.perm-kind {
+  margin-left: auto;
   color: var(--fg-dim);
+  font: 10px var(--font-mono);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+
+.perm-cmd {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font: 11.5px/1.6 var(--font-mono);
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.approval-actions {
+.perm-meta {
+  margin: 7px 0 9px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.perm-actions {
   display: flex;
-  align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.approval-actions button {
-  padding: 3px 10px;
+.btn {
+  height: 25px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  background: var(--panel-3);
+  background: var(--panel-2);
   color: var(--fg-2);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
-.approval-actions button:hover:not(:disabled) {
+.btn:hover:not(:disabled) {
   color: var(--fg);
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
 
-.approval-actions button:disabled {
+.btn.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.btn.primary:hover:not(:disabled) {
+  border-color: var(--accent-hov);
+  background: var(--accent-hov);
+}
+
+.btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.approval-actions .deny {
-  color: var(--red);
-  border-color: rgb(217 122 112 / 40%);
-}
-
 .resolving {
+  margin-top: 6px;
   color: var(--fg-faint);
-  font-size: 10px;
+  font-size: 10.5px;
+  text-align: right;
 }
 
+/* yolo 确认 */
 .yolo-confirm {
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 0 8px 8px;
-  padding: 8px;
-  border: 1px solid var(--yellow);
-  border-radius: var(--r-sm);
-  background: var(--panel-2);
+  gap: 8px;
+  margin: 0 10px 8px;
+  padding: 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
 }
 
 .yolo-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   color: var(--fg-dim);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 
 .yolo-text strong {
-  color: var(--yellow);
+  color: var(--accent);
   font-size: 12px;
 }
 
-.yolo-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.yolo-actions button {
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--panel-3);
-  color: var(--fg-2);
-  font-size: 11px;
-}
-
-.yolo-actions button:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-
-.yolo-actions button.danger {
-  color: var(--yellow);
-  border-color: var(--yellow);
-}
-
-.yolo-actions button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
+/* 错误 */
 .error-banner {
+  flex: none;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  margin: 0 8px 8px;
-  padding: 6px 8px;
+  margin: 0 10px 8px;
+  padding: 7px 9px;
   border: 1px solid var(--red);
   border-radius: var(--r-sm);
   background: var(--panel-2);
@@ -1362,97 +1488,13 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 .error-code {
-  flex: 0 0 auto;
+  flex: none;
   color: var(--red);
   font-family: var(--font-mono);
 }
 
 .error-message {
   color: var(--fg-dim);
-}
-
-.composer {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
-}
-
-.composer textarea {
-  width: 100%;
-  min-height: 52px;
-  max-height: 160px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-  line-height: 1.5;
-  resize: none;
-}
-
-.composer textarea:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-
-.composer textarea::placeholder {
-  color: var(--fg-faint);
-}
-
-.composer-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.hint {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--fg-faint);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.send {
-  padding: 4px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--panel-3);
-  color: var(--fg-2);
-  font-size: 11px;
-}
-
-.send:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-
-.send:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.manage-providers {
-  margin-top: 8px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--accent);
-  border-radius: var(--r-sm);
-  background: var(--accent-soft, transparent);
-  color: var(--accent);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.manage-providers:hover {
-  background: var(--accent);
-  color: var(--accent-fg, #fff);
 }
 
 .error-hint {
@@ -1462,83 +1504,50 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   line-height: 1.5;
 }
 
-.model-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  min-width: 0;
-  padding: 0 8px 6px;
+/* 输入区 */
+.composer {
+  flex: none;
+  padding: 9px 10px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
 }
 
-.model-field {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.field-label {
-  flex: 0 0 auto;
-  color: var(--fg-faint);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.model-field select {
-  min-width: 0;
-  max-width: 220px;
-  height: 22px;
-  padding: 0 4px;
+.comp-box {
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: var(--r);
   background: var(--panel-2);
-  color: var(--fg-2);
-  font: inherit;
-  font-size: 11px;
+  transition: border-color var(--dur) var(--ease);
 }
 
-.model-field.narrow select {
-  max-width: 96px;
+.comp-box:focus-within {
+  border-color: var(--border-strong);
 }
 
-.model-field select:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.model-note {
-  color: var(--fg-faint);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.new-session {
-  margin-left: auto;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  color: var(--fg-dim);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.new-session:hover:not(:disabled) {
+.composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  max-height: 132px;
+  padding: 9px 10px 3px;
+  border: 0;
+  background: transparent;
   color: var(--fg);
-  border-color: var(--accent);
+  font: 12.5px/1.6 var(--font-ui);
+  resize: none;
+  outline: none;
+  overflow-y: auto;
 }
 
-.new-session:disabled {
-  opacity: 0.45;
-  cursor: default;
+.composer textarea::placeholder {
+  color: var(--fg-faint);
 }
 
-.attachments {
+.attach-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
-  min-width: 0;
+  padding: 8px 10px 0;
 }
 
 .attachment-chip {
@@ -1546,16 +1555,17 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  padding: 2px 4px 2px 8px;
+  height: 22px;
+  padding: 0 4px 0 7px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--panel-2);
+  background: var(--panel-3);
   color: var(--fg-dim);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 .chip-name {
-  max-width: 160px;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1567,14 +1577,16 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 .chip-remove {
-  padding: 0 4px;
-  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
   color: var(--fg-faint);
-  font-size: 12px;
-  line-height: 1;
 }
 
 .chip-remove:hover {
+  background: var(--panel-4);
   color: var(--red);
 }
 
@@ -1582,26 +1594,281 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   flex-basis: 100%;
   margin: 0;
   color: var(--red);
+  font-size: 10.5px;
+}
+
+.comp-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 6px;
+  flex-wrap: wrap;
+}
+
+.pill-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 23px;
+  max-width: 170px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.pill:hover:not(:disabled) {
+  background: var(--panel-3);
+  color: var(--fg-2);
+}
+
+.pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pill .chev {
+  flex: none;
+  color: var(--fg-faint);
+}
+
+.pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill.mode-plan {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  color: var(--fg-2);
+}
+
+.pill.mode-auto {
+  color: var(--fg-2);
+}
+
+.pill.mode-yolo {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pill-menu {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 0;
+  z-index: 20;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  box-shadow: var(--shadow);
+  animation: fade-in 100ms var(--ease);
+}
+
+.pill-menu.model-menu {
+  min-width: 230px;
+}
+
+.pill-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.pill-item:hover {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.pill-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.pill-item.yolo {
+  color: var(--yellow);
+}
+
+.item-main {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.item-sub {
+  color: var(--fg-faint);
   font-size: 10px;
 }
 
-.attach {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
+.pill-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+}
+
+.attach-btn {
+  position: relative;
+  width: 24px;
+  height: 24px;
+}
+
+.attach-count {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: 8.5px/12px var(--font-mono);
+  text-align: center;
+}
+
+.send-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   border-radius: var(--r-sm);
-  color: var(--fg-dim);
-  font-size: 11px;
-  white-space: nowrap;
+  background: var(--accent);
+  color: var(--accent-fg);
+  transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
 
-.attach:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--accent);
+.send-btn:hover:not(:disabled) {
+  background: var(--accent-hov);
 }
 
-.attach:disabled {
-  opacity: 0.45;
+.send-btn:disabled {
+  background: var(--border-strong);
+  color: var(--fg-faint);
   cursor: default;
+}
+
+/* 上下文条 */
+.ctx {
+  margin-top: 8px;
+  padding: 0 1px;
+}
+
+.ctx-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ctx-label {
+  flex: none;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+.ctx-bar {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.ctx-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 160ms var(--ease), background-color 160ms var(--ease);
+}
+
+.ctx-fill.warn {
+  background: var(--yellow);
+}
+
+.ctx-fill.flash {
+  animation: ctx-flash 600ms var(--ease);
+}
+
+@keyframes ctx-flash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  40% {
+    opacity: 0.25;
+  }
+}
+
+.ctx-tick {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--fg-faint);
+  transform: translateX(-0.5px);
+}
+
+.ctx-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--fg-faint);
+  font: 10.5px var(--font-mono);
+}
+
+.ctx-val {
+  color: var(--fg-dim);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sess-dot.running,
+  .ctx-fill.flash,
+  .perm,
+  .pill-menu {
+    animation: none;
+  }
+
+  .ctx-fill,
+  .tool .chev,
+  .compact-row .chev,
+  .pill {
+    transition: none;
+  }
 }
 </style>

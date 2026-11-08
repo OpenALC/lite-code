@@ -113,5 +113,45 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 })
     <template v-else-if="name === 'smart'">
       <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
     </template>
+    <template v-else-if="name === 'chevron-down'">
+      <path d="m6 9 6 6 6-6" />
+    </template>
+    <template v-else-if="name === 'arrow-up'">
+      <path d="M12 19V5M5 12l7-7 7 7" />
+    </template>
+    <template v-else-if="name === 'paperclip'">
+      <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7" />
+    </template>
+    <template v-else-if="name === 'square'">
+      <rect
+        x="7"
+        y="7"
+        width="10"
+        height="10"
+        rx="1.5"
+      />
+    </template>
+    <template v-else-if="name === 'file'">
+      <path d="M6 3h8l4 4v14H6z" />
+      <path d="M14 3v5h5" />
+    </template>
+    <template v-else-if="name === 'pencil'">
+      <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z" />
+      <path d="m14 7 3 3" />
+    </template>
+    <template v-else-if="name === 'terminal'">
+      <path d="m5 7 5 5-5 5M13 17h6" />
+    </template>
+    <template v-else-if="name === 'layers'">
+      <path d="m12 3 9 5-9 5-9-5z" />
+      <path d="m3 13 9 5 9-5" />
+    </template>
+    <template v-else-if="name === 'shield'">
+      <path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6z" />
+      <path d="m9 12 2 2 4-4" />
+    </template>
+    <template v-else-if="name === 'x'">
+      <path d="m6 6 12 12M18 6 6 18" />
+    </template>
   </svg>
 </template>
