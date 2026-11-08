@@ -201,11 +201,12 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
 
   function finalizeTurn(
     stats: TurnStat[],
-    turn: number,
+    _turn: number,
     stopReason: string,
   ): TurnStat[] {
     if (turnStartedAt === 0) return stats
-    const resolvedTurn = turn > 0 ? turn : stats.length + 1
+    // 统计按“用户发送”计轮，而不是 AgentLoop 的 LLM 迭代次数。
+    const resolvedTurn = stats.length + 1
     const stat: TurnStat = {
       turn: resolvedTurn,
       input: turnUsage.input,
@@ -214,10 +215,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
       durationMs: Math.max(0, Date.now() - turnStartedAt),
       stopReason,
     }
-    return [
-      ...stats.filter(item => item.turn !== resolvedTurn),
-      stat,
-    ].sort((a, b) => a.turn - b.turn)
+    return [...stats, stat]
   }
 
   const offCore = deps.onCoreEvent(event => {
