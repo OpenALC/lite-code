@@ -86,7 +86,7 @@ function onClose(tabId: string): void {
 <style scoped>
 .tabbar {
   display: flex;
-  height: 30px;
+  height: 34px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
@@ -94,7 +94,7 @@ function onClose(tabId: string): void {
 .tab {
   display: flex;
   align-items: stretch;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--fg-dim);
   border-right: 1px solid var(--border);
 }
@@ -102,6 +102,7 @@ function onClose(tabId: string): void {
 .tab.active {
   background: var(--bg);
   color: var(--fg);
+  box-shadow: inset 0 1px 0 var(--accent);
 }
 
 /* dirty 关闭确认态：强调色描边，视觉上可逆、无模态框 */
@@ -137,7 +138,15 @@ function onClose(tabId: string): void {
   color: var(--fg-faint);
   font-size: 12px;
   line-height: 1;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+  opacity: 0;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close,
+.tab.confirming .tab-close {
+  opacity: 1;
 }
 
 .tab-close:hover {

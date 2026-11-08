@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import AgentPanel from './components/AgentPanel.vue'
 import AgentSessions from './components/AgentSessions.vue'
 import AppIcon from './components/AppIcon.vue'
+import Breadcrumbs from './components/EditorBreadcrumbs.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import DbPanel from './components/DbPanel.vue'
 import ExtensionsPanel from './components/ExtensionsPanel.vue'
@@ -243,11 +244,12 @@ function agentBusy(): boolean {
   )
 }
 
-async function activateWorkspace(root: string): Promise<void> {
-  if (workspaceSwitching.value || samePath(root, projectRoot.value)) return
+async function activateWorkspace(root: string): Promise<boolean> {
+  if (samePath(root, projectRoot.value)) return true
+  if (workspaceSwitching.value) return false
   if (agentBusy()) {
     workspaceError.value = t('agent.workspaceBusy')
-    return
+    return false
   }
   workspaceSwitching.value = true
   workspaceError.value = null
@@ -255,7 +257,7 @@ async function activateWorkspace(root: string): Promise<void> {
   workspaceSwitching.value = false
   if (!res.ok) {
     workspaceError.value = res.error.message
-    return
+    return false
   }
   const next = res.data.root ?? root
   projectRoot.value = next
@@ -267,6 +269,14 @@ async function activateWorkspace(root: string): Promise<void> {
   void refreshGit()
   void dbSession.refresh()
   void taskSession.refresh()
+  return true
+}
+
+async function newSessionInWorkspace(root: string): Promise<void> {
+  if (!(await activateWorkspace(root))) return
+  agentSession.resetSession()
+  agentSession.setDraft('')
+  setAppMode('agent')
 }
 
 function removeWorkspaceEntry(root: string): void {
@@ -663,7 +673,11 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="shell"
-    :class="{ 'sidebar-off': !sidebarVisible, 'right-off': !rightVisible }"
+    :class="{
+      'sidebar-off': !sidebarVisible,
+      'right-off': !rightVisible,
+      'agent-mode': appMode === 'agent',
+    }"
   >
     <header
       class="titlebar"
@@ -675,6 +689,38 @@ onBeforeUnmount(() => {
       >
         <span class="brand-mark" />
         <span class="brand-text">Lite Code</span>
+      </div>
+      <div
+        class="titlebar-mode"
+        role="group"
+        :aria-label="t('activity.mode')"
+      >
+        <button
+          type="button"
+          class="mode-chip"
+          :class="{ active: appMode === 'editor' }"
+          :title="t('activity.modeEditor')"
+          :aria-pressed="appMode === 'editor'"
+          @click="setAppMode('editor')"
+        >
+          <AppIcon
+            name="code"
+            :size="14"
+          />
+        </button>
+        <button
+          type="button"
+          class="mode-chip"
+          :class="{ active: appMode === 'agent' }"
+          :title="t('activity.modeAgent')"
+          :aria-pressed="appMode === 'agent'"
+          @click="setAppMode('agent')"
+        >
+          <AppIcon
+            name="agent"
+            :size="14"
+          />
+        </button>
       </div>
       <nav class="menus">
         <button
@@ -801,42 +847,10 @@ onBeforeUnmount(() => {
 
     <div class="workspace">
       <nav
+        v-if="appMode === 'editor'"
         class="activity"
         :aria-label="t('activity.explorer')"
       >
-        <div
-          class="mode-switch"
-          role="group"
-          :aria-label="t('activity.mode')"
-        >
-          <button
-            type="button"
-            class="act-btn"
-            :class="{ active: appMode === 'editor' }"
-            :title="t('activity.modeEditor')"
-            :aria-pressed="appMode === 'editor'"
-            @click="setAppMode('editor')"
-          >
-            <AppIcon
-              name="code"
-              :size="16"
-            />
-          </button>
-          <button
-            type="button"
-            class="act-btn"
-            :class="{ active: appMode === 'agent' }"
-            :title="t('activity.modeAgent')"
-            :aria-pressed="appMode === 'agent'"
-            @click="setAppMode('agent')"
-          >
-            <AppIcon
-              name="agent"
-              :size="16"
-            />
-          </button>
-        </div>
-        <div class="act-divider" />
         <button
           type="button"
           class="act-btn"
@@ -1035,6 +1049,7 @@ onBeforeUnmount(() => {
         class="editor-col"
       >
         <TabBar />
+        <Breadcrumbs />
         <div class="editor-card">
           <ExtensionsPanel
             v-if="extensionsMounted"
@@ -1184,7 +1199,30 @@ onBeforeUnmount(() => {
             @select-workspace="activateWorkspace"
             @remove-workspace="removeWorkspaceEntry"
             @add-workspace="openWorkspaceDialog"
+            @new-session-in="newSessionInWorkspace"
           />
+          <div class="agent-sidebar-footer">
+            <button
+              type="button"
+              @click="openProviders"
+            >
+              <AppIcon
+                name="providers"
+                :size="14"
+              />
+              {{ t('activity.providers') }}
+            </button>
+            <button
+              type="button"
+              @click="openSettings"
+            >
+              <AppIcon
+                name="settings"
+                :size="14"
+              />
+              {{ t('activity.settings') }}
+            </button>
+          </div>
         </aside>
         <main class="agent-main">
           <p
@@ -1202,7 +1240,10 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <footer class="statusbar">
+    <footer
+      v-if="appMode === 'editor'"
+      class="statusbar"
+    >
       <span class="status-item">⎇ {{ t('status.branch') }}</span>
       <span class="status-item dim">Node —</span>
       <span class="status-item dim">MCP 0</span>
@@ -1292,6 +1333,113 @@ onBeforeUnmount(() => {
   font-weight: 650;
   letter-spacing: 0.02em;
   color: var(--fg);
+}
+
+.titlebar-mode {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+}
+
+.mode-chip {
+  width: 24px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-xs);
+  color: var(--fg-faint);
+}
+
+.mode-chip:hover {
+  color: var(--fg-2);
+}
+
+.mode-chip.active {
+  background: var(--panel-4);
+  color: var(--accent);
+}
+
+/* Agent 模式：Kimi Code Desktop 式中性色板与无边框面板 */
+.shell.agent-mode {
+  --bg: #141414;
+  --titlebar: #181818;
+  --panel: #181818;
+  --panel-2: #1b1b1b;
+  --panel-3: #212121;
+  --panel-4: #282828;
+  --border: rgb(255 255 255 / 7%);
+  --border-strong: rgb(255 255 255 / 12%);
+  --fg: #efefef;
+  --fg-2: #c1c1c1;
+  --fg-dim: #929292;
+  --fg-faint: #6b6b6b;
+  --accent: #dedede;
+  --accent-hov: #f5f5f5;
+  --accent-fg: #121212;
+  --accent-soft: rgb(255 255 255 / 7%);
+  --accent-line: rgb(255 255 255 / 18%);
+  --r: 12px;
+  --r-sm: 8px;
+  --r-xs: 6px;
+}
+
+:root[data-theme='light'] .shell.agent-mode {
+  --bg: #f6f6f6;
+  --titlebar: #f0f0f0;
+  --panel: #f0f0f0;
+  --panel-2: #ffffff;
+  --panel-3: #e9e9e9;
+  --panel-4: #dfdfdf;
+  --border: #dddddd;
+  --border-strong: #c6c6c6;
+  --fg: #1c1c1c;
+  --fg-2: #4d4d4d;
+  --fg-dim: #6c6c6c;
+  --fg-faint: #9a9a9a;
+  --accent: #262626;
+  --accent-hov: #111111;
+  --accent-fg: #ffffff;
+  --accent-soft: rgb(0 0 0 / 6%);
+  --accent-line: rgb(0 0 0 / 18%);
+  --r: 12px;
+  --r-sm: 8px;
+  --r-xs: 6px;
+}
+
+.shell.agent-mode .workspace {
+  padding: 0;
+  gap: 0;
+}
+
+.shell.agent-mode .agent-sessions {
+  width: 272px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.shell.agent-mode .agent-main {
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+}
+
+.shell.agent-mode .brand-mark {
+  background: linear-gradient(135deg, #dedede, #8a8a8a);
+  box-shadow: none;
+}
+
+:root[data-theme='light'] .shell.agent-mode .brand-mark {
+  background: linear-gradient(135deg, #262626, #8a8a8a);
+}
+
+.shell.agent-mode .activity {
+  display: none;
 }
 
 .menus {
@@ -1460,7 +1608,7 @@ onBeforeUnmount(() => {
 
 .activity {
   flex: none;
-  width: 46px;
+  width: 48px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1472,13 +1620,18 @@ onBeforeUnmount(() => {
 }
 
 .act-btn {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--r-sm);
   color: var(--fg-dim);
+}
+
+.act-btn :deep(svg) {
+  width: 20px;
+  height: 20px;
 }
 
 .act-btn:hover {
@@ -1536,6 +1689,31 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: var(--r);
   overflow: hidden;
+}
+
+.agent-sidebar-footer {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-sidebar-footer button {
+  flex: 1;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.agent-sidebar-footer button:hover {
+  background: var(--panel-3);
+  color: var(--fg);
 }
 
 .agent-error {
@@ -1803,10 +1981,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 14px;
-  height: 30px;
+  height: 34px;
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .bottom-tab {

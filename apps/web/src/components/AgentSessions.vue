@@ -19,6 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: []
   'new-session': []
+  'new-session-in': [root: string]
   close: []
   'select-workspace': [root: string]
   'remove-workspace': [root: string]
@@ -34,17 +35,56 @@ const unsubscribe = props.controller.subscribe(next => {
 const allItems = ref<HistorySummary[]>([])
 const loading = ref(false)
 const error = ref('')
+const query = ref('')
+const collapsed = ref<Set<string>>(new Set())
+const pendingOpenId = ref<string | null>(null)
 const confirmId = ref<string | null>(null)
 const confirmWorkspace = ref<string | null>(null)
 let confirmTimer: ReturnType<typeof setTimeout> | null = null
 let workspaceTimer: ReturnType<typeof setTimeout> | null = null
 
+interface WorkspaceGroup {
+  workspace: WorkspaceEntry
+  items: HistorySummary[]
+}
+
+function matchesQuery(item: HistorySummary): boolean {
+  const term = query.value.trim().toLocaleLowerCase()
+  if (!term) return true
+  return (
+    item.title.toLocaleLowerCase().includes(term) ||
+    item.model.toLocaleLowerCase().includes(term) ||
+    item.mode.toLocaleLowerCase().includes(term)
+  )
+}
+
 const items = computed(() =>
   allItems.value.filter(item => {
+    if (!matchesQuery(item)) return false
     if (!props.workspace) return !item.workspace
     return !item.workspace || samePath(item.workspace, props.workspace)
   }),
 )
+
+const groups = computed<WorkspaceGroup[]>(() => {
+  const list = (props.workspaces ?? []).map(workspace => ({
+    workspace,
+    items: allItems.value.filter(
+      item =>
+        matchesQuery(item) &&
+        (item.workspace
+          ? samePath(item.workspace, workspace.root)
+          : samePath(workspace.root, props.activeWorkspace ?? '')),
+    ),
+  }))
+  const term = query.value.trim().toLocaleLowerCase()
+  if (!term) return list
+  return list.filter(
+    group =>
+      group.items.length > 0 ||
+      group.workspace.name.toLocaleLowerCase().includes(term),
+  )
+})
 
 const activeId = computed(() => state.value.agent?.sessionId ?? '')
 
@@ -99,6 +139,17 @@ function selectWorkspace(root: string): void {
   emit('select-workspace', root)
 }
 
+function isCollapsed(root: string): boolean {
+  return collapsed.value.has(root)
+}
+
+function toggleGroup(root: string): void {
+  const next = new Set(collapsed.value)
+  if (next.has(root)) next.delete(root)
+  else next.add(root)
+  collapsed.value = next
+}
+
 async function remove(item: HistorySummary): Promise<void> {
   if (confirmId.value !== item.id) {
     askDelete(item.id)
@@ -113,9 +164,8 @@ async function remove(item: HistorySummary): Promise<void> {
   allItems.value = allItems.value.filter(entry => entry.id !== item.id)
 }
 
-async function open(item: HistorySummary): Promise<void> {
+async function showItem(item: HistorySummary): Promise<void> {
   if (state.value.streaming) return
-  clearConfirm()
   const session = await loadStoredSession(item.id)
   if (!session) {
     error.value = t('agent.historyLoadFailed')
@@ -124,9 +174,31 @@ async function open(item: HistorySummary): Promise<void> {
   if (props.controller.loadHistory(session)) emit('select')
 }
 
+async function open(item: HistorySummary): Promise<void> {
+  clearConfirm()
+  if (
+    item.workspace &&
+    props.activeWorkspace &&
+    !samePath(item.workspace, props.activeWorkspace)
+  ) {
+    pendingOpenId.value = item.id
+    emit('select-workspace', item.workspace)
+    return
+  }
+  await showItem(item)
+}
+
 function newSession(): void {
   if (!props.controller.resetSession()) return
   emit('new-session')
+}
+
+function newSessionIn(root: string): void {
+  if (samePath(root, props.activeWorkspace ?? '')) {
+    newSession()
+    return
+  }
+  emit('new-session-in', root)
 }
 
 function modeLabel(mode: string): string {
@@ -166,6 +238,19 @@ watch(
   },
 )
 
+watch(
+  () => props.activeWorkspace,
+  () => {
+    const queued = pendingOpenId.value
+    pendingOpenId.value = null
+    if (queued) {
+      const item = allItems.value.find(entry => entry.id === queued)
+      if (item) void showItem(item)
+    }
+    void refresh()
+  },
+)
+
 function onHistoryChanged(): void {
   void refresh()
 }
@@ -185,10 +270,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="sessions">
-    <div
-      v-if="props.showWorkspaces"
-      class="workspace-section"
-    >
+    <template v-if="props.showWorkspaces">
       <div class="sessions-head">
         <span class="sessions-title">{{ t('agent.workspaces') }}</span>
         <button
@@ -199,58 +281,162 @@ onBeforeUnmount(() => {
           @click="emit('add-workspace')"
         >
           <AppIcon
-            name="plus"
+            name="folder"
+            :size="14"
+          />
+        </button>
+        <button
+          v-if="props.closable"
+          type="button"
+          class="icon-btn"
+          :title="t('agent.historyClose')"
+          :aria-label="t('agent.historyClose')"
+          @click="emit('close')"
+        >
+          <AppIcon
+            name="x"
             :size="14"
           />
         </button>
       </div>
-      <div class="workspace-list">
+
+      <label class="thread-search">
+        <AppIcon
+          name="search"
+          :size="13"
+        />
+        <input
+          v-model="query"
+          type="text"
+          :placeholder="t('agent.searchChats')"
+          spellcheck="false"
+        >
+      </label>
+
+      <div class="project-list">
         <p
-          v-if="!props.workspaces || props.workspaces.length === 0"
+          v-if="loading && groups.length === 0"
+          class="sessions-note"
+        >
+          {{ t('agent.historyLoading') }}
+        </p>
+        <p
+          v-else-if="error"
+          class="sessions-note error"
+        >
+          {{ error }}
+        </p>
+        <p
+          v-else-if="groups.length === 0"
           class="sessions-note"
         >
           {{ t('agent.noWorkspaces') }}
         </p>
-        <div
-          v-for="item in props.workspaces"
-          :key="item.root"
-          class="workspace-row"
-          :class="{
-            active: samePath(item.root, props.activeWorkspace ?? ''),
-            danger: item.root === confirmWorkspace,
-          }"
-          role="button"
-          tabindex="0"
-          @click="selectWorkspace(item.root)"
-          @keydown.enter.prevent="selectWorkspace(item.root)"
+
+        <section
+          v-for="group in groups"
+          :key="group.workspace.root"
+          class="project-group"
         >
-          <AppIcon
-            name="folder"
-            :size="13"
-            class="workspace-icon"
-          />
-          <div class="workspace-main">
-            <span class="workspace-name">{{ item.name }}</span>
-            <span
-              class="workspace-path"
-              :title="item.root"
-            >{{ item.root }}</span>
-          </div>
-          <button
-            type="button"
-            class="session-delete"
-            :title="item.root === confirmWorkspace ? t('agent.removeWorkspaceConfirm') : t('agent.removeWorkspace')"
-            :aria-label="t('agent.removeWorkspace')"
-            @click.stop="removeWorkspace(item.root)"
+          <div
+            class="project-row"
+            :class="{
+              active: samePath(group.workspace.root, props.activeWorkspace ?? ''),
+              danger: group.workspace.root === confirmWorkspace,
+            }"
           >
-            <AppIcon
-              name="x"
-              :size="12"
-            />
-          </button>
-        </div>
+            <button
+              type="button"
+              class="project-caret"
+              :class="{ open: !isCollapsed(group.workspace.root) }"
+              :title="isCollapsed(group.workspace.root) ? t('agent.expandProject') : t('agent.collapseProject')"
+              :aria-expanded="!isCollapsed(group.workspace.root)"
+              @click="toggleGroup(group.workspace.root)"
+            >
+              <AppIcon
+                name="chevron"
+                :size="12"
+              />
+            </button>
+            <button
+              type="button"
+              class="project-select"
+              :title="group.workspace.root"
+              @click="selectWorkspace(group.workspace.root)"
+            >
+              <AppIcon
+                name="folder"
+                :size="14"
+              />
+              <span class="project-name">{{ group.workspace.name }}</span>
+              <span class="project-count">{{ group.items.length }}</span>
+            </button>
+            <button
+              type="button"
+              class="project-action"
+              :title="t('agent.newChatInWorkspace')"
+              :aria-label="t('agent.newChatInWorkspace')"
+              @click.stop="newSessionIn(group.workspace.root)"
+            >
+              <AppIcon
+                name="plus"
+                :size="13"
+              />
+            </button>
+            <button
+              type="button"
+              class="project-action"
+              :title="group.workspace.root === confirmWorkspace ? t('agent.removeWorkspaceConfirm') : t('agent.removeWorkspace')"
+              :aria-label="t('agent.removeWorkspace')"
+              @click.stop="removeWorkspace(group.workspace.root)"
+            >
+              <AppIcon
+                name="x"
+                :size="12"
+              />
+            </button>
+          </div>
+
+          <div
+            v-if="!isCollapsed(group.workspace.root)"
+            class="project-threads"
+          >
+            <div
+              v-for="item in group.items"
+              :key="item.id"
+              class="thread-row"
+              :class="{ active: item.id === activeId, danger: item.id === confirmId }"
+              role="button"
+              tabindex="0"
+              @click="open(item)"
+              @keydown.enter.prevent="open(item)"
+            >
+              <span class="thread-title">{{ item.title }}</span>
+              <span class="thread-time">{{ formatTime(item.savedAt) }}</span>
+              <button
+                type="button"
+                class="thread-delete"
+                :title="item.id === confirmId ? t('agent.historyDeleteConfirm') : t('agent.historyDelete')"
+                :aria-label="t('agent.historyDelete')"
+                @click.stop="remove(item)"
+              >
+                <AppIcon
+                  name="x"
+                  :size="11"
+                />
+              </button>
+            </div>
+            <p
+              v-if="group.items.length === 0"
+              class="thread-empty"
+            >
+              {{ t('agent.noChatsInWorkspace') }}
+            </p>
+          </div>
+        </section>
+
         <button
-          v-if="!props.workspaces || props.workspaces.length === 0"
+          v-if="groups.length === 0"
           type="button"
           class="workspace-add"
           @click="emit('add-workspace')"
@@ -262,98 +448,100 @@ onBeforeUnmount(() => {
           {{ t('agent.addWorkspace') }}
         </button>
       </div>
-    </div>
+    </template>
 
-    <div class="sessions-head">
-      <span class="sessions-title">{{ props.showWorkspaces ? t('agent.conversations') : t('agent.historyTitle') }}</span>
-      <button
-        type="button"
-        class="icon-btn"
-        :title="t('agent.historyRefresh')"
-        :aria-label="t('agent.historyRefresh')"
-        @click="refresh"
-      >
-        <AppIcon
-          name="refresh"
-          :size="14"
-        />
-      </button>
-      <button
-        v-if="props.closable"
-        type="button"
-        class="icon-btn"
-        :title="t('agent.historyClose')"
-        :aria-label="t('agent.historyClose')"
-        @click="emit('close')"
-      >
-        <AppIcon
-          name="x"
-          :size="14"
-        />
-      </button>
-    </div>
-
-    <div class="sessions-list">
-      <p
-        v-if="loading"
-        class="sessions-note"
-      >
-        {{ t('agent.historyLoading') }}
-      </p>
-      <p
-        v-else-if="error"
-        class="sessions-note error"
-      >
-        {{ error }}
-      </p>
-      <p
-        v-else-if="items.length === 0"
-        class="sessions-note"
-      >
-        {{ t('agent.historyEmpty') }}
-      </p>
-      <div
-        v-for="item in items"
-        :key="item.id"
-        class="session-row"
-        :class="{ active: item.id === activeId, danger: item.id === confirmId }"
-        role="button"
-        tabindex="0"
-        @click="open(item)"
-        @keydown.enter.prevent="open(item)"
-      >
-        <div class="session-main">
-          <span class="session-title">{{ item.title }}</span>
-          <span class="session-meta">
-            {{ modeLabel(item.mode) }} · {{ shortModel(item.model) }} · {{ formatTime(item.savedAt) }}
-          </span>
-        </div>
+    <template v-else>
+      <div class="sessions-head">
+        <span class="sessions-title">{{ t('agent.historyTitle') }}</span>
         <button
           type="button"
-          class="session-delete"
-          :title="item.id === confirmId ? t('agent.historyDeleteConfirm') : t('agent.historyDelete')"
-          :aria-label="t('agent.historyDelete')"
-          @click.stop="remove(item)"
+          class="icon-btn"
+          :title="t('agent.historyRefresh')"
+          :aria-label="t('agent.historyRefresh')"
+          @click="refresh"
+        >
+          <AppIcon
+            name="refresh"
+            :size="14"
+          />
+        </button>
+        <button
+          v-if="props.closable"
+          type="button"
+          class="icon-btn"
+          :title="t('agent.historyClose')"
+          :aria-label="t('agent.historyClose')"
+          @click="emit('close')"
         >
           <AppIcon
             name="x"
-            :size="12"
+            :size="14"
           />
         </button>
       </div>
-    </div>
 
-    <button
-      type="button"
-      class="sessions-new"
-      @click="newSession"
-    >
-      <AppIcon
-        name="plus"
-        :size="14"
-      />
-      {{ t('agent.newSession') }}
-    </button>
+      <div class="sessions-list">
+        <p
+          v-if="loading"
+          class="sessions-note"
+        >
+          {{ t('agent.historyLoading') }}
+        </p>
+        <p
+          v-else-if="error"
+          class="sessions-note error"
+        >
+          {{ error }}
+        </p>
+        <p
+          v-else-if="items.length === 0"
+          class="sessions-note"
+        >
+          {{ t('agent.historyEmpty') }}
+        </p>
+        <div
+          v-for="item in items"
+          :key="item.id"
+          class="session-row"
+          :class="{ active: item.id === activeId, danger: item.id === confirmId }"
+          role="button"
+          tabindex="0"
+          @click="open(item)"
+          @keydown.enter.prevent="open(item)"
+        >
+          <div class="session-main">
+            <span class="session-title">{{ item.title }}</span>
+            <span class="session-meta">
+              {{ modeLabel(item.mode) }} · {{ shortModel(item.model) }} · {{ formatTime(item.savedAt) }}
+            </span>
+          </div>
+          <button
+            type="button"
+            class="session-delete"
+            :title="item.id === confirmId ? t('agent.historyDeleteConfirm') : t('agent.historyDelete')"
+            :aria-label="t('agent.historyDelete')"
+            @click.stop="remove(item)"
+          >
+            <AppIcon
+              name="x"
+              :size="12"
+            />
+          </button>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        class="sessions-new"
+        @click="newSession"
+      >
+        <AppIcon
+          name="plus"
+          :size="14"
+        />
+        {{ t('agent.newSession') }}
+      </button>
+    </template>
   </div>
 </template>
 
@@ -368,115 +556,12 @@ onBeforeUnmount(() => {
 
 .sessions-head {
   flex: none;
-  height: 36px;
+  height: 34px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border);
-}
-
-.workspace-section {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  max-height: 42%;
-  border-bottom: 1px solid var(--border);
-}
-
-.workspace-section .sessions-head {
-  height: 32px;
-}
-
-.workspace-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 6px 6px;
-}
-
-.workspace-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 6px 6px 8px;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
-}
-
-.workspace-row:hover {
-  background: var(--panel-2);
-}
-
-.workspace-row.active {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-
-.workspace-row.danger {
-  border-color: var(--red);
-}
-
-.workspace-icon {
-  flex: none;
-  color: var(--fg-faint);
-}
-
-.workspace-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.workspace-name {
-  overflow: hidden;
-  color: var(--fg-2);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-row.active .workspace-name {
-  color: var(--fg);
-}
-
-.workspace-path {
-  overflow: hidden;
-  color: var(--fg-faint);
-  font: 9.5px var(--font-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-row:hover .session-delete,
-.workspace-row.danger .session-delete {
-  opacity: 1;
-}
-
-.workspace-add {
-  flex: none;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  margin-top: 2px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-sm);
-  color: var(--fg-dim);
-  font-size: 11px;
-}
-
-.workspace-add:hover {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 
 .sessions-title {
@@ -501,6 +586,213 @@ onBeforeUnmount(() => {
 .icon-btn:hover {
   background: var(--panel-3);
   color: var(--fg);
+}
+
+.thread-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  margin: 6px 8px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--fg-faint);
+}
+
+.thread-search:focus-within {
+  border-color: var(--border-strong);
+  background: var(--panel-3);
+  color: var(--fg-dim);
+}
+
+.thread-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: 11.5px;
+}
+
+.thread-search input::placeholder {
+  color: var(--fg-faint);
+}
+
+.project-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 6px;
+}
+
+.project-group {
+  margin-bottom: 4px;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  padding: 0 2px;
+  border-radius: var(--r-sm);
+}
+
+.project-row:hover {
+  background: var(--panel-2);
+}
+
+.project-row.active {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.project-row.danger {
+  outline: 1px solid var(--red);
+}
+
+.project-caret {
+  flex: none;
+  width: 20px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-faint);
+}
+
+.project-caret svg {
+  transition: transform 120ms var(--ease);
+}
+
+.project-caret.open svg {
+  transform: rotate(90deg);
+}
+
+.project-select {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  color: var(--fg-2);
+  font-size: 12px;
+  text-align: left;
+}
+
+.project-row.active .project-select {
+  color: var(--fg);
+}
+
+.project-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-count {
+  flex: none;
+  color: var(--fg-faint);
+  font: 9.5px var(--font-mono);
+}
+
+.project-action {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--fg-faint);
+  opacity: 0;
+}
+
+.project-row:hover .project-action,
+.project-row.active .project-action,
+.project-row.danger .project-action {
+  opacity: 1;
+}
+
+.project-action:hover {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.project-threads {
+  padding-left: 18px;
+}
+
+.thread-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 29px;
+  padding: 0 4px 0 9px;
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.thread-row:hover {
+  background: var(--panel-2);
+  color: var(--fg-2);
+}
+
+.thread-row.active {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.thread-row.danger {
+  outline: 1px solid var(--red);
+}
+
+.thread-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-time {
+  flex: none;
+  color: var(--fg-faint);
+  font: 9px var(--font-mono);
+}
+
+.thread-delete {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--fg-faint);
+  opacity: 0;
+}
+
+.thread-row:hover .thread-delete,
+.thread-row.danger .thread-delete {
+  opacity: 1;
+}
+
+.thread-delete:hover {
+  background: var(--panel-4);
+  color: var(--red);
+}
+
+.thread-empty {
+  margin: 0;
+  padding: 4px 9px 6px;
+  color: var(--fg-faint);
+  font-size: 10.5px;
 }
 
 .sessions-list {
@@ -597,6 +889,25 @@ onBeforeUnmount(() => {
 .session-delete:hover {
   background: var(--panel-3);
   color: var(--red);
+}
+
+.workspace-add {
+  flex: none;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.workspace-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .sessions-new {

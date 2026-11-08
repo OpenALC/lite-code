@@ -2108,4 +2108,84 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     transition: none;
   }
 }
+
+/* Agent 模式：Kimi 式 48px 顶栏、居中 860px 对话列与更大的正文 */
+:global(.shell.agent-mode .agent-head){
+  height: 48px;
+  padding: 0 16px;
+}
+
+:global(.shell.agent-mode .agent-title){
+  display: none;
+}
+
+:global(.shell.agent-mode .sess-name){
+  color: var(--fg);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+:global(.shell.agent-mode .stream){
+  gap: 14px;
+  padding: 18px 24px;
+}
+
+:global(.shell.agent-mode .stream > *){
+  width: 100%;
+  max-width: 860px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+:global(.shell.agent-mode .msg-text){
+  font-size: 14px;
+}
+
+:global(.shell.agent-mode .msg.user .msg-text){
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+:global(.shell.agent-mode .tool-name){
+  font-size: 12px;
+}
+
+:global(.shell.agent-mode .tool-arg),
+:global(.shell.agent-mode .tool-body){
+  font-size: 12.5px;
+}
+
+:global(.shell.agent-mode .composer){
+  padding: 12px 24px 10px;
+}
+
+:global(.shell.agent-mode .composer .comp-box),
+:global(.shell.agent-mode .composer .ctx){
+  width: 100%;
+  max-width: 860px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+:global(.shell.agent-mode .composer textarea){
+  min-height: 44px;
+  font-size: 14px;
+}
+
+:global(.shell.agent-mode .empty) {
+  max-width: 420px;
+}
+
+:global(.shell.agent-mode .archive-banner),
+:global(.shell.agent-mode .error-banner) {
+  width: calc(100% - 48px);
+  max-width: 860px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+:global(.shell.agent-mode .archive-banner) {
+  margin-bottom: 8px;
+}
 </style>
