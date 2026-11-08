@@ -75,3 +75,4 @@
 - Agent 修复：`sessionCreate` 适配层曾把模型误传为 `taskId`，真机发送报 `task not found`；已显式转接
 - Agent UI 重构（对齐 `demo/index.html`）：会话头、消息流、工具卡/审批卡/压缩行、一体化 composer
   （模式/模型/思考 pill、上下文条）、附件 chips 与图标发送按钮；AI 消息安全渲染 Markdown
+- Agent 流滚动修复：`.stream` 子项不再参与 flex 收缩，工具卡/审批卡较多时保持原高度并可滚动

@@ -1057,6 +1057,11 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   padding: 12px;
 }
 
+/* 消息/工具/审批卡不参与 flex 收缩，否则条目一多会被压成细条而不是滚动。 */
+.stream > * {
+  flex: none;
+}
+
 .empty {
   max-width: 320px;
   margin: auto;
