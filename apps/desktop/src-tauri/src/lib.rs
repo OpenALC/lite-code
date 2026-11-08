@@ -14,6 +14,7 @@ mod agent;
 mod db;
 mod ext;
 mod git;
+mod history;
 mod lsp;
 mod lsp_plugins;
 mod providers;
@@ -32,6 +33,7 @@ use db::{
     db_list, db_query, db_save_connection, db_schema,
 };
 use git::{git_commit, git_diff, git_log, git_stage, git_status, git_unstage};
+use history::{history_delete, history_list, history_load, history_save};
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_workspace_root, store_workspace_root};
 use lc_core::fs::{
     DirLevel, FsError, RealPathResolver, SearchOptions, SearchResult, ensure_within_root,
@@ -827,6 +829,10 @@ pub fn run() {
             agent_send,
             agent_cancel,
             approval_resolve,
+            history_list,
+            history_load,
+            history_save,
+            history_delete,
             db_list,
             db_connect,
             db_disconnect,

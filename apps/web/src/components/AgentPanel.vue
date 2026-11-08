@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
+import AgentSessions from './AgentSessions.vue'
 import type { ApprovalDecision, ApprovalSource, SessionMode } from '@lc-proto'
 import {
   beyondCompressThreshold,
@@ -16,7 +17,7 @@ import {
   subscribeAgentContext,
   type AgentCodeContext,
 } from '../services/agentContext'
-import type { AgentSessionController } from '../services/agentSession'
+import type { AgentSessionController, TurnStat } from '../services/agentSession'
 import { renderMarkdown } from '../services/markdown'
 import {
   agentPickFiles,
@@ -76,7 +77,7 @@ function chosenModelId(): string {
 
 /** 无会话时把模型/思考偏好同步到控制器；已有会话只影响下一次新会话。 */
 function syncSelection(): void {
-  if (state.value.agent) return
+  if (state.value.agent && !state.value.archived) return
   const model = chosenModelId()
   const levels = thinkingLevelsFor(model)
   const preferred = state.value.thinking ?? defaultThinking.value
@@ -180,7 +181,9 @@ const contextPct = computed(() => Math.round(ratio.value * 100))
 const contextBeyond = computed(() =>
   agent.value ? beyondCompressThreshold(agent.value) : false,
 )
-const modelLocked = computed(() => Boolean(agent.value) || streaming.value)
+const modelLocked = computed(
+  () => (Boolean(agent.value) && !state.value.archived) || streaming.value,
+)
 const selectedModelInfo = computed(
   () => modelChoices.value.find(item => item.id === selectedModel.value) ?? null,
 )
@@ -241,6 +244,7 @@ const contextText = computed(() =>
 const turnText = computed(() =>
   agent.value ? `${agent.value.turn}/${agent.value.maxTurns}` : '—',
 )
+const turnStats = computed<TurnStat[]>(() => state.value.turnStats)
 const sessionLabel = computed(() => {
   const firstUser = agent.value?.messages.find(message => message.role === 'user')
   const line = firstUser?.text.split('\n')[0]?.trim() ?? ''
@@ -255,6 +259,24 @@ const selectedModelShort = computed(() => {
   const slash = label.lastIndexOf('/')
   return slash >= 0 ? label.slice(slash + 1) : label
 })
+
+const statusLabel = computed(() => t(`agent.status.${state.value.status}`))
+const statusActive = computed(
+  () =>
+    state.value.status === 'thinking' ||
+    state.value.status === 'generating' ||
+    state.value.status === 'working',
+)
+
+const historyOpen = ref(false)
+
+function toggleHistory(): void {
+  historyOpen.value = !historyOpen.value
+}
+
+function closeHistory(): void {
+  historyOpen.value = false
+}
 
 const openMenu = ref<'mode' | 'model' | 'thinking' | null>(null)
 
@@ -314,6 +336,7 @@ const streamSignature = computed(() => {
     lastTool?.text?.length ?? 0,
     current?.approvals.length ?? 0,
     current?.compactions.length ?? 0,
+    state.value.turnStats.length,
   ].join(':')
 })
 watch(
@@ -323,6 +346,14 @@ watch(
     if (el) el.scrollTop = el.scrollHeight
   },
   { flush: 'post' },
+)
+
+/** 载入历史后按当前供应商配置校验模型；已删除的模型回退到默认。 */
+watch(
+  () => state.value.archived,
+  archived => {
+    if (archived) syncSelection()
+  },
 )
 
 /** 每次压缩让用量条闪一次；600ms 后移除 class（组件卸载时清理计时器）。 */
@@ -360,6 +391,12 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
   return `${bytes} B`
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '—'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(1)}s`
 }
 
 function thinkingLabel(level: string): string {
@@ -498,9 +535,28 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       <span class="spacer" />
       <span
         v-if="agent"
+        class="status-text"
+        :class="[state.status, { active: statusActive }]"
+      >{{ statusLabel }}</span>
+      <span
+        v-if="agent"
         class="turn"
         :title="t('agent.turn')"
       >{{ turnText }}</span>
+      <button
+        v-if="agent"
+        type="button"
+        class="icon-btn"
+        :class="{ active: historyOpen }"
+        :title="t('agent.history')"
+        :aria-label="t('agent.history')"
+        @click="toggleHistory"
+      >
+        <AppIcon
+          name="history"
+          :size="15"
+        />
+      </button>
       <button
         v-if="streaming"
         type="button"
@@ -528,6 +584,17 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         />
       </button>
     </header>
+
+    <div
+      v-if="historyOpen"
+      class="history-panel"
+    >
+      <AgentSessions
+        :controller="props.controller"
+        @select="closeHistory"
+        @new-session="closeHistory"
+      />
+    </div>
 
     <div
       ref="streamEl"
@@ -692,6 +759,39 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           {{ t('agent.approval.resolving') }}
         </div>
       </div>
+
+      <div
+        v-if="turnStats.length > 0"
+        class="turn-stats"
+      >
+        <div class="turn-stats-head">
+          {{ t('agent.turnUsage') }}
+        </div>
+        <div
+          v-for="stat in turnStats"
+          :key="stat.turn"
+          class="turn-stat"
+        >
+          <span class="stat-turn">#{{ stat.turn }}</span>
+          <span
+            class="stat-in"
+            :title="t('agent.inputTokens')"
+          >{{ t('agent.statIn') }} {{ formatTokens(stat.input) }}</span>
+          <span
+            class="stat-out"
+            :title="t('agent.outputTokens')"
+          >{{ t('agent.statOut') }} {{ formatTokens(stat.output) }}</span>
+          <span
+            v-if="stat.cached > 0"
+            class="stat-cache"
+            :title="t('agent.cachedTokens')"
+          >⚡ {{ formatTokens(stat.cached) }}</span>
+          <span
+            class="stat-time"
+            :title="t('agent.duration')"
+          >{{ formatDuration(stat.durationMs) }}</span>
+        </div>
+      </div>
     </div>
 
     <div
@@ -734,6 +834,17 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         v-if="/40[13]/.test(state.error.message)"
         class="error-hint"
       >{{ t('agent.authHint') }}</span>
+    </div>
+
+    <div
+      v-if="state.archived"
+      class="archive-banner"
+    >
+      <AppIcon
+        name="history"
+        :size="13"
+      />
+      <span>{{ t('agent.archivedHint') }}</span>
     </div>
 
     <div class="composer">
@@ -959,6 +1070,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 <style scoped>
 .agent-body {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -1020,9 +1132,67 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 .turn {
+  flex: none;
   color: var(--fg-faint);
   font: 10.5px var(--font-mono);
   white-space: nowrap;
+}
+
+.status-text {
+  flex: none;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.status-text.thinking,
+.status-text.generating,
+.status-text.working {
+  color: var(--accent);
+}
+
+.status-text.thinking.active,
+.status-text.generating.active,
+.status-text.working.active {
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+.status-text.waiting {
+  color: var(--yellow);
+}
+
+.status-text.done {
+  color: var(--green);
+}
+
+.status-text.error {
+  color: var(--red);
+}
+
+.status-text.archived {
+  color: var(--fg-faint);
+}
+
+@keyframes status-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.history-panel {
+  position: absolute;
+  top: 36px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.icon-btn.active {
+  background: var(--panel-3);
+  color: var(--accent);
 }
 
 .icon-btn {
@@ -1449,6 +1619,65 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   color: var(--fg-faint);
   font-size: 10.5px;
   text-align: right;
+}
+
+/* 每轮 token 用量 */
+.turn-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 2px 2px;
+  border-top: 1px dashed var(--border);
+}
+
+.turn-stats-head {
+  color: var(--fg-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.turn-stat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fg-faint);
+  font: 10.5px var(--font-mono);
+}
+
+.stat-turn {
+  width: 24px;
+  color: var(--fg-dim);
+}
+
+.stat-in {
+  color: var(--accent);
+}
+
+.stat-out {
+  color: var(--green);
+}
+
+.stat-cache {
+  color: var(--fg-faint);
+}
+
+.stat-time {
+  margin-left: auto;
+  color: var(--fg-faint);
+}
+
+.archive-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--fg-dim);
+  font-size: 10.5px;
 }
 
 /* yolo 确认 */

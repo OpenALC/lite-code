@@ -544,3 +544,105 @@ describe('订阅与不可变状态', () => {
     expect(h.controller.getState().draft).toBe('hello')
   })
 })
+
+describe('活动状态与每轮 token', () => {
+  it('状态依次经历思考/生成/工作/等待审批/恢复/完成', async () => {
+    const h = harness()
+    await h.controller.send('hi')
+    expect(h.controller.getState().status).toBe('thinking')
+    expect(h.controller.getState().archived).toBe(false)
+
+    h.emit(textDelta('Hel'))
+    expect(h.controller.getState().status).toBe('generating')
+
+    h.emit({ type: 'agent:tool_start', session_id: 's1', call_id: 'c1', name: 'shell' })
+    expect(h.controller.getState().status).toBe('working')
+
+    h.emit(approvalRequired(7))
+    expect(h.controller.getState().status).toBe('waiting')
+    expect(h.controller.getState().streaming).toBe(false)
+
+    await h.controller.resolve(7, 'allow_once')
+    expect(h.controller.getState().status).toBe('working')
+
+    h.emit(done())
+    expect(h.controller.getState().status).toBe('done')
+  })
+
+  it('usage 事件按轮累加，done 写入 turnStat', async () => {
+    const h = harness()
+    await h.controller.send('hi')
+    h.emit({ type: 'agent:usage', session_id: 's1', input: 100, output: 20, cached: 10 })
+    h.emit({ type: 'agent:usage', session_id: 's1', input: 300, output: 40, cached: 30 })
+
+    expect(h.controller.getState().agent?.usage).toEqual({
+      input: 300,
+      output: 40,
+      cached: 30,
+    })
+
+    h.emit({
+      type: 'agent:session_state',
+      session: sessionInfo({ turn: 1 }),
+    })
+    h.emit(done())
+
+    const stats = h.controller.getState().turnStats
+    expect(stats).toHaveLength(1)
+    expect(stats[0]).toMatchObject({
+      turn: 1,
+      input: 400,
+      output: 60,
+      cached: 40,
+      stopReason: 'end_turn',
+    })
+    expect(stats[0]?.durationMs).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('历史会话', () => {
+  it('载入历史为只读视图，清理审批并在发送时带上下文新建会话', async () => {
+    const source = harness()
+    await source.controller.send('旧问题')
+    source.emit(textDelta('旧回答'))
+    source.emit({
+      type: 'agent:tool_start',
+      session_id: 's1',
+      call_id: 'c1',
+      name: 'shell',
+    })
+    source.emit(approvalRequired(3))
+    const previous = source.controller.getState()
+    const stored = {
+      id: previous.agent!.sessionId,
+      title: '旧会话',
+      savedAt: 1,
+      mode: previous.mode,
+      model: 'gpt-5',
+      thinking: 'high',
+      turnStats: previous.turnStats,
+      agent: previous.agent!,
+    }
+
+    const h = harness()
+    expect(h.controller.loadHistory(stored)).toBe(true)
+    const state = h.controller.getState()
+    expect(state.archived).toBe(true)
+    expect(state.status).toBe('archived')
+    expect(state.agent?.approvals).toHaveLength(0)
+    expect(state.agent?.tools[0]?.status).toBe('error')
+
+    // 历史视图允许重新选择模型；发送时新建会话。
+    h.controller.setModel('other-model', 'low')
+    expect(h.controller.getState().model).toBe('other-model')
+
+    await h.controller.send('继续')
+    expect(h.created).toEqual(['auto'])
+    expect(h.selections).toEqual([{ model: 'other-model', thinking: 'low' }])
+    const wire = h.sent[0]?.text ?? ''
+    expect(wire).toContain('以下是之前会话的记录')
+    expect(wire).toContain('旧回答')
+    expect(wire).toContain('继续')
+    expect(h.controller.getState().archived).toBe(false)
+  })
+})

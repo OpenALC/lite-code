@@ -1726,6 +1726,104 @@ async function call(command: string, args: Record<string, unknown>): Promise<Bri
   }
 }
 
+// ==== Agent 会话历史 ====
+
+export interface HistorySummary {
+  id: string
+  title: string
+  savedAt: number
+  mode: SessionMode
+  model: string
+  turn: number
+  messages: number
+}
+
+const HISTORY_FALLBACK_KEY = 'lc.agentHistory'
+
+function fallbackHistory(): Record<string, unknown> {
+  try {
+    const raw = localStorage.getItem(HISTORY_FALLBACK_KEY)
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function fallbackSaveHistory(): void {
+  try {
+    localStorage.setItem(HISTORY_FALLBACK_KEY, JSON.stringify(fallbackHistory()))
+  } catch {
+    // 浏览器演示模式的配额失败不影响主流程。
+  }
+}
+
+function summaryOf(id: string, value: unknown): HistorySummary | null {
+  if (!value || typeof value !== 'object') return null
+  const item = value as Record<string, unknown>
+  const agent = (
+    item.agent && typeof item.agent === 'object' ? item.agent : {}
+  ) as Record<string, unknown>
+  return {
+    id,
+    title: typeof item.title === 'string' ? item.title : '',
+    savedAt: Number(item.savedAt ?? 0),
+    mode: (item.mode ?? 'auto') as SessionMode,
+    model: typeof item.model === 'string' ? item.model : '',
+    turn: Number(agent.turn ?? 0),
+    messages: Array.isArray(agent.messages) ? agent.messages.length : 0,
+  }
+}
+
+export async function historyList(): Promise<BridgeResult<HistorySummary[]>> {
+  if (!isTauri()) {
+    const items = Object.entries(fallbackHistory())
+      .map(([id, value]) => summaryOf(id, value))
+      .filter((item): item is HistorySummary => item !== null)
+      .sort((a, b) => b.savedAt - a.savedAt)
+    return { ok: true, data: items, fallback: true }
+  }
+  return invokeCustom<HistorySummary[]>('history_list')
+}
+
+export async function historyLoad(id: string): Promise<BridgeResult<unknown>> {
+  if (!isTauri()) {
+    const value = fallbackHistory()[id]
+    if (!value) {
+      return {
+        ok: false,
+        error: { code: 'not_found', message: '会话不存在', detail: null },
+        fallback: false,
+      }
+    }
+    return { ok: true, data: value, fallback: true }
+  }
+  return invokeCustom<unknown>('history_load', { id })
+}
+
+export async function historySave(
+  id: string,
+  payload: unknown,
+): Promise<BridgeResult<null>> {
+  if (!isTauri()) {
+    const store = fallbackHistory()
+    store[id] = payload
+    fallbackSaveHistory()
+    return { ok: true, data: null, fallback: true }
+  }
+  return invokeCustom<null>('history_save', { id, payload })
+}
+
+export async function historyDelete(id: string): Promise<BridgeResult<null>> {
+  if (!isTauri()) {
+    const store = fallbackHistory()
+    delete store[id]
+    fallbackSaveHistory()
+    return { ok: true, data: null, fallback: true }
+  }
+  return invokeCustom<null>('history_delete', { id })
+}
+
 // ==== 供应商管理 ====
 
 function demoProvidersView(): ProvidersView {

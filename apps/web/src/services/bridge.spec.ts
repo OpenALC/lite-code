@@ -28,6 +28,10 @@ import {
   gitStage,
   gitStatus,
   gitUnstage,
+  historyDelete,
+  historyList,
+  historyLoad,
+  historySave,
   isTauri,
   onCoreEvent,
   openWorkspace,
@@ -637,6 +641,43 @@ describe('Agent 会话命令', () => {
         cmd: 'session_create',
         args: { mode: 'auto', task_id: null, model: 'gpt-5', thinking: 'high' },
       },
+    ])
+  })
+
+  it('Tauri：history_* 命令透传 id 与 payload', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const summary = {
+      id: 's-1',
+      title: '会话',
+      savedAt: 1,
+      mode: 'auto',
+      model: 'gpt-5',
+      turn: 2,
+      messages: 3,
+    }
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === 'history_list') return [summary]
+        if (cmd === 'history_load') return { title: '会话' }
+        return null
+      },
+    })
+
+    const listed = await historyList()
+    const loaded = await historyLoad('s-1')
+    const saved = await historySave('s-1', { title: '会话' })
+    const deleted = await historyDelete('s-1')
+
+    expect(listed.ok && listed.data).toEqual([summary])
+    expect(loaded.ok && loaded.data).toEqual({ title: '会话' })
+    expect(saved.ok).toBe(true)
+    expect(deleted.ok).toBe(true)
+    expect(calls).toEqual([
+      { cmd: 'history_list', args: {} },
+      { cmd: 'history_load', args: { id: 's-1' } },
+      { cmd: 'history_save', args: { id: 's-1', payload: { title: '会话' } } },
+      { cmd: 'history_delete', args: { id: 's-1' } },
     ])
   })
 

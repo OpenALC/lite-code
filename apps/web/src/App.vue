@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AgentPanel from './components/AgentPanel.vue'
+import AgentSessions from './components/AgentSessions.vue'
 import AppIcon from './components/AppIcon.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import DbPanel from './components/DbPanel.vue'
@@ -17,6 +18,7 @@ import TaskList from './components/TaskList.vue'
 import TaskStatusBar from './components/TaskStatusBar.vue'
 import TaskWorkbench from './components/TaskWorkbench.vue'
 import { createAgentSession } from './services/agentSession'
+import { createHistoryRecorder } from './services/agentHistory'
 import {
   agentCancel,
   agentSend,
@@ -90,10 +92,24 @@ const unsubPrefs = subscribePrefs(next => {
 // 右侧功能栏：Agent / 任务工作台 / Git / 数据库，四者共用一栏，编辑器始终保留。
 type RightTab = 'agent' | 'workbench' | 'git' | 'db'
 type SidebarView = 'explorer' | 'search' | 'tasks'
+type AppMode = 'editor' | 'agent'
+const APP_MODE_KEY = 'lc.appMode'
 const rightTab = ref<RightTab>('agent')
 const sidebarView = ref<SidebarView>('explorer')
 const sidebarVisible = ref(true)
 const rightVisible = ref(true)
+const appMode = ref<AppMode>(
+  localStorage.getItem(APP_MODE_KEY) === 'agent' ? 'agent' : 'editor',
+)
+
+function setAppMode(mode: AppMode): void {
+  appMode.value = mode
+  try {
+    localStorage.setItem(APP_MODE_KEY, mode)
+  } catch {
+    // 隐私模式下 localStorage 不可用时只影响持久化。
+  }
+}
 
 const agentSession = createAgentSession({
   // 控制器只关心 mode/model/thinking；task 绑定由任务工作台单独处理。
@@ -103,6 +119,8 @@ const agentSession = createAgentSession({
   resolveApproval,
   onCoreEvent,
 })
+
+const historyRecorder = createHistoryRecorder(agentSession)
 
 const taskSession = createTaskController({
   taskList,
@@ -411,6 +429,7 @@ function runMenu(action: () => void | Promise<void>): void {
 // 设置作为编辑器区的独立页签（VS Code 行为），不在窄侧栏里硬塞表单。
 const SETTINGS_TAB_ID = '__settings__'
 function openSettings(): void {
+  setAppMode('editor')
   openTab({
     id: SETTINGS_TAB_ID,
     title: t('activity.settings'),
@@ -421,6 +440,7 @@ function openSettings(): void {
 
 const PROVIDERS_TAB_ID = '__providers__'
 function openProviders(): void {
+  setAppMode('editor')
   openTab({
     id: PROVIDERS_TAB_ID,
     title: t('providers.title'),
@@ -432,6 +452,7 @@ function openProviders(): void {
 const EXTENSIONS_TAB_ID = '__extensions__'
 const extensionsMounted = ref(false)
 function openExtensions(): void {
+  setAppMode('editor')
   extensionsMounted.value = true
   openTab({
     id: EXTENSIONS_TAB_ID,
@@ -460,6 +481,7 @@ function refreshGit(): Promise<void> {
 }
 
 function selectRight(tab: RightTab): void {
+  setAppMode('editor')
   rightTab.value = tab
   rightVisible.value = true
   if (tab === 'git') void refreshGit()
@@ -467,6 +489,7 @@ function selectRight(tab: RightTab): void {
 }
 
 function selectSidebar(view: SidebarView): void {
+  setAppMode('editor')
   sidebarView.value = view
   sidebarVisible.value = true
 }
@@ -540,6 +563,7 @@ onBeforeUnmount(() => {
   unsubLsp()
   unsubAgentContext()
   unsubTabs()
+  historyRecorder.dispose()
   agentSession.dispose()
   taskSession.dispose()
   dbSession.dispose()
@@ -693,6 +717,39 @@ onBeforeUnmount(() => {
         class="activity"
         :aria-label="t('activity.explorer')"
       >
+        <div
+          class="mode-switch"
+          role="group"
+          :aria-label="t('activity.mode')"
+        >
+          <button
+            type="button"
+            class="act-btn"
+            :class="{ active: appMode === 'editor' }"
+            :title="t('activity.modeEditor')"
+            :aria-pressed="appMode === 'editor'"
+            @click="setAppMode('editor')"
+          >
+            <AppIcon
+              name="code"
+              :size="16"
+            />
+          </button>
+          <button
+            type="button"
+            class="act-btn"
+            :class="{ active: appMode === 'agent' }"
+            :title="t('activity.modeAgent')"
+            :aria-pressed="appMode === 'agent'"
+            @click="setAppMode('agent')"
+          >
+            <AppIcon
+              name="agent"
+              :size="16"
+            />
+          </button>
+        </div>
+        <div class="act-divider" />
         <button
           type="button"
           class="act-btn"
@@ -769,7 +826,7 @@ onBeforeUnmount(() => {
       </nav>
 
       <aside
-        v-show="sidebarVisible"
+        v-show="sidebarVisible && appMode === 'editor'"
         class="sidebar"
         :style="{ width: `${sidebarWidth}px` }"
       >
@@ -886,7 +943,10 @@ onBeforeUnmount(() => {
         @pointerdown="startResize('sidebar', $event)"
       />
 
-      <main class="editor-col">
+      <main
+        v-show="appMode === 'editor'"
+        class="editor-col"
+      >
         <TabBar />
         <div class="editor-card">
           <ExtensionsPanel
@@ -953,14 +1013,14 @@ onBeforeUnmount(() => {
       </main>
 
       <div
-        v-if="rightVisible"
+        v-if="appMode === 'editor' && rightVisible"
         class="resizer"
         role="separator"
         aria-orientation="vertical"
         @pointerdown="startResize('right', $event)"
       />
       <aside
-        v-if="rightVisible"
+        v-if="appMode === 'editor' && rightVisible"
         class="right"
         :style="{ width: `${rightWidth}px` }"
       >
@@ -1024,6 +1084,18 @@ onBeforeUnmount(() => {
           />
         </div>
       </aside>
+
+      <template v-if="appMode === 'agent'">
+        <aside class="agent-sessions">
+          <AgentSessions :controller="agentSession" />
+        </aside>
+        <main class="agent-main">
+          <AgentPanel
+            :controller="agentSession"
+            @manage-providers="openProviders"
+          />
+        </main>
+      </template>
     </div>
 
     <footer class="statusbar">
@@ -1318,6 +1390,48 @@ onBeforeUnmount(() => {
 
 .act-space {
   flex: 1;
+}
+
+.mode-switch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding-bottom: 5px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.act-divider {
+  width: 22px;
+  height: 1px;
+  margin: 2px 0 4px;
+  background: var(--border);
+}
+
+.agent-sessions {
+  flex: none;
+  width: 268px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.agent-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
 }
 
 .sidebar {

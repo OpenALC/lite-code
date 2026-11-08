@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-08，main HEAD：preview.15 发布提交（见 `git log`）；版本 `0.6.1-preview.15`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-08，main HEAD：preview.16 发布提交（见 `git log`）；版本 `0.6.1-preview.16`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14` 已发布；`preview.15` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15` 已发布；`preview.16` 发布中。
 
 ## 当前位置一览
 
@@ -72,14 +72,14 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14` 已发布；`preview.15` 发布中（流滚动修复） |
+| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15` 已发布；`preview.16` 发布中（历史/状态/双模式） |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ preview.14 发布与 CI 全绿；preview.15 推送后跟踪 CI |
+| main CI | ✅ preview.15 发布与 CI 全绿；preview.16 本地门禁全绿，推送后跟踪 CI |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
 | 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏、tmp 0600、备份脱敏 |
 | Agent 模型/思考 | ✅ 会话前选择模型与思考挡位，`session_create` 透传；无会话显示上下文预算与新会话按钮 |
@@ -87,6 +87,9 @@
 | 选区加入 Agent | ✅ 编辑器右键“添加到 Agent 对话”，路径:行号 + 围栏代码块；演示缓冲区回退标题、20k 截断 |
 | Agent UI（Demo 对齐） | ✅ 会话头/消息流/工具卡/审批卡/压缩行/一体化 composer（pill + 上下文条）/附件 chips；AI 消息安全渲染 Markdown |
 | Agent 流滚动 | ✅ `.stream` 子项 `flex: none`，工具卡/审批卡多时不再被压缩；23 条会话滚到底验证 |
+| Agent 会话历史 | ✅ 快照落盘 `data_dir/agent-history`，列表/切换/删除；历史视图只读，续聊新建会话并注入最近 12 条上下文 |
+| Agent 状态与用量 | ✅ 思考/生成/工作/等待审批/完成/出错；每轮输入/输出/缓存 token 与耗时 |
+| 双模式布局 | ✅ 活动栏「编辑器 / Agent」切换并持久化；Agent 模式为会话列表 + 全宽对话 |
 
 ## 本轮完成
 
@@ -310,6 +313,15 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
 
+## preview.16：会话历史 / 活动状态 / 每轮 token / 双模式
+
+- 历史：快照落盘到 `data_dir/agent-history`，头部/侧栏列出会话，支持切换与两次点击删除；
+  载入为只读视图，发送时新建会话并注入最近 12 条上下文。
+- 状态：思考中/生成中/工作中/等待审批/已完成/出错/历史会话；头部呼吸提示。
+- 用量：每轮结束记录输入、输出、缓存 token 与耗时；usage 按 LLM 调用累加。
+- 双模式：活动栏顶部「编辑器 / Agent」切换并写入 localStorage；Agent 模式为会话列表 + 全宽对话。
+- 验证：Web 356（21 文件）、Rust 604；真机历史保存/切换/续聊、状态与用量、亮暗主题通过。
+
 ## preview.15：Agent 消息流滚动修复
 
 - `.stream` 直接子项统一 `flex: none`：工具卡/审批卡较多时不再被压成细条，内容超出后滚动。
@@ -389,5 +401,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 92 · lsp stdio 2 · web 352（21 文件）· 合计 **953**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18）。
+lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 95 · lsp stdio 2 · web 356（21 文件）· 合计 **960**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、history 3）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
