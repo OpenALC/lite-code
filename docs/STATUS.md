@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-06，main HEAD：preview.11 发布提交（见 `git log`）；版本 `0.6.1-preview.11`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-08，main HEAD：`9bbc852`（preview.11 发布提交）；版本 `0.6.1-preview.11`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -79,7 +79,7 @@
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ `b6713f1` 全绿；preview.11 门禁全绿，等待推送后 CI |
+| main CI | ✅ `b6713f1` 全绿；preview.11 本地门禁全绿，等待推送后 CI |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
 | 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏、tmp 0600、备份脱敏 |
 
@@ -351,5 +351,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 424 · lc-cli 33 · lc-proto 10 · lc-desktop 86 · web 320（17 文件）· 合计 **875**（含 `db_agent` 集成 2 项、`fs::search` 14 项）。
+lc-core 460 · lc-cli 33 · lc-proto 10 · lc-desktop 90 · lsp stdio 2 · web 338（19 文件）· 合计 **935**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。

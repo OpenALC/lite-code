@@ -34,7 +34,7 @@ lite-code/
 ├─ crates/
 │  ├─ lc-proto/                 # DTO + codegen
 │  ├─ lc-core/                  # 服务实现
-│  │  └─ src/{runtime,fs,watch,process,git,ssh,lsp,agent,mcp,llm,config,secrets}/
+│  │  └─ src/{runtime,fs,watch,process,git,ssh,lsp,ext,agent,mcp,llm,config,secrets}/
 │  └─ lc-cli/                   # headless 前端
 ├─ apps/
 │  ├─ desktop/src-tauri/        # 薄壳
