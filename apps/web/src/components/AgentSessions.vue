@@ -6,9 +6,24 @@ import AppIcon from './AppIcon.vue'
 import type { AgentSessionController } from '../services/agentSession'
 import { flushHistory, loadStoredSession } from '../services/agentHistory'
 import { historyDelete, historyList, type HistorySummary } from '../services/bridge'
+import { samePath, type WorkspaceEntry } from '../services/workspaceStore'
 
-const props = defineProps<{ controller: AgentSessionController; closable?: boolean }>()
-const emit = defineEmits<{ select: []; 'new-session': []; close: [] }>()
+const props = defineProps<{
+  controller: AgentSessionController
+  closable?: boolean
+  workspace?: string
+  workspaces?: WorkspaceEntry[]
+  activeWorkspace?: string
+  showWorkspaces?: boolean
+}>()
+const emit = defineEmits<{
+  select: []
+  'new-session': []
+  close: []
+  'select-workspace': [root: string]
+  'remove-workspace': [root: string]
+  'add-workspace': []
+}>()
 const { t } = useI18n()
 
 const state = ref(props.controller.getState())
@@ -16,11 +31,20 @@ const unsubscribe = props.controller.subscribe(next => {
   state.value = next
 })
 
-const items = ref<HistorySummary[]>([])
+const allItems = ref<HistorySummary[]>([])
 const loading = ref(false)
 const error = ref('')
 const confirmId = ref<string | null>(null)
+const confirmWorkspace = ref<string | null>(null)
 let confirmTimer: ReturnType<typeof setTimeout> | null = null
+let workspaceTimer: ReturnType<typeof setTimeout> | null = null
+
+const items = computed(() =>
+  allItems.value.filter(item => {
+    if (!props.workspace) return !item.workspace
+    return !item.workspace || samePath(item.workspace, props.workspace)
+  }),
+)
 
 const activeId = computed(() => state.value.agent?.sessionId ?? '')
 
@@ -30,7 +54,7 @@ async function refresh(): Promise<void> {
   await flushHistory()
   const res = await historyList()
   loading.value = false
-  if (res.ok) items.value = res.data
+  if (res.ok) allItems.value = res.data
   else error.value = res.error.message
 }
 
@@ -48,6 +72,33 @@ function askDelete(id: string): void {
   confirmTimer = setTimeout(clearConfirm, 3000)
 }
 
+function clearWorkspaceConfirm(): void {
+  confirmWorkspace.value = null
+  if (workspaceTimer !== null) {
+    clearTimeout(workspaceTimer)
+    workspaceTimer = null
+  }
+}
+
+function askRemoveWorkspace(root: string): void {
+  clearWorkspaceConfirm()
+  confirmWorkspace.value = root
+  workspaceTimer = setTimeout(clearWorkspaceConfirm, 3000)
+}
+
+function removeWorkspace(root: string): void {
+  if (confirmWorkspace.value !== root) {
+    askRemoveWorkspace(root)
+    return
+  }
+  clearWorkspaceConfirm()
+  emit('remove-workspace', root)
+}
+
+function selectWorkspace(root: string): void {
+  emit('select-workspace', root)
+}
+
 async function remove(item: HistorySummary): Promise<void> {
   if (confirmId.value !== item.id) {
     askDelete(item.id)
@@ -59,7 +110,7 @@ async function remove(item: HistorySummary): Promise<void> {
     error.value = res.error.message
     return
   }
-  items.value = items.value.filter(entry => entry.id !== item.id)
+  allItems.value = allItems.value.filter(entry => entry.id !== item.id)
 }
 
 async function open(item: HistorySummary): Promise<void> {
@@ -108,20 +159,113 @@ watch(
   },
 )
 
+watch(
+  () => props.workspace,
+  () => {
+    void refresh()
+  },
+)
+
+function onHistoryChanged(): void {
+  void refresh()
+}
+
 onMounted(() => {
+  window.addEventListener('history:changed', onHistoryChanged)
   void refresh()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('history:changed', onHistoryChanged)
   unsubscribe()
   clearConfirm()
+  clearWorkspaceConfirm()
 })
 </script>
 
 <template>
   <div class="sessions">
+    <div
+      v-if="props.showWorkspaces"
+      class="workspace-section"
+    >
+      <div class="sessions-head">
+        <span class="sessions-title">{{ t('agent.workspaces') }}</span>
+        <button
+          type="button"
+          class="icon-btn"
+          :title="t('agent.addWorkspace')"
+          :aria-label="t('agent.addWorkspace')"
+          @click="emit('add-workspace')"
+        >
+          <AppIcon
+            name="plus"
+            :size="14"
+          />
+        </button>
+      </div>
+      <div class="workspace-list">
+        <p
+          v-if="!props.workspaces || props.workspaces.length === 0"
+          class="sessions-note"
+        >
+          {{ t('agent.noWorkspaces') }}
+        </p>
+        <div
+          v-for="item in props.workspaces"
+          :key="item.root"
+          class="workspace-row"
+          :class="{
+            active: samePath(item.root, props.activeWorkspace ?? ''),
+            danger: item.root === confirmWorkspace,
+          }"
+          role="button"
+          tabindex="0"
+          @click="selectWorkspace(item.root)"
+          @keydown.enter.prevent="selectWorkspace(item.root)"
+        >
+          <AppIcon
+            name="folder"
+            :size="13"
+            class="workspace-icon"
+          />
+          <div class="workspace-main">
+            <span class="workspace-name">{{ item.name }}</span>
+            <span
+              class="workspace-path"
+              :title="item.root"
+            >{{ item.root }}</span>
+          </div>
+          <button
+            type="button"
+            class="session-delete"
+            :title="item.root === confirmWorkspace ? t('agent.removeWorkspaceConfirm') : t('agent.removeWorkspace')"
+            :aria-label="t('agent.removeWorkspace')"
+            @click.stop="removeWorkspace(item.root)"
+          >
+            <AppIcon
+              name="x"
+              :size="12"
+            />
+          </button>
+        </div>
+        <button
+          v-if="!props.workspaces || props.workspaces.length === 0"
+          type="button"
+          class="workspace-add"
+          @click="emit('add-workspace')"
+        >
+          <AppIcon
+            name="folder"
+            :size="13"
+          />
+          {{ t('agent.addWorkspace') }}
+        </button>
+      </div>
+    </div>
+
     <div class="sessions-head">
-      <span class="sessions-title">{{ t('agent.historyTitle') }}</span>
+      <span class="sessions-title">{{ props.showWorkspaces ? t('agent.conversations') : t('agent.historyTitle') }}</span>
       <button
         type="button"
         class="icon-btn"
@@ -230,6 +374,109 @@ onBeforeUnmount(() => {
   gap: 6px;
   padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border);
+}
+
+.workspace-section {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  max-height: 42%;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-section .sessions-head {
+  height: 32px;
+}
+
+.workspace-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 6px;
+}
+
+.workspace-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.workspace-row:hover {
+  background: var(--panel-2);
+}
+
+.workspace-row.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.workspace-row.danger {
+  border-color: var(--red);
+}
+
+.workspace-icon {
+  flex: none;
+  color: var(--fg-faint);
+}
+
+.workspace-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.workspace-name {
+  overflow: hidden;
+  color: var(--fg-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-row.active .workspace-name {
+  color: var(--fg);
+}
+
+.workspace-path {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font: 9.5px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-row:hover .session-delete,
+.workspace-row.danger .session-delete {
+  opacity: 1;
+}
+
+.workspace-add {
+  flex: none;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 2px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.workspace-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .sessions-title {

@@ -617,6 +617,7 @@ describe('历史会话', () => {
       id: previous.agent!.sessionId,
       title: '旧会话',
       savedAt: 1,
+      workspace: 'D:/code/project',
       mode: previous.mode,
       model: 'gpt-5',
       thinking: 'high',

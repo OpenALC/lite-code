@@ -39,6 +39,7 @@ export interface StoredAgentSession {
   id: string
   title: string
   savedAt: number
+  workspace: string
   mode: SessionMode
   model: string | null
   thinking: string | null

@@ -20,6 +20,14 @@ import TaskWorkbench from './components/TaskWorkbench.vue'
 import { createAgentSession } from './services/agentSession'
 import { createHistoryRecorder } from './services/agentHistory'
 import {
+  loadWorkspaces,
+  removeWorkspace,
+  samePath,
+  saveWorkspaces,
+  upsertWorkspace,
+  type WorkspaceEntry,
+} from './services/workspaceStore'
+import {
   agentCancel,
   agentSend,
   dbConnect,
@@ -37,10 +45,12 @@ import {
   gitStage,
   gitStatus,
   gitUnstage,
+  historyMigrateWorkspace,
   isTauri,
   onCoreEvent,
   lspStartPlugins,
   onLspDiagnostics,
+  openWorkspace,
   pickWorkspace,
   resolveApproval,
   sessionCreate,
@@ -120,7 +130,7 @@ const agentSession = createAgentSession({
   onCoreEvent,
 })
 
-const historyRecorder = createHistoryRecorder(agentSession)
+const historyRecorder = createHistoryRecorder(agentSession, () => projectRoot.value)
 
 const taskSession = createTaskController({
   taskList,
@@ -215,17 +225,88 @@ const projectName = computed(() => {
   return parts.length > 0 ? parts[parts.length - 1] : projectRoot.value
 })
 const workspaceError = ref<string | null>(null)
+const workspaces = ref<WorkspaceEntry[]>(loadWorkspaces())
+const workspaceSwitching = ref(false)
+
+function rememberWorkspace(root: string): void {
+  if (!root) return
+  const next = upsertWorkspace(workspaces.value, root)
+  workspaces.value = next
+  saveWorkspaces(next)
+}
+
+function agentBusy(): boolean {
+  const state = agentSession.getState()
+  if (state.streaming) return true
+  return Boolean(
+    state.agent && !state.archived && state.agent.approvals.length > 0,
+  )
+}
+
+async function activateWorkspace(root: string): Promise<void> {
+  if (workspaceSwitching.value || samePath(root, projectRoot.value)) return
+  if (agentBusy()) {
+    workspaceError.value = t('agent.workspaceBusy')
+    return
+  }
+  workspaceSwitching.value = true
+  workspaceError.value = null
+  const res = await openWorkspace(root)
+  workspaceSwitching.value = false
+  if (!res.ok) {
+    workspaceError.value = res.error.message
+    return
+  }
+  const next = res.data.root ?? root
+  projectRoot.value = next
+  rememberWorkspace(next)
+  agentSession.resetSession()
+  agentSession.setDraft('')
+  treeRefresh.value += 1
+  startLsp()
+  void refreshGit()
+  void dbSession.refresh()
+  void taskSession.refresh()
+}
+
+function removeWorkspaceEntry(root: string): void {
+  if (samePath(root, projectRoot.value) && agentBusy()) {
+    workspaceError.value = t('agent.workspaceBusy')
+    return
+  }
+  const next = removeWorkspace(workspaces.value, root)
+  workspaces.value = next
+  saveWorkspaces(next)
+  if (samePath(root, projectRoot.value)) {
+    const fallback = next[0]
+    if (fallback) void activateWorkspace(fallback.root)
+  }
+}
 
 async function openWorkspaceDialog(): Promise<void> {
   workspaceError.value = null
+  if (agentBusy()) {
+    workspaceError.value = t('agent.workspaceBusy')
+    return
+  }
   const res = await pickWorkspace()
   if (!res.ok) {
     workspaceError.value = res.error.message
     return
   }
   if (res.data.root) {
-    projectRoot.value = res.data.root
+    const next = res.data.root
+    if (!samePath(next, projectRoot.value)) {
+      agentSession.resetSession()
+      agentSession.setDraft('')
+    }
+    projectRoot.value = next
+    rememberWorkspace(next)
+    treeRefresh.value += 1
     startLsp()
+    void refreshGit()
+    void dbSession.refresh()
+    void taskSession.refresh()
   }
 }
 
@@ -552,6 +633,12 @@ onMounted(() => {
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
+      rememberWorkspace(res.data.root)
+      void historyMigrateWorkspace(res.data.root).then(moved => {
+        if (moved.ok && moved.data > 0) {
+          window.dispatchEvent(new Event('history:changed'))
+        }
+      })
     } else if (!isTauri() && projectRoot.value === '') {
       projectRoot.value = 'workspace'
     }
@@ -1065,6 +1152,7 @@ onBeforeUnmount(() => {
           <AgentPanel
             v-if="rightTab === 'agent'"
             :controller="agentSession"
+            :workspace="projectRoot"
             @manage-providers="openProviders"
           />
           <TaskWorkbench
@@ -1087,11 +1175,27 @@ onBeforeUnmount(() => {
 
       <template v-if="appMode === 'agent'">
         <aside class="agent-sessions">
-          <AgentSessions :controller="agentSession" />
+          <AgentSessions
+            :controller="agentSession"
+            :workspace="projectRoot"
+            :workspaces="workspaces"
+            :active-workspace="projectRoot"
+            show-workspaces
+            @select-workspace="activateWorkspace"
+            @remove-workspace="removeWorkspaceEntry"
+            @add-workspace="openWorkspaceDialog"
+          />
         </aside>
         <main class="agent-main">
+          <p
+            v-if="workspaceError"
+            class="agent-error"
+          >
+            {{ workspaceError }}
+          </p>
           <AgentPanel
             :controller="agentSession"
+            :workspace="projectRoot"
             @manage-providers="openProviders"
           />
         </main>
@@ -1432,6 +1536,16 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: var(--r);
   overflow: hidden;
+}
+
+.agent-error {
+  flex: none;
+  margin: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--red);
+  background: var(--panel-2);
+  color: var(--red);
+  font-size: 11px;
 }
 
 .sidebar {

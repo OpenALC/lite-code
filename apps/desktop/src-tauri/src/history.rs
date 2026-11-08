@@ -19,6 +19,7 @@ pub struct HistoryEntry {
     pub id: String,
     pub title: String,
     pub saved_at: u64,
+    pub workspace: String,
     pub mode: String,
     pub model: String,
     pub turn: u32,
@@ -70,6 +71,11 @@ fn summarize(id: String, payload: &Value) -> HistoryEntry {
             .unwrap_or("未命名会话")
             .to_string(),
         saved_at: payload.get("savedAt").and_then(Value::as_u64).unwrap_or(0),
+        workspace: payload
+            .get("workspace")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         mode: payload
             .get("mode")
             .and_then(Value::as_str)
@@ -162,6 +168,53 @@ fn delete_in(dir: &Path, id: &str) -> Result<(), ErrorBody> {
     }
 }
 
+/// 旧版本历史没有 workspace 字段；启动时把它们归入当前工作区。
+fn migrate_workspace_in(dir: &Path, workspace: &str) -> Result<usize, ErrorBody> {
+    if workspace.trim().is_empty() || !dir.exists() {
+        return Ok(0);
+    }
+    let mut moved = 0;
+    for entry in
+        fs::read_dir(dir).map_err(|error| io_error(format!("读取会话目录失败：{error}")))?
+    {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(id) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if !valid_id(&id) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut payload) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some(object) = payload.as_object_mut() else {
+            continue;
+        };
+        let missing = object
+            .get("workspace")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty);
+        if !missing {
+            continue;
+        }
+        object.insert("workspace".into(), Value::String(workspace.into()));
+        save_in(dir, &id, &payload)?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
 #[tauri::command]
 pub fn history_list() -> Result<Vec<HistoryEntry>, ErrorBody> {
     list_in(&history_dir()?)
@@ -180,6 +233,11 @@ pub fn history_save(id: String, payload: Value) -> Result<(), ErrorBody> {
 #[tauri::command]
 pub fn history_delete(id: String) -> Result<(), ErrorBody> {
     delete_in(&history_dir()?, &id)
+}
+
+#[tauri::command]
+pub fn history_migrate_workspace(workspace: String) -> Result<usize, ErrorBody> {
+    migrate_workspace_in(&history_dir()?, &workspace)
 }
 
 #[cfg(test)]
@@ -203,6 +261,7 @@ mod tests {
         serde_json::json!({
             "title": title,
             "savedAt": saved_at,
+            "workspace": "/work/project",
             "mode": "auto",
             "model": "gpt-5",
             "turnStats": [],
@@ -223,6 +282,7 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].id, "s-2");
         assert_eq!(list[0].title, "第二个会话");
+        assert_eq!(list[0].workspace, "/work/project");
         assert_eq!(list[0].turn, 3);
         assert_eq!(list[0].messages, 2);
 
@@ -248,6 +308,27 @@ mod tests {
     fn non_object_payload_is_rejected() {
         let dir = temp_dir("bad-payload");
         assert!(save_in(&dir, "s-1", &serde_json::json!("text")).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_assigns_missing_workspace_once() {
+        let dir = temp_dir("migrate");
+        save_in(
+            &dir,
+            "s-1",
+            &serde_json::json!({
+                "title": "旧会话",
+                "savedAt": 1,
+                "agent": {"turn": 0, "messages": []}
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(migrate_workspace_in(&dir, "D:/work/a").unwrap(), 1);
+        assert_eq!(list_in(&dir).unwrap()[0].workspace, "D:/work/a");
+        assert_eq!(migrate_workspace_in(&dir, "D:/work/b").unwrap(), 0);
+        assert_eq!(list_in(&dir).unwrap()[0].workspace, "D:/work/a");
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -27,7 +27,7 @@ import {
   type ProviderView,
 } from '../services/bridge'
 
-const props = defineProps<{ controller: AgentSessionController }>()
+const props = defineProps<{ controller: AgentSessionController; workspace?: string }>()
 const emit = defineEmits<{ 'manage-providers': [] }>()
 const { t, te } = useI18n()
 
@@ -590,6 +590,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     >
       <AgentSessions
         :controller="props.controller"
+        :workspace="props.workspace"
         closable
         @select="closeHistory"
         @new-session="closeHistory"

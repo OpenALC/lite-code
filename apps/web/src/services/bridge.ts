@@ -1732,6 +1732,7 @@ export interface HistorySummary {
   id: string
   title: string
   savedAt: number
+  workspace: string
   mode: SessionMode
   model: string
   turn: number
@@ -1768,6 +1769,7 @@ function summaryOf(id: string, value: unknown): HistorySummary | null {
     id,
     title: typeof item.title === 'string' ? item.title : '',
     savedAt: Number(item.savedAt ?? 0),
+    workspace: typeof item.workspace === 'string' ? item.workspace : '',
     mode: (item.mode ?? 'auto') as SessionMode,
     model: typeof item.model === 'string' ? item.model : '',
     turn: Number(agent.turn ?? 0),
@@ -1822,6 +1824,25 @@ export async function historyDelete(id: string): Promise<BridgeResult<null>> {
     return { ok: true, data: null, fallback: true }
   }
   return invokeCustom<null>('history_delete', { id })
+}
+
+export async function historyMigrateWorkspace(
+  workspace: string,
+): Promise<BridgeResult<number>> {
+  if (!isTauri()) {
+    const store = fallbackHistory()
+    let moved = 0
+    for (const value of Object.values(store)) {
+      if (!value || typeof value !== 'object') continue
+      const item = value as Record<string, unknown>
+      if (typeof item.workspace === 'string' && item.workspace) continue
+      item.workspace = workspace
+      moved += 1
+    }
+    if (moved > 0) fallbackSaveHistory()
+    return { ok: true, data: moved, fallback: true }
+  }
+  return invokeCustom<number>('history_migrate_workspace', { workspace })
 }
 
 // ==== 供应商管理 ====

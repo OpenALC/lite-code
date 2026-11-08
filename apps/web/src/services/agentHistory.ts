@@ -18,7 +18,10 @@ export async function flushHistory(): Promise<void> {
 }
 
 /** 历史快照可能包含超长工具输出；落盘前截断，避免单文件无限增长。 */
-function compactSnapshot(state: AgentSessionState): StoredAgentSession | null {
+function compactSnapshot(
+  state: AgentSessionState,
+  workspace: string,
+): StoredAgentSession | null {
   const agent = state.agent
   if (!agent || state.streaming || state.archived || agent.messages.length === 0) {
     return null
@@ -29,6 +32,7 @@ function compactSnapshot(state: AgentSessionState): StoredAgentSession | null {
     id: agent.sessionId,
     title,
     savedAt: Date.now(),
+    workspace,
     mode: state.mode,
     model: state.model,
     thinking: state.thinking,
@@ -52,6 +56,7 @@ export interface HistoryRecorder {
 
 export function createHistoryRecorder(
   controller: AgentSessionController,
+  getWorkspace: () => string,
 ): HistoryRecorder {
   let timer: ReturnType<typeof setTimeout> | null = null
   let pending: AgentSessionState | null = null
@@ -64,7 +69,7 @@ export function createHistoryRecorder(
     }
     const state = pending ?? controller.getState()
     pending = null
-    const snapshot = compactSnapshot(state)
+    const snapshot = compactSnapshot(state, getWorkspace())
     if (!snapshot) return
     const json = JSON.stringify(snapshot)
     if (json === lastSaved) return
@@ -117,6 +122,7 @@ export async function loadStoredSession(
     id: typeof value.id === 'string' ? value.id : id,
     title: typeof value.title === 'string' ? value.title : '未命名会话',
     savedAt: Number(value.savedAt ?? 0),
+    workspace: typeof value.workspace === 'string' ? value.workspace : '',
     mode: (value.mode ?? 'auto') as StoredAgentSession['mode'],
     model: typeof value.model === 'string' ? value.model : null,
     thinking: typeof value.thinking === 'string' ? value.thinking : null,
