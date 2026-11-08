@@ -348,7 +348,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
         const created = await deps.sessionCreate(state.mode, state.model, state.thinking)
         if (disposed) return
         if (!created.ok) {
-          patch({ error: toAgentError(created.error) })
+          patch({ error: toAgentError(created.error), status: 'error' })
           return
         }
         current = createAgentState(created.data.session)
@@ -493,7 +493,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     const created = await deps.sessionCreate(mode, state.model, state.thinking)
     if (disposed) return false
     if (!created.ok) {
-      patch({ error: toAgentError(created.error) })
+      patch({ error: toAgentError(created.error), status: 'error' })
       return false
     }
     const agent = createAgentState(created.data.session)

@@ -544,7 +544,6 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         :title="t('agent.turn')"
       >{{ turnText }}</span>
       <button
-        v-if="agent"
         type="button"
         class="icon-btn"
         :class="{ active: historyOpen }"
@@ -591,8 +590,10 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     >
       <AgentSessions
         :controller="props.controller"
+        closable
         @select="closeHistory"
         @new-session="closeHistory"
+        @close="closeHistory"
       />
     </div>
 

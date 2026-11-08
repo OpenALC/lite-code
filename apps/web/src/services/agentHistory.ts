@@ -20,7 +20,9 @@ export async function flushHistory(): Promise<void> {
 /** 历史快照可能包含超长工具输出；落盘前截断，避免单文件无限增长。 */
 function compactSnapshot(state: AgentSessionState): StoredAgentSession | null {
   const agent = state.agent
-  if (!agent || state.archived || agent.messages.length === 0) return null
+  if (!agent || state.streaming || state.archived || agent.messages.length === 0) {
+    return null
+  }
   const firstUser = agent.messages.find(message => message.role === 'user')
   const title = firstUser?.text.split('\n')[0]?.trim().slice(0, 60) || '未命名会话'
   return {

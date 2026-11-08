@@ -133,6 +133,7 @@
     "history": "历史会话",
     "historyTitle": "历史会话",
     "historyRefresh": "刷新历史",
+    "historyClose": "关闭历史",
     "historyLoading": "加载中…",
     "historyEmpty": "还没有历史会话",
     "historyDelete": "删除会话",

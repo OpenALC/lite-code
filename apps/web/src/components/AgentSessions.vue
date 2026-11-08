@@ -7,8 +7,8 @@ import type { AgentSessionController } from '../services/agentSession'
 import { flushHistory, loadStoredSession } from '../services/agentHistory'
 import { historyDelete, historyList, type HistorySummary } from '../services/bridge'
 
-const props = defineProps<{ controller: AgentSessionController }>()
-const emit = defineEmits<{ select: []; 'new-session': [] }>()
+const props = defineProps<{ controller: AgentSessionController; closable?: boolean }>()
+const emit = defineEmits<{ select: []; 'new-session': []; close: [] }>()
 const { t } = useI18n()
 
 const state = ref(props.controller.getState())
@@ -131,6 +131,19 @@ onBeforeUnmount(() => {
       >
         <AppIcon
           name="refresh"
+          :size="14"
+        />
+      </button>
+      <button
+        v-if="props.closable"
+        type="button"
+        class="icon-btn"
+        :title="t('agent.historyClose')"
+        :aria-label="t('agent.historyClose')"
+        @click="emit('close')"
+      >
+        <AppIcon
+          name="x"
           :size="14"
         />
       </button>
