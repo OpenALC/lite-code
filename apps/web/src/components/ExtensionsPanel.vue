@@ -290,6 +290,20 @@ onMounted(load)
               <span class="meta-label">{{ t('extensions.path') }}</span>
               <code class="meta-value">{{ plugin.path }}</code>
             </div>
+            <div
+              v-if="plugin.mcpServers.length"
+              class="meta-row"
+            >
+              <span class="meta-label">MCP</span>
+              <code class="meta-value">{{ plugin.mcpServers.join(', ') }}</code>
+            </div>
+            <div
+              v-if="plugin.languageServers.length"
+              class="meta-row"
+            >
+              <span class="meta-label">LSP</span>
+              <code class="meta-value">{{ plugin.languageServers.join(', ') }}</code>
+            </div>
           </div>
 
           <div
