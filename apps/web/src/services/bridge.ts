@@ -1347,6 +1347,155 @@ export function onCoreEvent(
   }
 }
 
+// ==== LSP 命令 ====
+
+export interface LspServerInfo {
+  id: string
+  languageIds: string[]
+}
+
+export interface LspStartFailure {
+  id: string
+  message: string
+}
+
+export interface LspStartReport {
+  servers: LspServerInfo[]
+  errors: LspStartFailure[]
+}
+
+export interface LspServerConfig {
+  id: string
+  languageIds: string[]
+  command: string
+  args: string[]
+  env: Record<string, string>
+}
+
+/** 从启用插件清单读取 languageServers 并启动（Rust 侧完成转译）。 */
+export async function lspStartPlugins(): Promise<BridgeResult<LspStartReport>> {
+  if (!isTauri()) {
+    return { ok: true, data: { servers: [], errors: [] }, fallback: true }
+  }
+  return invokeCustom<LspStartReport>('lsp_start_plugins')
+}
+
+/** 启动语言服务器；不传 configs 时使用 Rust 侧暂存的插件配置。 */
+export async function lspStartAll(
+  configs?: LspServerConfig[],
+): Promise<BridgeResult<LspStartReport>> {
+  if (!isTauri()) {
+    return { ok: true, data: { servers: [], errors: [] }, fallback: true }
+  }
+  return invokeCustom<LspStartReport>('lsp_start_all', { configs: configs ?? null })
+}
+
+export async function lspDidOpen(
+  path: string,
+  languageId: string,
+  text: string,
+): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
+  return asAck(await call('lsp_did_open', { path, language_id: languageId, text }), 'lsp_did_open')
+}
+
+export async function lspDidChange(
+  path: string,
+  text: string,
+): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
+  return asAck(await call('lsp_did_change', { path, text }), 'lsp_did_change')
+}
+
+export async function lspDidClose(path: string): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
+  return asAck(await call('lsp_did_close', { path }), 'lsp_did_close')
+}
+
+export async function lspStopAll(): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
+  return asAck(await call('lsp_stop_all', {}), 'lsp_stop_all')
+}
+
+// ==== LSP 诊断事件 ====
+
+export interface LspDiagnostic {
+  severity: number
+  message: string
+  line: number
+  column: number
+  endLine: number
+  endColumn: number
+}
+
+export interface LspDiagnosticsEvent {
+  serverId: string
+  path: string
+  diagnostics: LspDiagnostic[]
+}
+
+const LSP_DIAGNOSTICS_CHANNEL = 'lsp:diagnostics'
+
+/** 订阅 LSP 诊断（与 core:event 相同的 Tauri event internals，无额外依赖）。 */
+export function onLspDiagnostics(handler: (event: LspDiagnosticsEvent) => void): () => void {
+  const tauri = internals()
+  const transform = tauri?.transformCallback
+  if (!tauri || typeof transform !== 'function') return () => {}
+
+  let active = true
+  let unlisten: (() => void) | null = null
+
+  const callbackId = transform((raw: unknown) => {
+    if (!active || typeof raw !== 'object' || raw === null) return
+    // Tauri event 回调载荷是 { event, payload, id }；与 onCoreEvent 解包一致。
+    const payload = (raw as { payload?: unknown }).payload
+    const value = (payload ?? raw) as Partial<LspDiagnosticsEvent>
+    if (
+      typeof value.serverId !== 'string' ||
+      typeof value.path !== 'string' ||
+      !Array.isArray(value.diagnostics)
+    ) {
+      return
+    }
+    const diagnostics = value.diagnostics.filter(
+      (item): item is LspDiagnostic =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof item.message === 'string' &&
+        [item.severity, item.line, item.column, item.endLine, item.endColumn].every(
+          number => typeof number === 'number' && Number.isFinite(number),
+        ),
+    )
+    handler({ serverId: value.serverId, path: value.path, diagnostics })
+  })
+
+  void tauri
+    .invoke<number>('plugin:event|listen', {
+      event: LSP_DIAGNOSTICS_CHANNEL,
+      target: { kind: 'Any' },
+      handler: callbackId,
+    })
+    .then(eventId => {
+      const stop = (): void => {
+        unregisterEventCallback(LSP_DIAGNOSTICS_CHANNEL, eventId)
+        void tauri
+          .invoke('plugin:event|unlisten', { event: LSP_DIAGNOSTICS_CHANNEL, eventId })
+          .catch(() => {})
+      }
+      if (active) unlisten = stop
+      else stop()
+    })
+    .catch(() => {})
+
+  return () => {
+    active = false
+    if (unlisten) {
+      unlisten()
+      unlisten = null
+    }
+  }
+}
+
 function unregisterEventCallback(event: string, eventId: number): void {
   if (typeof window === 'undefined') return
   const plugin = (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventInternals })

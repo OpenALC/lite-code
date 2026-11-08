@@ -568,10 +568,14 @@ pub(crate) fn session_create(
     let info = session_info(&session);
 
     let registry = ToolRegistry::with_builtins();
-    let mcp_config = McpConfig::load(&root).unwrap_or_else(|error| {
+    let mut mcp_config = McpConfig::load(&root).unwrap_or_else(|error| {
         eprintln!("[mcp] 配置加载失败：{error}");
         McpConfig::default()
     });
+    // 插件声明的 MCP server 与用户配置合并（名称带 plugin.<id> 前缀）。
+    mcp_config
+        .servers
+        .extend(lc_core::ext::plugin_mcp_servers(&root));
     let mcp_executor = McpExecutor::from_host(McpHost::connect(&mcp_config, &root));
     for warning in mcp_executor.warnings() {
         eprintln!("[mcp] {warning}");

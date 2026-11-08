@@ -1,0 +1,567 @@
+//! 插件清单发现与校验（docs/EXTENSIONS.md §1）。
+//!
+//! 发现顺序：用户目录在前、项目目录在后；同一 `id` 只允许第一个有效条目，
+//! 后续条目以 `error` 形式保留在列表里，便于 UI 暴露问题但不影响其它插件。
+//! 单个目录的清单错误不会让整个列表失败。
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::fs::{FsError, RealPathResolver, display_path, ensure_within_root};
+
+use super::{ExtError, ExtPaths, PluginCommand, PluginInfo, PluginRuntime};
+
+pub(crate) const MANIFEST_FILE: &str = "plugin.json";
+pub(crate) const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+
+/// 一个已发现条目。`manifest` 为 `None` 表示该目录的清单无效或 id 冲突，
+/// 只用于列表展示，不能执行命令或参与 MCP 合并。
+#[derive(Debug, Clone)]
+pub(crate) struct DiscoveredPlugin {
+    pub info: PluginInfo,
+    pub manifest: Option<PluginManifest>,
+    pub dir: PathBuf,
+    pub main_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PluginManifest {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    pub runtime: PluginRuntime,
+    #[serde(default)]
+    pub main: Option<String>,
+    #[serde(default)]
+    pub contributes: Contributes,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Contributes {
+    #[serde(default)]
+    pub commands: Vec<PluginCommand>,
+    #[serde(default)]
+    pub mcp_servers: BTreeMap<String, McpServerDecl>,
+    #[serde(default)]
+    pub language_servers: Vec<LanguageServerDecl>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LanguageServerDecl {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct McpServerDecl {
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default = "enabled_default")]
+    pub enabled: bool,
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+fn enabled_default() -> bool {
+    true
+}
+
+pub(crate) fn discover(
+    paths: &ExtPaths,
+    allow_project: bool,
+    disabled: &BTreeSet<String>,
+) -> Result<Vec<DiscoveredPlugin>, ExtError> {
+    let mut plugins = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut claimed_commands: HashMap<String, String> = HashMap::new();
+    scan_root(
+        &paths.user_dir,
+        disabled,
+        &mut plugins,
+        &mut seen_ids,
+        &mut claimed_commands,
+    )?;
+    if allow_project
+        && let Some(project_dir) = paths.project_dir.as_deref()
+        && project_dir != paths.user_dir
+    {
+        scan_root(
+            project_dir,
+            disabled,
+            &mut plugins,
+            &mut seen_ids,
+            &mut claimed_commands,
+        )?;
+    }
+    Ok(plugins)
+}
+
+fn scan_root(
+    root: &Path,
+    disabled: &BTreeSet<String>,
+    plugins: &mut Vec<DiscoveredPlugin>,
+    seen_ids: &mut HashSet<String>,
+    claimed_commands: &mut HashMap<String, String>,
+) -> Result<(), ExtError> {
+    let read_dir = match std::fs::read_dir(root) {
+        Ok(read_dir) => read_dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(ExtError::Io(format!(
+                "读取插件目录 {} 失败：{error}",
+                root.display()
+            )));
+        }
+    };
+
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    for entry in read_dir.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let manifest_path = dir.join(MANIFEST_FILE);
+        if !manifest_path.is_file() {
+            continue;
+        }
+        candidates.push((entry.file_name().to_string_lossy().into_owned(), dir));
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (dir_name, raw_dir) in candidates {
+        let dir = match std::fs::canonicalize(&raw_dir) {
+            Ok(dir) => dir,
+            Err(error) => {
+                push_error(
+                    plugins,
+                    seen_ids,
+                    None,
+                    &dir_name,
+                    &raw_dir,
+                    format!("插件目录不可用：{error}"),
+                );
+                continue;
+            }
+        };
+
+        let manifest_path = dir.join(MANIFEST_FILE);
+        let raw_value = match read_manifest_value(&manifest_path) {
+            Ok(value) => value,
+            Err(message) => {
+                push_error(plugins, seen_ids, None, &dir_name, &dir, message);
+                continue;
+            }
+        };
+
+        let parsed = match serde_json::from_value::<PluginManifest>(raw_value.clone()) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                push_error(
+                    plugins,
+                    seen_ids,
+                    Some(&raw_value),
+                    &dir_name,
+                    &dir,
+                    format!("清单字段无效：{error}"),
+                );
+                continue;
+            }
+        };
+
+        let (manifest, main_path) = match validate_manifest(parsed, &dir) {
+            Ok(valid) => valid,
+            Err(message) => {
+                push_error(
+                    plugins,
+                    seen_ids,
+                    Some(&raw_value),
+                    &dir_name,
+                    &dir,
+                    message,
+                );
+                continue;
+            }
+        };
+
+        let id = manifest.id.clone();
+        if !seen_ids.insert(id.clone()) {
+            push_error(
+                plugins,
+                seen_ids,
+                Some(&raw_value),
+                &dir_name,
+                &dir,
+                format!("插件 id `{id}` 重复；保留先发现的插件"),
+            );
+            continue;
+        }
+
+        if let Some((command, other)) = manifest.contributes.commands.iter().find_map(|command| {
+            claimed_commands
+                .get(&command.command)
+                .map(|other| (command.command.clone(), other.clone()))
+        }) {
+            push_error(
+                plugins,
+                seen_ids,
+                Some(&raw_value),
+                &dir_name,
+                &dir,
+                format!("命令 id `{command}` 已由插件 `{other}` 声明"),
+            );
+            continue;
+        }
+
+        for command in &manifest.contributes.commands {
+            claimed_commands.insert(command.command.clone(), id.clone());
+        }
+
+        let enabled = !disabled.contains(&id);
+        plugins.push(DiscoveredPlugin {
+            info: info_from_manifest(&manifest, &dir, enabled),
+            manifest: Some(manifest),
+            dir,
+            main_path,
+        });
+    }
+    Ok(())
+}
+
+fn validate_manifest(
+    mut manifest: PluginManifest,
+    dir: &Path,
+) -> Result<(PluginManifest, Option<PathBuf>), String> {
+    manifest.id = manifest.id.trim().to_string();
+    if !valid_plugin_id(&manifest.id) {
+        return Err(format!("插件 id 无效：`{}`", manifest.id));
+    }
+
+    manifest.version = manifest.version.trim().to_string();
+    if manifest.version.is_empty() {
+        return Err("version 不能为空".into());
+    }
+
+    manifest.name = manifest.name.trim().to_string();
+    if manifest.name.is_empty() {
+        manifest.name = manifest.id.clone();
+    }
+
+    let mut command_ids = HashSet::new();
+    for command in &mut manifest.contributes.commands {
+        command.command = command.command.trim().to_string();
+        if !valid_command_id(&command.command) {
+            return Err(format!("命令 id 无效：`{}`", command.command));
+        }
+        if !command_ids.insert(command.command.clone()) {
+            return Err(format!("命令 id 重复：`{}`", command.command));
+        }
+        command.title = command.title.trim().to_string();
+        if command.title.is_empty() {
+            command.title = command.command.clone();
+        }
+    }
+
+    let mut language_ids = HashSet::new();
+    for server in &mut manifest.contributes.language_servers {
+        server.id = server.id.trim().to_string();
+        if server.id.is_empty() {
+            return Err("languageServers.id 不能为空".into());
+        }
+        if !language_ids.insert(server.id.clone()) {
+            return Err(format!("language server id 重复：`{}`", server.id));
+        }
+    }
+
+    let mut mcp_names = HashSet::new();
+    let mut normalized_mcp = BTreeMap::new();
+    for (name, declared) in std::mem::take(&mut manifest.contributes.mcp_servers) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("mcpServers 名称不能为空".into());
+        }
+        if !mcp_names.insert(name.clone()) {
+            return Err(format!("mcpServers 名称重复：`{name}`"));
+        }
+        normalized_mcp.insert(name, declared);
+    }
+    manifest.contributes.mcp_servers = normalized_mcp;
+
+    let main = manifest
+        .main
+        .as_deref()
+        .map(str::trim)
+        .filter(|main| !main.is_empty());
+    let main_path = match main {
+        Some(main) => {
+            let candidate = dir.join(main);
+            let resolved = ensure_within_root(dir, &candidate, &RealPathResolver).map_err(
+                |error| match error {
+                    FsError::NotFound { .. } => format!("main 不存在：`{main}`"),
+                    FsError::PathOutsideRoot { .. } => {
+                        format!("main 必须落在插件目录内：`{main}`")
+                    }
+                    other => format!("main 校验失败：{other}"),
+                },
+            )?;
+            if !resolved.is_file() {
+                return Err(format!("main 不是文件：`{main}`"));
+            }
+            Some(resolved)
+        }
+        None if manifest.runtime != PluginRuntime::Declarative => {
+            return Err(format!(
+                "runtime `{}` 需要 main",
+                runtime_name(manifest.runtime)
+            ));
+        }
+        None => None,
+    };
+
+    Ok((manifest, main_path))
+}
+
+fn valid_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id != "."
+        && id != ".."
+        && !id
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '/' | '\\'))
+}
+
+fn valid_command_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 256 && !id.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+}
+
+fn runtime_name(runtime: PluginRuntime) -> &'static str {
+    match runtime {
+        PluginRuntime::Node => "node",
+        PluginRuntime::Wasm => "wasm",
+        PluginRuntime::Declarative => "declarative",
+    }
+}
+
+fn info_from_manifest(manifest: &PluginManifest, dir: &Path, enabled: bool) -> PluginInfo {
+    let mut seen_mcp = HashSet::new();
+    let mcp_servers = manifest
+        .contributes
+        .mcp_servers
+        .keys()
+        .filter_map(|name| {
+            let name = name.trim();
+            if name.is_empty() || !seen_mcp.insert(name.to_string()) {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        })
+        .collect();
+    let mut seen = HashSet::new();
+    let language_servers = manifest
+        .contributes
+        .language_servers
+        .iter()
+        .filter_map(|server| {
+            if seen.insert(server.id.clone()) {
+                Some(server.id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    PluginInfo {
+        id: manifest.id.clone(),
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        description: manifest.description.clone(),
+        runtime: manifest.runtime,
+        enabled,
+        path: display_path(dir),
+        error: None,
+        commands: manifest.contributes.commands.clone(),
+        mcp_servers,
+        language_servers,
+    }
+}
+
+fn push_error(
+    plugins: &mut Vec<DiscoveredPlugin>,
+    seen_ids: &mut HashSet<String>,
+    raw_value: Option<&Value>,
+    dir_name: &str,
+    dir: &Path,
+    message: String,
+) {
+    let mut info = error_info(raw_value, dir_name, dir, message);
+    info.id = unique_listing_id(&info.id, seen_ids);
+    plugins.push(DiscoveredPlugin {
+        info,
+        manifest: None,
+        dir: dir.to_path_buf(),
+        main_path: None,
+    });
+}
+
+fn unique_listing_id(base: &str, seen_ids: &mut HashSet<String>) -> String {
+    let base = if base.trim().is_empty() {
+        "plugin"
+    } else {
+        base
+    };
+    if seen_ids.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let mut index = 2u32;
+    loop {
+        let candidate = format!("{base}#{index}");
+        if seen_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        index = index.saturating_add(1);
+    }
+}
+
+fn error_info(
+    raw_value: Option<&Value>,
+    dir_name: &str,
+    dir: &Path,
+    message: String,
+) -> PluginInfo {
+    let object = raw_value.and_then(Value::as_object);
+    let id = object
+        .and_then(|object| object.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(dir_name)
+        .to_string();
+    let name = object
+        .and_then(|object| object.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&id)
+        .to_string();
+    let version = object
+        .and_then(|object| object.get("version"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let description = object
+        .and_then(|object| object.get("description"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let runtime = object
+        .and_then(|object| object.get("runtime"))
+        .and_then(Value::as_str)
+        .and_then(|runtime| serde_json::from_value(Value::String(runtime.to_string())).ok())
+        .unwrap_or(PluginRuntime::Declarative);
+
+    let mut commands = Vec::new();
+    let mut seen_commands = HashSet::new();
+    if let Some(items) = object
+        .and_then(|object| object.get("contributes"))
+        .and_then(|contributes| contributes.get("commands"))
+        .and_then(Value::as_array)
+    {
+        for item in items {
+            let Some(command) = item.get("command").and_then(Value::as_str) else {
+                continue;
+            };
+            let command = command.trim();
+            if command.is_empty() || !seen_commands.insert(command.to_string()) {
+                continue;
+            }
+            let title = item
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .unwrap_or(command);
+            commands.push(PluginCommand {
+                command: command.to_string(),
+                title: title.to_string(),
+            });
+        }
+    }
+
+    let mut seen_mcp = HashSet::new();
+    let mcp_servers = object
+        .and_then(|object| object.get("contributes"))
+        .and_then(|contributes| contributes.get("mcpServers"))
+        .and_then(Value::as_object)
+        .map(|servers| {
+            servers
+                .keys()
+                .filter_map(|name| {
+                    let name = name.trim();
+                    if name.is_empty() || !seen_mcp.insert(name.to_string()) {
+                        None
+                    } else {
+                        Some(name.to_string())
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut seen_language_servers = HashSet::new();
+    let language_servers = object
+        .and_then(|object| object.get("contributes"))
+        .and_then(|contributes| contributes.get("languageServers"))
+        .and_then(Value::as_array)
+        .map(|servers| {
+            servers
+                .iter()
+                .filter_map(|server| server.get("id").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && seen_language_servers.insert(id.to_string()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    PluginInfo {
+        id,
+        name,
+        version,
+        description,
+        runtime,
+        enabled: false,
+        path: display_path(dir),
+        error: Some(message),
+        commands,
+        mcp_servers,
+        language_servers,
+    }
+}
+
+fn read_manifest_value(path: &Path) -> Result<Value, String> {
+    let file =
+        File::open(path).map_err(|error| format!("读取 {} 失败：{error}", display_path(path)))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("读取 {} 失败：{error}", display_path(path)))?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(format!("清单超过 {} KiB 上限", MAX_MANIFEST_BYTES / 1024));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{} 不是合法 JSON：{error}", display_path(path)))
+}

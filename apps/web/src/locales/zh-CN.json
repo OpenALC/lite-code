@@ -384,6 +384,7 @@
     "tasks": "任务",
     "agent": "Agent",
     "providers": "供应商",
+    "extensions": "插件",
     "settings": "设置",
     "toggleSidebar": "切换侧栏"
   },
@@ -509,6 +510,42 @@
       "duplicateModel": "模型名称不能重复。",
       "modelProvider": "模型引用了不存在的供应商。"
     }
+  },
+  "extensions": {
+    "declarativeHint": "声明式插件没有可执行命令",
+    "title": "插件",
+    "subtitle": "管理本地扩展。Node 与 WASM 插件在独立宿主中执行；声明式插件只提供命令与 MCP/LSP 声明。",
+    "reload": "重新加载",
+    "reloading": "重新加载中…",
+    "openDir": "打开扩展目录",
+    "openingDir": "打开中…",
+    "demo": "浏览器演示",
+    "fallback": "浏览器演示模式：以下为演示插件，命令不会真实执行。",
+    "loading": "读取插件列表…",
+    "empty": "还没有插件。把插件放到扩展目录后点击“重新加载”。",
+    "dir": "扩展目录",
+    "enabled": "启用插件",
+    "enabledOn": "已启用",
+    "enabledOff": "已禁用",
+    "runtime": "运行时",
+    "runtimes": {
+      "node": "Node",
+      "wasm": "WASM",
+      "declarative": "声明式"
+    },
+    "id": "ID",
+    "path": "路径",
+    "version": "版本",
+    "commands": "命令",
+    "noCommands": "该插件没有可执行命令",
+    "run": "运行",
+    "running": "运行中…",
+    "result": "执行结果",
+    "error": "错误",
+    "noResult": "命令已完成，没有返回内容",
+    "nodeUnavailable": "未检测到可用的 Node.js：Node 插件暂时不可用，声明式插件仍可使用。",
+    "disabledHint": "插件已禁用，先启用再运行命令",
+    "nodeHint": "Node 不可用，暂时无法运行该命令"
   },
   "titlebar": {
     "searchPlaceholder": "搜索文件、命令…",

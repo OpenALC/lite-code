@@ -6,9 +6,11 @@
 pub mod agent;
 pub mod config;
 pub mod db;
+pub mod ext;
 pub mod fs;
 pub mod git;
 pub mod llm;
+pub mod lsp;
 pub mod mcp;
 pub mod process;
 pub mod runtime;

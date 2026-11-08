@@ -13,3 +13,6 @@ Thumbs.db
 # 覆盖率与本地产物
 coverage/
 scripts/perf/out/
+
+# 本地插件/工作区配置
+.lite-code/

@@ -384,6 +384,7 @@
     "tasks": "Tasks",
     "agent": "Agent",
     "providers": "Providers",
+    "extensions": "Extensions",
     "settings": "Settings",
     "toggleSidebar": "Toggle Sidebar"
   },
@@ -509,6 +510,42 @@
       "duplicateModel": "Model names must be unique.",
       "modelProvider": "A model references a missing provider."
     }
+  },
+  "extensions": {
+    "declarativeHint": "Declarative plugins have no executable commands",
+    "title": "Extensions",
+    "subtitle": "Manage local extensions. Node and WASM plugins run in separate hosts; declarative plugins only contribute commands and MCP/LSP declarations.",
+    "reload": "Reload",
+    "reloading": "Reloading…",
+    "openDir": "Open extensions folder",
+    "openingDir": "Opening…",
+    "demo": "Browser demo",
+    "fallback": "Browser demo mode: these are demo plugins; commands do not actually run.",
+    "loading": "Loading extensions…",
+    "empty": "No extensions yet. Add plugins to the extensions folder, then reload.",
+    "dir": "Extensions folder",
+    "enabled": "Enable plugin",
+    "enabledOn": "Enabled",
+    "enabledOff": "Disabled",
+    "runtime": "Runtime",
+    "runtimes": {
+      "node": "Node",
+      "wasm": "WASM",
+      "declarative": "Declarative"
+    },
+    "id": "ID",
+    "path": "Path",
+    "version": "Version",
+    "commands": "Commands",
+    "noCommands": "This plugin has no runnable commands",
+    "run": "Run",
+    "running": "Running…",
+    "result": "Result",
+    "error": "Error",
+    "noResult": "Command finished with no output",
+    "nodeUnavailable": "No usable Node.js detected: Node plugins are unavailable, while declarative plugins still work.",
+    "disabledHint": "Plugin is disabled; enable it before running commands",
+    "nodeHint": "Node is unavailable, so this command cannot run"
   },
   "titlebar": {
     "searchPlaceholder": "Search files, commands…",

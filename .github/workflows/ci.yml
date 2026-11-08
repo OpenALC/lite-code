@@ -190,6 +190,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test -- --run
       - run: pnpm build
+      # 插件运行器是独立 Node 子项目，不依赖 pnpm workspace。
+      - run: node sidecars/ext-host/build.mjs --check
+      - run: node --test sidecars/ext-host/test/*.test.mjs
+      - run: node sidecars/wasm-host/scripts/build.mjs --check
+      - run: node --test sidecars/wasm-host/test/*.test.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist

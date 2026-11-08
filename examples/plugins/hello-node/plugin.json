@@ -1,0 +1,16 @@
+{
+  "id": "example.hello",
+  "name": "Hello Node",
+  "version": "0.1.0",
+  "description": "示例 Node 插件：命令、工作区读取与持久化存储",
+  "engines": { "lite-code": ">=0.6.1" },
+  "runtime": "node",
+  "main": "./index.mjs",
+  "activationEvents": ["onCommand:example.hello"],
+  "contributes": {
+    "commands": [
+      { "command": "example.hello", "title": "Hello from Node plugin" }
+    ]
+  },
+  "permissions": ["workspace.read"]
+}

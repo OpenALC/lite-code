@@ -1,7 +1,7 @@
 {
   "name": "lite-code",
   "private": true,
-  "version": "0.6.1-preview.10",
+  "version": "0.6.1-preview.11",
   "packageManager": "pnpm@10.33.3",
   "engines": {
     "node": ">=22"
@@ -16,7 +16,11 @@
     "db:bridge:check": "pnpm --filter @lite-code/db-bridge check",
     "db:bridge:test": "pnpm --filter @lite-code/db-bridge test",
     "tauri": "tauri",
-    "contract:codegen": "cargo run --locked -p lc-proto --features codegen --bin codegen"
+    "contract:codegen": "cargo run --locked -p lc-proto --features codegen --bin codegen",
+    "ext:host:check": "node sidecars/ext-host/build.mjs --check && node --test sidecars/ext-host/test/*.test.mjs",
+    "ext:host:build": "node sidecars/ext-host/build.mjs",
+    "wasm:host:check": "node sidecars/wasm-host/scripts/build.mjs --check && node --test sidecars/wasm-host/test/*.test.mjs",
+    "wasm:host:build": "node sidecars/wasm-host/scripts/build.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4"

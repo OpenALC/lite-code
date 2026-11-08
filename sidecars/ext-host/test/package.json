@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "description": "Directory entry for node --test sidecars/ext-host/test/; Node 24 does not expand directory arguments.",
+  "type": "module",
+  "main": "host.test.mjs"
+}

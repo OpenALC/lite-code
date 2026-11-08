@@ -12,7 +12,10 @@
 
 mod agent;
 mod db;
+mod ext;
 mod git;
+mod lsp;
+mod lsp_plugins;
 mod providers;
 mod task;
 mod updater;
@@ -699,6 +702,7 @@ pub fn run() {
         .manage(TaskEvents::default())
         .manage(DbState::default())
         .manage(DbEvents::default())
+        .manage(lsp::LspState::new())
         .invoke_handler(tauri::generate_handler![
             node_detect,
             node_set_manual,
@@ -720,6 +724,17 @@ pub fn run() {
             fs_search,
             providers_load,
             providers_save,
+            ext::ext_list,
+            ext::ext_set_enabled,
+            ext::ext_reload,
+            ext::ext_execute_command,
+            ext::ext_open_dir,
+            lsp::lsp_start_all,
+            lsp::lsp_did_open,
+            lsp::lsp_did_change,
+            lsp::lsp_did_close,
+            lsp::lsp_stop_all,
+            lsp_plugins::lsp_start_plugins,
             session_create,
             agent_send,
             agent_cancel,

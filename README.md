@@ -71,6 +71,12 @@ lc-cli agent run --prompt "读 src/lib.rs，修格式并跑测试" --workspace .
   - pg/mysql/mssql 已通过驱动加载、参数映射与失败路径测试，但**尚未用真实服务器做端到端验证**。
 - **Git 面板**（右侧功能栏）：分支/ahead-behind、staged/unstaged 文件、diff、暂存/取消暂存、提交与最近提交。
 
+## 插件
+
+插件系统 v0 支持 Node/JavaScript 命令插件、WASM 命令插件，以及声明式 MCP / LSP 配置。
+插件目录为 `~/.lite-code/extensions`，清单与协议见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)。
+当前范围不包含 VS Code API 兼容、插件市场与插件签名。
+
 ## 开发
 
 ```bash
@@ -99,6 +105,7 @@ lane 边界、契约漂移、cargo-deny 等门禁见 [docs/CI.md](docs/CI.md)；
 | [docs/RUNTIME.md](docs/RUNTIME.md) | Node / Shell 探测与降级 |
 | [docs/AGENT.md](docs/AGENT.md) | Agent harness、工具与权限 |
 | [docs/PLAN.md](docs/PLAN.md) | 并行开发组织与风险 |
+| [docs/EXTENSIONS.md](docs/EXTENSIONS.md) | 插件清单、Node/WASM 协议、MCP/LSP |
 | [docs/CI.md](docs/CI.md) | CI、发布与签名 |
 | [docs/STATUS.md](docs/STATUS.md) | 当前进度快照 |
 | [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) | P6 安全审计范围与残余风险 |

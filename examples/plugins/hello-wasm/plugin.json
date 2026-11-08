@@ -1,0 +1,16 @@
+{
+  "id": "example.hello-wasm",
+  "name": "Hello WASM",
+  "version": "0.1.0",
+  "description": "Minimal WASI preview1 command that returns a JSON value",
+  "engines": { "lite-code": ">=0.6.1" },
+  "runtime": "wasm",
+  "main": "./hello.wasm",
+  "activationEvents": ["onCommand:example.wasmHello"],
+  "contributes": {
+    "commands": [
+      { "command": "example.wasmHello", "title": "Hello from WASM" }
+    ]
+  },
+  "permissions": []
+}

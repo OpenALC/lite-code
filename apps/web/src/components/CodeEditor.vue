@@ -3,9 +3,10 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type * as monacoNs from 'monaco-editor'
 
-import { writeFile } from '../services/bridge'
+import { lspDidChange, lspDidClose, lspDidOpen, writeFile } from '../services/bridge'
 import { consumeReveal, subscribeReveal } from '../services/editorReveal'
 import { languageForPath } from '../services/editorLanguage'
+import { diagnosticsFor, subscribeDiagnostics } from '../services/lspDiagnostics'
 import type { EditorFileStrategy } from '../services/largeFile'
 import { activeTab, markSaved, tabsStore, updateContent } from '../services/tabs'
 import { subscribePrefs, uiPrefs, type UiPrefs } from '../services/themeStore'
@@ -19,6 +20,9 @@ let monacoRef: typeof monacoNs | null = null
 let unsubTabs: (() => void) | null = null
 let unsubPrefs: (() => void) | null = null
 let unsubReveal: (() => void) | null = null
+let unsubDiagnostics: (() => void) | null = null
+let lspTimer: ReturnType<typeof setTimeout> | null = null
+const lspOpened = new Map<string, string>()
 let removeContext: (() => void) | null = null
 let currentTabId: string | null = null
 /** setValue 触发的 onDidChangeContent 不应回写 store */
@@ -76,6 +80,7 @@ function ensureModel(tab: Tab): monacoNs.editor.ITextModel {
     model.onDidChangeContent(() => {
       if (applying) return
       updateContent(tab.id, model.getValue())
+      if (tab.path) scheduleLspChange(tab.path, model.getValue())
     }),
   )
   models.set(tab.id, model)
@@ -121,10 +126,68 @@ function applyEditorPrefs(prefs: UiPrefs): void {
   for (const model of models.values()) model.updateOptions({ tabSize: prefs.tabSize })
 }
 
+/** 把 LSP 诊断同步为 Monaco markers；非活动 model 也一起刷新。 */
+function applyDiagnostics(): void {
+  if (!monacoRef || !editor) return
+  for (const [id, model] of models) {
+    const tab = tabsStore.get().tabs.find(item => item.id === id)
+    if (!tab?.path) continue
+    const markers = diagnosticsFor(tab.path).map(diagnostic => ({
+      severity:
+        diagnostic.severity === 1
+          ? monacoRef!.MarkerSeverity.Error
+          : diagnostic.severity === 2
+            ? monacoRef!.MarkerSeverity.Warning
+            : diagnostic.severity === 3
+              ? monacoRef!.MarkerSeverity.Info
+              : monacoRef!.MarkerSeverity.Hint,
+      message: diagnostic.message,
+      startLineNumber: Math.max(1, diagnostic.line),
+      startColumn: Math.max(1, diagnostic.column),
+      endLineNumber: Math.max(1, diagnostic.endLine),
+      endColumn: Math.max(1, diagnostic.endColumn),
+    }))
+    monacoRef.editor.setModelMarkers(model, 'lsp', markers)
+  }
+}
+
+/** LSP 全量文本同步：300ms 去抖，避免每键一次 IPC。 */
+function scheduleLspChange(path: string, text: string): void {
+  if (lspTimer) clearTimeout(lspTimer)
+  lspTimer = setTimeout(() => {
+    lspTimer = null
+    void lspDidChange(path, text)
+  }, 300)
+}
+
+function openLspDocument(path: string, content: string): void {
+  if (lspOpened.has(path)) return
+  lspOpened.set(path, languageForPath(path))
+  void lspDidOpen(path, languageForPath(path), content)
+}
+
+function closeLspDocument(path: string): void {
+  lspOpened.delete(path)
+  void lspDidClose(path)
+}
+
+/** LSP 宿主重启后重新打开所有已打开文件，避免旧 didOpen 状态丢失。 */
+function reopenLspDocuments(): void {
+  lspOpened.clear()
+  for (const tab of tabsStore.get().tabs) {
+    if (tab.path) {
+      lspOpened.set(tab.path, languageForPath(tab.path))
+      void lspDidOpen(tab.path, languageForPath(tab.path), tab.content)
+    }
+  }
+}
+
 function disposeMissingModels(state: TabsState): void {
   const alive = new Set(state.tabs.map(t => t.id))
   for (const id of [...models.keys()]) {
     if (alive.has(id) || id === currentTabId) continue
+    const path = lspOpened.get(id)
+    if (path) closeLspDocument(path)
     modelDisposables.get(id)?.dispose()
     models.get(id)?.dispose()
     models.delete(id)
@@ -157,9 +220,11 @@ function syncFromStore(state: TabsState): void {
     const view = viewStates.get(tab.id)
     if (view) editor.restoreViewState(view)
   }
+  if (tab.path) openLspDocument(tab.path, tab.content)
   if (tab.id !== currentTabId) applyStrategy(tab.strategy)
   currentTabId = tab.id
   disposeMissingModels(state)
+  applyDiagnostics()
 }
 
 async function saveActive(): Promise<void> {
@@ -265,6 +330,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onSaveKeydown)
   unsubTabs = tabsStore.subscribe(syncFromStore)
   unsubReveal = subscribeReveal(() => applyReveal())
+  unsubDiagnostics = subscribeDiagnostics(() => applyDiagnostics())
   unsubPrefs = subscribePrefs(prefs => {
     monacoRef?.editor.setTheme(prefs.theme === 'light' ? 'lite-code-light' : 'lite-code-dark')
     applyEditorPrefs(prefs)
@@ -278,11 +344,13 @@ onMounted(async () => {
   }
   window.addEventListener('click', onWindowClick)
   window.addEventListener('keydown', onWindowKeydown)
+  window.addEventListener('lsp:started', reopenLspDocuments)
   host.value.addEventListener('contextmenu', openMenu, true)
   removeContext = () => host.value?.removeEventListener('contextmenu', openMenu, true)
 
   syncFromStore(tabsStore.get())
   applyReveal()
+  applyDiagnostics()
 })
 
 onBeforeUnmount(() => {
@@ -290,9 +358,14 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onSaveKeydown)
   window.removeEventListener('click', onWindowClick)
   window.removeEventListener('keydown', onWindowKeydown)
+  window.removeEventListener('lsp:started', reopenLspDocuments)
   unsubTabs?.()
   unsubPrefs?.()
   unsubReveal?.()
+  unsubDiagnostics?.()
+  if (lspTimer) clearTimeout(lspTimer)
+  for (const path of lspOpened.keys()) void lspDidClose(path)
+  lspOpened.clear()
   removeContext?.()
   editor?.dispose()
   editor = null

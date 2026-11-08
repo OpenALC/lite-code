@@ -6,6 +6,7 @@ import AgentPanel from './components/AgentPanel.vue'
 import AppIcon from './components/AppIcon.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import DbPanel from './components/DbPanel.vue'
+import ExtensionsPanel from './components/ExtensionsPanel.vue'
 import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
 import ProvidersPanel from './components/ProvidersPanel.vue'
@@ -36,6 +37,8 @@ import {
   gitUnstage,
   isTauri,
   onCoreEvent,
+  lspStartPlugins,
+  onLspDiagnostics,
   pickWorkspace,
   resolveApproval,
   sessionCreate,
@@ -54,6 +57,8 @@ import { createGitController } from './services/gitStore'
 import { LAYOUT_LIMITS, clamp } from './services/layoutProfile'
 import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { createTaskController } from './services/taskStore'
+import { extensionsExecuteCommand, extensionsList } from './services/extensions'
+import { setFileDiagnostics } from './services/lspDiagnostics'
 import { activateTab, closeTab, openTab, renameTab, tabsStore } from './services/tabs'
 import {
   initUiPrefs,
@@ -68,6 +73,10 @@ import {
 const { t, locale } = useI18n()
 
 const prefs = ref(uiPrefs())
+const unsubLsp = onLspDiagnostics(event => {
+  setFileDiagnostics(event.path, event.serverId, event.diagnostics)
+})
+
 const unsubPrefs = subscribePrefs(next => {
   prefs.value = next
 })
@@ -189,7 +198,10 @@ async function openWorkspaceDialog(): Promise<void> {
     workspaceError.value = res.error.message
     return
   }
-  if (res.data.root) projectRoot.value = res.data.root
+  if (res.data.root) {
+    projectRoot.value = res.data.root
+    startLsp()
+  }
 }
 
 const tabsState = ref(tabsStore.get())
@@ -218,15 +230,57 @@ interface QuickItem {
   action: () => void | Promise<void>
 }
 
+interface PluginCommandItem {
+  command: string
+  title: string
+  pluginId: string
+  pluginName: string
+}
+
+const pluginCommands = ref<PluginCommandItem[]>([])
+
+function onExtensionsChanged(): void {
+  void refreshPluginCommands()
+  if (projectRoot.value) startLsp()
+}
+
+function startLsp(): void {
+  void lspStartPlugins().then(res => {
+    if (res.ok) window.dispatchEvent(new Event('lsp:started'))
+  })
+}
+
+async function refreshPluginCommands(): Promise<void> {
+  const res = await extensionsList()
+  if (!res.ok) return
+  pluginCommands.value = res.data.plugins
+    .filter(plugin => plugin.enabled)
+    .flatMap(plugin =>
+      plugin.commands.map(command => ({
+        command: command.command,
+        title: command.title,
+        pluginId: plugin.id,
+        pluginName: plugin.name,
+      })),
+    )
+}
+
 const commands = computed<QuickItem[]>(() => [
   { id: 'cmd:workspace', label: t('menu.openWorkspace'), detail: 'Ctrl+O', action: openWorkspaceDialog },
   { id: 'cmd:settings', label: t('activity.settings'), detail: 'Ctrl+,', action: openSettings },
   { id: 'cmd:providers', label: t('activity.providers'), detail: '', action: openProviders },
+  { id: 'cmd:extensions', label: t('activity.extensions'), detail: '', action: openExtensions },
   { id: 'cmd:git', label: t('activity.git'), detail: '', action: () => { rightTab.value = 'git'; rightVisible.value = true; void refreshGit() } },
   { id: 'cmd:db', label: t('activity.db'), detail: '', action: () => { rightTab.value = 'db'; rightVisible.value = true; void dbSession.refresh() } },
   { id: 'cmd:agent', label: t('activity.agent'), detail: '', action: () => { rightTab.value = 'agent'; rightVisible.value = true } },
   { id: 'cmd:theme', label: t('menu.toggleTheme'), detail: 'Ctrl+Alt+T', action: toggleTheme },
   { id: 'cmd:bottom', label: t('menu.toggleBottom'), detail: 'Ctrl+J', action: () => { bottomVisible.value = !bottomVisible.value } },
+  ...pluginCommands.value.map(item => ({
+    id: `ext:${item.command}`,
+    label: item.title,
+    detail: item.pluginName,
+    action: () => { void extensionsExecuteCommand(item.command) },
+  })),
 ])
 
 const quickResults = computed<QuickItem[]>(() => {
@@ -261,6 +315,7 @@ watch(quickResults, list => {
 })
 
 function openQuick(): void {
+  void refreshPluginCommands()
   quickOpen.value = true
   void nextTick(() => quickInput.value?.focus())
 }
@@ -367,9 +422,22 @@ function openProviders(): void {
   })
 }
 
+const EXTENSIONS_TAB_ID = '__extensions__'
+const extensionsMounted = ref(false)
+function openExtensions(): void {
+  extensionsMounted.value = true
+  openTab({
+    id: EXTENSIONS_TAB_ID,
+    title: t('activity.extensions'),
+    path: null,
+    content: '',
+  })
+}
+
 watch(locale, () => {
   renameTab(SETTINGS_TAB_ID, t('activity.settings'))
   renameTab(PROVIDERS_TAB_ID, t('providers.title'))
+  renameTab(EXTENSIONS_TAB_ID, t('activity.extensions'))
 })
 
 // 主题 / 缩放 / 语言
@@ -445,10 +513,12 @@ onMounted(() => {
   document.documentElement.lang = prefs.value.locale
   renameTab(SETTINGS_TAB_ID, t('activity.settings'))
   renameTab(PROVIDERS_TAB_ID, t('providers.title'))
+  renameTab(EXTENSIONS_TAB_ID, t('activity.extensions'))
   window.addEventListener('keydown', onKey)
   window.addEventListener('click', () => { openMenu.value = null })
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
   void taskSession.refresh()
+  void refreshPluginCommands()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
@@ -460,6 +530,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubPrefs()
+  unsubLsp()
   unsubTabs()
   agentSession.dispose()
   taskSession.dispose()
@@ -662,6 +733,15 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="act-btn"
+          :class="{ active: activeTabId === '__extensions__' }"
+          :title="t('activity.extensions')"
+          @click="openExtensions"
+        >
+          <AppIcon name="extensions" />
+        </button>
+        <button
+          type="button"
+          class="act-btn"
           :class="{ active: activeTabId === '__providers__' }"
           :title="t('activity.providers')"
           @click="openProviders"
@@ -801,8 +881,13 @@ onBeforeUnmount(() => {
       <main class="editor-col">
         <TabBar />
         <div class="editor-card">
+          <ExtensionsPanel
+            v-if="extensionsMounted"
+            v-show="activeTabId === '__extensions__'"
+            @changed="onExtensionsChanged"
+          />
           <ProvidersPanel v-show="activeTabId === '__providers__'" />
-          <template v-if="activeTabId !== '__providers__'">
+          <template v-if="activeTabId !== '__providers__' && activeTabId !== '__extensions__'">
             <SettingsPanel
               v-if="activeTabId === '__settings__'"
               @manage-providers="openProviders"
