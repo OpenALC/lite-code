@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13` 已发布；`preview.14` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14` 已发布；`preview.14` 为当前最新。
 
 ## 当前位置一览
 
@@ -72,14 +72,14 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `preview.4/7/8/10/11/12/13` 已发布；`preview.14` 发布中（Agent UI 重构） |
+| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14` 已发布；14 为当前最新（10 资产，含 arm64） |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ preview.13 发布与 CI 全绿；preview.14 本地门禁全绿，推送后跟踪 CI |
+| main CI | ✅ `e65b3d2` 的 ci 全绿；release verify 全绿并已发布 preview.14 |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
 | 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏、tmp 0600、备份脱敏 |
 | Agent 模型/思考 | ✅ 会话前选择模型与思考挡位，`session_create` 透传；无会话显示上下文预算与新会话按钮 |
@@ -315,6 +315,8 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - composer 一体化：模式/模型/思考 pill + 附件 chips + 图标发送 + 上下文条（阈值刻度）。
 - AI 消息安全渲染 Markdown（标题/列表/行内代码/加粗/围栏代码块，先转义全文）。
 - 验证：Web 352（21 文件）；真机模型/思考菜单、Markdown、shell 审批拒绝、附件与暗色主题通过。
+- 发布：`v0.6.1-preview.14` **已发布**（非 draft，10 资产），SHA256SUMS 校验通过，
+  updater manifest 已更新到 `0.6.1-preview.14`。
 
 ## preview.13：Agent 模型/思考/附件/选区
 
