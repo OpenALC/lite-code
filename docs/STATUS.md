@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.53` 发布中；滚动清单 updater-manifest 已提升到 .52。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .53。
 
 ## 当前位置一览
 
@@ -331,7 +331,7 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   断网回退 `[stub] delta`；取消可继续。
 - 验证：cargo 623、workspace clippy/fmt、web 408、lanes、HAP 27.04MiB。
 - 待办：turnStats 双行复现、秒级离线回退、approval_resolve、会话回收。
-- 发布：`v0.6.1-preview.53` 发布中。
+- 发布：`v0.6.1-preview.53` **已发布**（10 资产）；滚动清单已提升到 .53。
 
 ## preview.52：鸿蒙 providers 命令
 
