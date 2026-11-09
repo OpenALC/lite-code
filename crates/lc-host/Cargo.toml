@@ -1,0 +1,11 @@
+[package]
+name = "lc-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "共享宿主编排：事件信封/seq 出口（桌面与鸿蒙复用，docs/plans/lc-host-extraction.md M1）"
+
+[dependencies]
+lc-proto = { version = "0.6.1-preview.64", path = "../lc-proto" }
+serde_json = "1"

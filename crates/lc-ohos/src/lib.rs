@@ -41,9 +41,7 @@ use lc_core::llm::{
     AgentRuntime, LlmEvent, OpenAiResponsesClient, ProviderError, ProviderKind, ProvidersFile,
     ProvidersSaveInput, RuntimeError, UreqSseTransport, merge_and_validate, view_from_file,
 };
-use lc_proto::{
-    CommandResult, CoreEvent, ErrorBody, ErrorCode, EventEnvelope, SessionInfo, SessionMode,
-};
+use lc_proto::{CommandResult, CoreEvent, ErrorBody, ErrorCode, SessionInfo, SessionMode};
 use serde_json::Value;
 
 pub mod ffi;
@@ -53,7 +51,7 @@ mod history;
 /// 视图类型保留在 crate 根，避免破坏 lc-ohos 既有公开接口。
 pub use lc_core::llm::{ProviderView, ProvidersView};
 
-pub type EventSink = Arc<dyn Fn(String) + Send + Sync>;
+pub use lc_host::envelope::EventSink;
 
 const STUB_DELTAS: u32 = 20;
 const STUB_DELAY: Duration = Duration::from_millis(25);
@@ -112,7 +110,7 @@ pub struct Host {
     sessions: Mutex<HashMap<String, SessionHandle>>,
     max_sessions: usize,
     sink: Mutex<Option<EventSink>>,
-    seq: Arc<AtomicU64>,
+    seq: lc_host::envelope::Seq,
     next_session: AtomicU64,
 }
 
@@ -219,7 +217,7 @@ impl Host {
             sessions: Mutex::new(HashMap::new()),
             max_sessions: max_sessions.max(1),
             sink: Mutex::new(None),
-            seq: Arc::new(AtomicU64::new(0)),
+            seq: lc_host::envelope::Seq::default(),
             next_session: AtomicU64::new(next_session),
         })
     }
@@ -345,7 +343,7 @@ impl Host {
             info.turn = info.turn.saturating_add(1);
         }
         let sink = self.sink_slot().clone();
-        let seq = Arc::clone(&self.seq);
+        let seq = self.seq.clone();
         let factory = Arc::clone(&self.factory);
         let root = self.root.clone();
         let providers_file = self.providers_file.clone();
@@ -954,7 +952,7 @@ struct TurnEmitter {
     session_id: String,
     handle: SessionHandle,
     sink: Option<EventSink>,
-    seq: Arc<AtomicU64>,
+    seq: lc_host::envelope::Seq,
 }
 
 impl TurnEmitter {
@@ -962,7 +960,7 @@ impl TurnEmitter {
         session_id: String,
         handle: SessionHandle,
         sink: Option<EventSink>,
-        seq: Arc<AtomicU64>,
+        seq: lc_host::envelope::Seq,
     ) -> Self {
         Self {
             session_id,
@@ -978,7 +976,7 @@ impl TurnEmitter {
         if !self.handle.alive.load(Ordering::Acquire) {
             return;
         }
-        emit(&self.sink, &self.seq, event);
+        lc_host::envelope::emit_envelope(&self.sink, &self.seq, event);
     }
 
     fn forward_llm(&self, event: &LlmEvent) {
@@ -1093,17 +1091,6 @@ fn run_stub_agent(handle: &SessionHandle, emitter: &TurnEmitter) {
 fn finish_cancelled(handle: &SessionHandle, emitter: &TurnEmitter) {
     handle.cancel.store(false, Ordering::Release);
     emitter.cancelled();
-}
-
-fn emit(sink: &Option<EventSink>, seq: &AtomicU64, event: CoreEvent) {
-    let Some(sink) = sink else { return };
-    let envelope = EventEnvelope {
-        seq: seq.fetch_add(1, Ordering::SeqCst) + 1,
-        event,
-    };
-    if let Ok(json) = serde_json::to_string(&envelope) {
-        sink(json);
-    }
 }
 
 fn parse_args(args_json: &str) -> Result<Value, ErrorBody> {
@@ -2435,7 +2422,7 @@ mod tests {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .push(serde_json::from_str::<Value>(&json).unwrap());
             })),
-            Arc::clone(&host.seq),
+            host.seq.clone(),
         );
         emitter.done("stub");
         assert_eq!(

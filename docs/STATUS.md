@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-10，main HEAD：preview.63 提交（见 `git log`）；版本 `0.6.1-preview.63`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-10，main HEAD：preview.64 提交（见 `git log`）；版本 `0.6.1-preview.64`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54/55/56/57/58/59/60/61/62/63` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .63；鸿蒙手机/平板模拟器端到端全绿（PSS 已实测）。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54/55/56/57/58/59/60/61/62/63` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .63；`preview.64` 发布中（lc-host M1）；鸿蒙手机/平板模拟器端到端全绿（PSS 已实测）。
 
 ## 当前位置一览
 
@@ -331,6 +331,13 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - §4 审计豁免条件 1–3：维持满足（SECURITY-AUDIT.md §2/§5、cargo-deny/pnpm audit/
   lane 边界全绿、安全路径有测试）。
 - B 类 #1–4、#7 维持「等待维护者」，未触碰 RELEASE-GATES.md 状态列（按其 §6 要求）。
+
+## preview.64：lc-host M1 共享事件出口
+
+- 新 crate `lc-host`（envelope：EventSink/Seq/emit_envelope +3 单测）；
+  lc-ohos 切换共享实现，无行为变化。
+- 验证：workspace 654、clippy/fmt、web 431、lanes、HAP 27.33MiB。
+- 发布：`v0.6.1-preview.64` 发布中。
 
 ## preview.63：鸿蒙 UI 抛光
 - 供应商 sheet 系统返回键关闭（ArkTS onBackPress 消费 + setSheetOpen 状态

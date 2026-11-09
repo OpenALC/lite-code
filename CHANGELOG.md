@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.64] - 2026-11-10
+
+- lc-host M1：共享 crate `lc-host`（envelope：EventSink/Seq/emit_envelope，3 单测）；lc-ohos 切换共享实现；workspace 654 全绿、HAP 交叉编译通过
+
 ## [0.6.1-preview.63] - 2026-11-10
 
 - 鸿蒙 UI 抛光：供应商 sheet 系统返回键关闭（ArkTS onBackPress + setSheetOpen 同步）+ Tab 焦点陷阱 + Escape；归档开关零计数不显示 N（web 431 项）；模拟器 uinput 注入返回键 e2e 通过
