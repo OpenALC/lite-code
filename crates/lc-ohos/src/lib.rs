@@ -123,7 +123,7 @@ impl Host {
         Self::init_with_factory_and_limit(config, factory, lc_host::sessions::DEFAULT_MAX_SESSIONS)
     }
 
-    /// 注入工厂并指定会话上限；生产默认 [`MAX_SESSIONS`]。
+    /// 注入工厂并指定会话上限；生产默认 [`lc_host::sessions::DEFAULT_MAX_SESSIONS`]。
     pub fn init_with_factory_and_limit(
         config: HostConfig,
         factory: Arc<dyn AgentFactory>,
