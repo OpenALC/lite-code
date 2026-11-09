@@ -18,6 +18,12 @@
 │                 runtime · fs · watch · process · git       │
 │                 ssh · lsp · agent · mcp · llm · config     │
 ├───────────────────────────────────────────────────────────┤
+│ L1h 宿主共享编排 crates/lc-host（仅依赖 lc-proto）          │
+│                 事件信封/seq 出口（CoreEventSink）·          │
+│                 会话表/回收/序号（Sessions）                 │
+│                 桌面与鸿蒙宿主共用（docs/plans/lc-host-     │
+│                 extraction.md）                             │
+├───────────────────────────────────────────────────────────┤
 │ L0  外部进程    sidecars/（可选，系统 Node 运行）           │
 │                 MCP servers · db-bridge                    │
 └───────────────────────────────────────────────────────────┘
@@ -36,6 +42,9 @@ lite-code/
 │  ├─ lc-core/                  # 服务实现
 │  │  └─ src/{runtime,fs,watch,process,git,ssh,lsp,ext,agent,mcp,llm,config,secrets}/
 │  ├─ lc-ohos/                  # 鸿蒙宿主（C ABI + fs/providers/history + 真实 AgentLoop）
+│  ├─ lc-host/                  # 共享宿主编排（envelope 事件出口 + sessions 会话表；
+│  │                            #  仅依赖 lc-proto；桌面/鸿蒙共用，抽取计划见
+│  │                            #  docs/plans/lc-host-extraction.md）
 │  └─ lc-cli/                   # headless 前端
 ├─ apps/
 │  ├─ desktop/src-tauri/        # 薄壳
@@ -233,8 +242,10 @@ providers/history 命令 + 真实 AgentLoop，plan 只读）+ 前端 ohos 只读
 （`build:ohos`，Monaco 不进构建图，~105 KiB gzip）。资源管线用虚拟 origin
 （`https://app.litecode.example` + `onInterceptRequest`）；模拟器手机/平板端到端
 全绿（供应商编辑、历史持久/迁移/管理、离线 stub 回退 ~1.3s、会话回收）；
-PSS 基线 ~300 MiB（ArkWeb 引擎 ~134 MiB 结构性）。详见
-`docs/plans/ohos-shell.md`；真机签名 walkthrough 见 `scripts/ohos/signing.md`。
+PSS 基线 ~300 MiB（ArkWeb 引擎 ~134 MiB 结构性）。会话编排与事件信封自
+preview.64 起下沉共享 crate `lc-host`（鸿蒙为首个接入宿主，桌面 preview.65
+起接入信封统一）；外壳方案与 PSS 详情见 `docs/plans/ohos-shell.md`；真机签名
+walkthrough 见 `scripts/ohos/signing.md`。
 
 ## 6. 生命周期
 
