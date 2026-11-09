@@ -146,6 +146,26 @@ export function removeTabsUnder(path: string): number {
   return ids.length
 }
 
+export type TabDropPosition = 'before' | 'after'
+
+/**
+ * 拖拽排序：把 fromId 移到 toId 之前/之后。
+ * 位置未变化、id 不存在或拖到自身时返回 false，不触发订阅通知。
+ */
+export function moveTabTo(fromId: string, toId: string, position: TabDropPosition): boolean {
+  if (fromId === toId) return false
+  const state = tabsStore.get()
+  const moved = state.tabs.find(t => t.id === fromId)
+  if (!moved || !state.tabs.some(t => t.id === toId)) return false
+  const rest = state.tabs.filter(t => t.id !== fromId)
+  let index = rest.findIndex(t => t.id === toId)
+  if (position === 'after') index += 1
+  rest.splice(index, 0, moved)
+  if (rest.every((tab, i) => tab === state.tabs[i])) return false
+  tabsStore.set({ ...state, tabs: rest })
+  return true
+}
+
 /** 激活标签。id 不存在时不改变状态，返回 false。 */
 export function activateTab(id: string): boolean {
   const state = tabsStore.get()

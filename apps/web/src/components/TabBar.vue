@@ -2,7 +2,7 @@
 import { onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { activateTab, closeTab, tabsStore } from '../services/tabs'
+import { activateTab, closeTab, moveTabTo, tabsStore } from '../services/tabs'
 
 const { t } = useI18n()
 
@@ -16,10 +16,47 @@ onBeforeUnmount(unsub)
 // 关闭保护确认态：dirty 标签第一次点关闭 → services 返回 needsConfirm，
 // 标签进入确认态；再次点击才 force 关闭（不用模态框，UI.md §7）。
 const confirmingId = ref<string | null>(null)
+const dragId = ref<string | null>(null)
+const dropTarget = ref<{ id: string; position: 'before' | 'after' } | null>(null)
 
 function onActivate(tabId: string): void {
   confirmingId.value = null
   activateTab(tabId)
+}
+
+function onDragStart(event: DragEvent, tabId: string): void {
+  dragId.value = tabId
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', tabId)
+  }
+}
+
+function onDragOver(event: DragEvent, tabId: string): void {
+  if (!dragId.value || dragId.value === tabId) {
+    dropTarget.value = null
+    return
+  }
+  const element = event.currentTarget as HTMLElement | null
+  if (!element) return
+  const rect = element.getBoundingClientRect()
+  dropTarget.value = {
+    id: tabId,
+    position: event.clientX < rect.left + rect.width / 2 ? 'before' : 'after',
+  }
+}
+
+function onDrop(event: DragEvent, tabId: string): void {
+  event.preventDefault()
+  const fromId = dragId.value ?? event.dataTransfer?.getData('text/plain') ?? ''
+  const position = dropTarget.value?.id === tabId ? dropTarget.value.position : 'before'
+  if (fromId && fromId !== tabId) moveTabTo(fromId, tabId, position)
+  resetDrag()
+}
+
+function resetDrag(): void {
+  dragId.value = null
+  dropTarget.value = null
 }
 
 function onClose(tabId: string): void {
@@ -47,7 +84,15 @@ function onClose(tabId: string): void {
       :class="{
         active: tab.id === state.activeId,
         confirming: tab.id === confirmingId,
+        dragging: tab.id === dragId,
+        'drop-before': dropTarget?.id === tab.id && dropTarget.position === 'before',
+        'drop-after': dropTarget?.id === tab.id && dropTarget.position === 'after',
       }"
+      draggable="true"
+      @dragstart="onDragStart($event, tab.id)"
+      @dragover.prevent="onDragOver($event, tab.id)"
+      @drop.prevent="onDrop($event, tab.id)"
+      @dragend="resetDrag"
     >
       <button
         role="tab"
@@ -92,11 +137,35 @@ function onClose(tabId: string): void {
 }
 
 .tab {
+  position: relative;
   display: flex;
   align-items: stretch;
   font-size: 12.5px;
   color: var(--fg-dim);
   border-right: 1px solid var(--border);
+}
+
+.tab.dragging {
+  opacity: 0.45;
+}
+
+.tab.drop-before::before,
+.tab.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  z-index: 1;
+}
+
+.tab.drop-before::before {
+  left: -1px;
+}
+
+.tab.drop-after::after {
+  right: -1px;
 }
 
 .tab.active {

@@ -7,6 +7,7 @@ import {
   closeTab,
   INITIAL_TABS_STATE,
   markSaved,
+  moveTabTo,
   openTab,
   relocateTabs,
   removeTabsUnder,
@@ -363,5 +364,42 @@ describe('subscribe（store.ts 模式）', () => {
     openTab({ id: 'b.rs', title: 'b.rs' })
     expect(seen.length).toBe(1)
     expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['sample', 'a.rs', 'b.rs'])
+  })
+})
+
+describe('标签拖拽排序', () => {
+  it('向前/向后移动，激活标签与内容不变', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'a' })
+    openTab({ id: 'b.rs', title: 'b.rs', content: 'b' })
+    openTab({ id: 'c.rs', title: 'c.rs', content: 'c' })
+    activateTab('b.rs')
+
+    expect(moveTabTo('c.rs', 'a.rs', 'before')).toBe(true)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['sample', 'c.rs', 'a.rs', 'b.rs'])
+    expect(tabsStore.get().activeId).toBe('b.rs')
+    expect(tabsStore.get().tabs.find(t => t.id === 'c.rs')?.content).toBe('c')
+
+    expect(moveTabTo('c.rs', 'b.rs', 'after')).toBe(true)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['sample', 'a.rs', 'b.rs', 'c.rs'])
+  })
+
+  it('拖到自身或未知 id 时不改变状态、不发通知', () => {
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    const seen: TabsState[] = []
+    const unsub = tabsStore.subscribe(s => seen.push(s))
+
+    expect(moveTabTo('a.rs', 'a.rs', 'before')).toBe(false)
+    expect(moveTabTo('missing', 'a.rs', 'after')).toBe(false)
+    expect(moveTabTo('a.rs', 'missing', 'after')).toBe(false)
+    expect(seen).toEqual([])
+    unsub()
+  })
+
+  it('原位前后移动按“位置未变”处理', () => {
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    openTab({ id: 'b.rs', title: 'b.rs' })
+
+    expect(moveTabTo('a.rs', 'b.rs', 'before')).toBe(false)
+    expect(moveTabTo('b.rs', 'a.rs', 'after')).toBe(false)
   })
 })
