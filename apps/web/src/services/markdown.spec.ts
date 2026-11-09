@@ -11,12 +11,22 @@ describe('Agent 消息 Markdown 渲染', () => {
     expect(html).not.toContain('<img')
   })
 
-  it('围栏代码块转成 pre/code，语言写入 data-lang', () => {
+  it('围栏代码块带语言标签与复制按钮，代码写入 data-lang', () => {
     const html = renderMarkdown('前文\n\n```rust\nfn main() {}\n```\n\n后文')
 
+    expect(html).toContain('<div class="md-code-block">')
+    expect(html).toContain('<span class="md-code-lang">rust</span>')
+    expect(html).toContain('<button type="button" class="md-code-copy" data-md-copy>复制</button>')
     expect(html).toContain('<pre class="md-code" data-lang="rust"><code>fn main() {}</code></pre>')
     expect(html).toContain('<p>前文</p>')
     expect(html).toContain('<p>后文</p>')
+  })
+
+  it('复制按钮文案可由调用方本地化并转义', () => {
+    const html = renderMarkdown('```ts\nconst a = 1\n```', { copyLabel: 'Copy "<x>"' })
+
+    expect(html).toContain('>Copy &quot;&lt;x&gt;&quot;</button>')
+    expect(html).not.toContain('<x>')
   })
 
   it('行内代码与加粗生效，内容仍被转义', () => {

@@ -326,8 +326,8 @@ function closeMenus(): void {
   closeMention()
 }
 
-async function copyMessage(id: string, text: string): Promise<void> {
-  // 不用 navigator.clipboard：WebView2 会弹系统剪贴板权限条。
+/** 不用 navigator.clipboard：WebView2 会弹系统剪贴板权限条。 */
+function copyText(text: string): boolean {
   const area = document.createElement('textarea')
   area.value = text
   area.style.position = 'fixed'
@@ -341,12 +341,31 @@ async function copyMessage(id: string, text: string): Promise<void> {
     copied = false
   }
   area.remove()
-  if (!copied) return
+  return copied
+}
+
+async function copyMessage(id: string, text: string): Promise<void> {
+  if (!copyText(text)) return
   copiedId.value = id
   if (copyTimer !== null) clearTimeout(copyTimer)
   copyTimer = setTimeout(() => {
     copiedId.value = null
     copyTimer = null
+  }, 1200)
+}
+
+/** 代码块复制按钮在 v-html 内，用事件委托处理，避免为每块绑定监听。 */
+function onMarkdownClick(event: MouseEvent): void {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const button = target.closest<HTMLButtonElement>('[data-md-copy]')
+  if (!button) return
+  const code = button.closest('.md-code-block')?.querySelector('code')
+  if (!code || !copyText(code.textContent ?? '')) return
+  const original = button.textContent ?? ''
+  button.textContent = t('agent.copied')
+  window.setTimeout(() => {
+    button.textContent = original
   }, 1200)
 }
 
@@ -926,7 +945,8 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         <div
           v-else-if="message.text"
           class="msg-text markdown"
-          v-html="renderMarkdown(message.text)"
+          @click="onMarkdownClick"
+          v-html="renderMarkdown(message.text, { copyLabel: t('agent.copy') })"
         />
         <div
           v-if="message.role === 'assistant' && message.text"
@@ -1783,12 +1803,44 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   font-weight: 600;
 }
 
-.msg-text.markdown pre.md-code {
+.msg-text.markdown .md-code-block {
   margin: 8px 0;
-  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: var(--bg);
+  overflow: hidden;
+}
+
+.msg-text.markdown .md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-dim);
+  font: 11px/1.6 var(--font-mono);
+  user-select: none;
+}
+
+.msg-text.markdown .md-code-copy {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.msg-text.markdown .md-code-copy:hover {
+  color: var(--fg);
+}
+
+.msg-text.markdown pre.md-code {
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   overflow: auto;
 }
 
