@@ -62,7 +62,9 @@ function matchesQuery(item: HistorySummary): boolean {
   return (
     item.title.toLocaleLowerCase().includes(term) ||
     item.model.toLocaleLowerCase().includes(term) ||
-    item.mode.toLocaleLowerCase().includes(term)
+    item.mode.toLocaleLowerCase().includes(term) ||
+    item.workspace.toLocaleLowerCase().includes(term) ||
+    item.excerpt.toLocaleLowerCase().includes(term)
   )
 }
 

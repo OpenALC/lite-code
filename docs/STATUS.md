@@ -79,7 +79,7 @@
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ preview.23/24/25/26 CI 全绿；preview.27 CI 跟踪中；preview.28 本地门禁全绿，推送后跟踪 CI |
+| main CI | ✅ preview.23/24/25/26/27 CI 全绿；preview.28 本地门禁全绿，推送后跟踪 CI |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
 | 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏、tmp 0600、备份脱敏 |
 | Agent 模型/思考 | ✅ 会话前选择模型与思考挡位，`session_create` 透传；无会话显示上下文预算与新会话按钮 |
@@ -327,6 +327,7 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 
 - `history_list` 为每个会话生成最多 4000 字符 `excerpt`（按消息顺序拼接 text，跳过空白）。
 - Ctrl+P 会话匹配新增正文字段；浏览器演示模式由 localStorage 快照计算同样摘要。
+- Agent 侧栏会话过滤同步匹配正文与工作区路径。
 - 验证：Web 390（26 文件）、Rust 608（history 7 项，新增摘要拼接 1 项）；真机
   Ctrl+P 搜 `TSPL2`（仅出现在助手回复）命中两条 tangshan 会话。
 - 发布：`v0.6.1-preview.28` 发布中。
