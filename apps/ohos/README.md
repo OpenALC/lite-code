@@ -1,10 +1,22 @@
 # Lite Code · HarmonyOS 外壳
 
 `apps/ohos` 是鸿蒙（ArkWeb）产品工程，从
-`spikes/harmony-arkweb` 复制并改造。首版「只读 + 对话」：工程骨架、虚拟 origin
-资源管线、NAPI 桥与真实 core（`crates/lc-ohos` 静态库）均已接入；模拟器
-（Relay_Phone_API26）端到端验证通过——真实 fs 文件树、三级目录只读预览、
-stub 流式对话（20 delta + done）与取消（14ms）。
+`spikes/harmony-arkweb` 复制并改造。首版「只读 + 对话」已接入真实 core：
+工程骨架、虚拟 origin 资源管线、NAPI 桥、`crates/lc-ohos` 宿主与 lc-core
+真实 `AgentLoop`（plan 只读工具 + 流式 LLM）。模拟器端到端验证通过：真实
+文件树、三级目录只读预览、真实流式对话（含工具调用）、无 provider 时回退
+stub（`[stub] delta N` 前缀）。
+
+## 对话链路
+
+- `agent_send` 在 worker 线程惰性构建 `AgentLoop`：按 providers 配置解析
+  `AgentRuntime`（OpenAI Responses + ureq 流式，5s 连接超时），工具仅注册
+  只读 `read_file/glob/grep`；MCP/task/db 不注册。
+- 构建失败（无配置/未知模型/Anthropic 类型/缺 key）→ 回退 stub 20 delta，
+  `done.stop_reason = "stub"`；已有真实输出后的错误 → `error` + `done("error")`。
+- 取消经共享 `Arc<AtomicBool>`，本轮结束可继续同会话。
+- 开发验证用 mock：`node scripts/ohos/mock-llm.mjs`（0.0.0.0:8765，
+  OpenAI Responses 兼容 SSE，忽略鉴权；模拟器经 `10.0.2.2` 访问）。
 
 ## 目录
 

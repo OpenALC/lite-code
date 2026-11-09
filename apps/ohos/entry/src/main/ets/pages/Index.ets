@@ -26,10 +26,11 @@ const DEV_SERVER_URL: string = 'http://10.0.2.2:5173/ohos.html';
 const ENABLE_WEB_DEBUG: boolean = true;
 
 const SAMPLE_DIR: string = 'sample-workspace';
-// The OHOS shell has no real LLM transport yet (agent_send is a native stub), but
+// The OHOS shell now runs lc-core's real AgentLoop; the host mock
+// (scripts/ohos/mock-llm.mjs) is the default provider and ignores Authorization.
 // AgentPanel only enables the composer when providers_load reports a model whose
-// provider has a key (apiKeyRef counts). Seed a local stub provider without a
-// real secret so the first launch shows a usable model pill.
+// provider has a key (apiKeyRef counts); the env ref below stays unset on the
+// emulator and lc-ohos supplies a placeholder key for local mock traffic.
 const PROVIDERS_JSON: string =
   '{"providers":[{"id":"local-stub","kind":"openai-responses","label":"Local Stub",' +
   '"baseUrl":"http://10.0.2.2:8765/v1","apiKeyRef":"env:LC_STUB_API_KEY","enabled":true}],' +

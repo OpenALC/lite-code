@@ -2,22 +2,35 @@
 //!
 //! 首版命令面（docs/plans/ohos-shell.md §5.4）：
 //! - `workspace_root` / `fs_read_dir` / `fs_read_file` 复用 lc-core 的路径校验与按层读取；
-//! - `session_create` 强制 `plan` 模式（只读 + 对话）；
-//! - `agent_send` / `agent_cancel` 是 stub：20 个 `text_delta` 后 `done`，取消可中断；
+//! - `session_create` 强制 `plan` 模式（只读 + 对话），记录模型/思考挡位；
+//! - `agent_send` 首次发送时按 `providers_file` 构造 lc-core `AgentLoop`：plan 策略
+//!   + `read_file`/`glob`/`grep` 只读工具，事件逐条映射成契约 `EventEnvelope`；
+//!     provider 缺失或流传输失败时回退到 20 个 `[stub]` delta（`done.stop_reason = "stub"`）；
+//! - `agent_cancel` 置位 `AgentLoop` 共享的取消令牌；
 //! - `providers_load` / `providers_save` 读写 `HostConfig.providers_file`，形状与桌面
 //!   `providers.rs` 的 `ProvidersView` 一致（密钥只回传 `hasApiKey`/末四位提示）；
 //! - 其余命令返回 `not_implemented`（契约没有独立的 `unsupported` 错误码）。
 
 use std::collections::HashMap;
 use std::fs;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
+use lc_core::agent::{
+    AgentLoop, CompactionRecord, LocalToolExecutor, LoopError, LoopOutcome, Risk, Session,
+    ToolError, ToolOutput, ToolRegistry, ToolSpec, llm_event, loop_outcome, session_info,
+    session_instructions,
+};
 use lc_core::fs::{RealPathResolver, display_path, ensure_within_root, read_dir_level};
-use lc_core::llm::{ModelConfig, ProviderConfig, ProviderError, ProviderKind, ProvidersFile};
+use lc_core::llm::runtime::load_from_model;
+use lc_core::llm::{
+    AgentRuntime, LlmEvent, ModelConfig, OpenAiResponsesClient, ProviderConfig, ProviderError,
+    ProviderKind, ProvidersFile, RuntimeError, UreqSseTransport,
+};
 use lc_proto::{
     CommandResult, CoreEvent, ErrorBody, ErrorCode, EventEnvelope, SessionInfo, SessionMode,
 };
@@ -30,6 +43,16 @@ pub type EventSink = Arc<dyn Fn(String) + Send + Sync>;
 
 const STUB_DELTAS: u32 = 20;
 const STUB_DELAY: Duration = Duration::from_millis(25);
+const STUB_STOP_REASON: &str = "stub";
+const CANCELLED_STOP_REASON: &str = "cancelled";
+
+const DEFAULT_INSTRUCTIONS: &str =
+    "你是 Lite Code 的编码助手。先阅读相关文件再回答；使用工具完成请求；用中文简洁回答。";
+
+/// 模板里的 `apiKeyRef` 在模拟器上通常没有对应环境变量。缺省时用占位 key
+/// 真正发出请求：宿主 mock 忽略鉴权，真实 provider 会返回 401 并回退 stub，
+/// 不会把占位值当成真实密钥。
+const PLACEHOLDER_API_KEY: &str = "lc-ohos-local";
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
@@ -38,10 +61,29 @@ pub struct HostConfig {
     pub providers_file: PathBuf,
 }
 
+/// 一轮会话构建 `AgentLoop` 所需的只读输入。
+pub struct AgentBuildRequest<'a> {
+    pub session_id: &'a str,
+    pub workspace_root: &'a Path,
+    pub providers_file: &'a Path,
+    pub model: Option<&'a str>,
+    pub thinking: Option<&'a str>,
+    pub max_turns: u32,
+    /// 与 `AgentLoop::with_cancel` 共享；注入的传输可据此提前结束流。
+    pub cancel: Arc<AtomicBool>,
+}
+
+/// `AgentLoop` 工厂。生产实现解析 `providers_file`；单测注入 fake LLM，
+/// 不启动网络。
+pub trait AgentFactory: Send + Sync {
+    fn create(&self, request: &AgentBuildRequest<'_>) -> Result<AgentLoop, ErrorBody>;
+}
+
 pub struct Host {
     root: PathBuf,
     root_display: String,
     providers_file: PathBuf,
+    factory: Arc<dyn AgentFactory>,
     sessions: Mutex<HashMap<String, SessionHandle>>,
     sink: Mutex<Option<EventSink>>,
     seq: Arc<AtomicU64>,
@@ -51,22 +93,44 @@ pub struct Host {
 #[derive(Clone)]
 struct SessionHandle {
     info: Arc<Mutex<SessionInfo>>,
+    /// 首次 `agent_send` 成功构建后常驻，用于保留多轮上下文。
+    agent: Arc<Mutex<Option<AgentLoop>>>,
     cancel: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
+    model: Option<String>,
+    thinking: Option<String>,
 }
 
 impl SessionHandle {
-    fn new(info: SessionInfo) -> Self {
+    fn new(info: SessionInfo, model: Option<String>, thinking: Option<String>) -> Self {
         Self {
             info: Arc::new(Mutex::new(info)),
+            agent: Arc::new(Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
+            model,
+            thinking,
         }
+    }
+
+    fn info_snapshot(&self) -> SessionInfo {
+        self.info
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
 impl Host {
     pub fn init(config: HostConfig) -> Result<Host, ErrorBody> {
+        Self::init_with_factory(config, Arc::new(RealAgentFactory))
+    }
+
+    /// 注入自定义 `AgentLoop` 工厂；生产走 [`Host::init`]。
+    pub fn init_with_factory(
+        config: HostConfig,
+        factory: Arc<dyn AgentFactory>,
+    ) -> Result<Host, ErrorBody> {
         let root = ensure_within_root(
             &config.workspace_root,
             &config.workspace_root,
@@ -89,6 +153,7 @@ impl Host {
             root_display: display_path(&root),
             root,
             providers_file: config.providers_file,
+            factory,
             sessions: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
             seq: Arc::new(AtomicU64::new(0)),
@@ -156,8 +221,9 @@ impl Host {
 
     fn create_session(&self, args: &Value) -> SessionInfo {
         let number = self.next_session.fetch_add(1, Ordering::Relaxed) + 1;
-        let (context_k, compress_at_k) =
-            self.model_budget(args.get("model").and_then(Value::as_str));
+        let model = optional_string(args, "model");
+        let thinking = optional_string(args, "thinking");
+        let (context_k, compress_at_k) = self.model_budget(model.as_deref());
         let info = SessionInfo {
             session_id: format!("ohos-{number}"),
             mode: SessionMode::Plan,
@@ -167,8 +233,10 @@ impl Host {
             compress_at_k,
             cancelled: false,
         };
-        self.sessions_slot()
-            .insert(info.session_id.clone(), SessionHandle::new(info.clone()));
+        self.sessions_slot().insert(
+            info.session_id.clone(),
+            SessionHandle::new(info.clone(), model, thinking),
+        );
         info
     }
 
@@ -191,9 +259,13 @@ impl Host {
 
     fn agent_send(&self, args: &Value) -> Result<(), ErrorBody> {
         let session_id = required_string(args, "session_id")?;
-        let _text = required_string(args, "text")?;
+        let text = required_string(args, "text")?;
         let handle = self.session(&session_id)?;
-        if handle.running.swap(true, Ordering::AcqRel) {
+        if handle
+            .running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return Err(invalid(format!("agent turn already running: {session_id}")));
         }
         handle.cancel.store(false, Ordering::Release);
@@ -206,7 +278,38 @@ impl Host {
         }
         let sink = self.sink_slot().clone();
         let seq = Arc::clone(&self.seq);
-        thread::spawn(move || run_stub_agent(session_id, handle, sink, seq));
+        let factory = Arc::clone(&self.factory);
+        let root = self.root.clone();
+        let providers_file = self.providers_file.clone();
+        let thread_handle = handle.clone();
+        let thread_session = session_id.clone();
+        let spawned = thread::Builder::new()
+            .name(format!("agent-{session_id}"))
+            .spawn(move || {
+                let emitter = TurnEmitter::new(thread_session, thread_handle.clone(), sink, seq);
+                let panic_emitter = emitter.clone();
+                let turn = AgentTurn {
+                    text,
+                    handle: thread_handle,
+                    root,
+                    providers_file,
+                    factory,
+                };
+                let outcome = catch_unwind(AssertUnwindSafe(|| run_agent_turn(&emitter, turn)));
+                if outcome.is_err() {
+                    eprintln!("[ohos-agent] worker panicked; emitting error + done");
+                    panic_emitter
+                        .error(ErrorBody::new(ErrorCode::Internal, "agent worker panicked"));
+                    panic_emitter.done("error");
+                }
+            });
+        if let Err(error) = spawned {
+            handle.running.store(false, Ordering::Release);
+            return Err(ErrorBody::new(
+                ErrorCode::Internal,
+                format!("failed to start agent worker: {error}"),
+            ));
+        }
         Ok(())
     }
 
@@ -214,6 +317,9 @@ impl Host {
         let session_id = required_string(args, "session_id")?;
         let handle = self.session(&session_id)?;
         if handle.running.load(Ordering::Acquire) {
+            // 只置位共享令牌，不调用 `AgentLoop::cancel()`：后者会把 lc-core
+            // `Session` 永久标记为已取消，同一会话无法继续。worker 在本轮结束
+            // 后复位令牌，并补发 session_state(cancelled) + done(cancelled)。
             handle.cancel.store(true, Ordering::Release);
         }
         Ok(())
@@ -466,67 +572,420 @@ fn provider_error(error: ProviderError) -> ErrorBody {
     ErrorBody::new(code, error.to_string())
 }
 
-fn run_stub_agent(
+/// 生产工厂：`providers_file` → `AgentRuntime` → ureq SSE client。
+struct RealAgentFactory;
+
+impl AgentFactory for RealAgentFactory {
+    fn create(&self, request: &AgentBuildRequest<'_>) -> Result<AgentLoop, ErrorBody> {
+        let runtime = resolve_runtime(request.providers_file, request.model, |name| {
+            std::env::var(name).ok()
+        })
+        .map_err(runtime_error_body)?;
+        let client = match runtime.kind {
+            ProviderKind::OpenAiResponses => OpenAiResponsesClient::new(
+                &runtime.base_url,
+                &runtime.api_key,
+                Box::new(UreqSseTransport::with_connect_timeout(Duration::from_secs(
+                    5,
+                ))),
+            ),
+            ProviderKind::AnthropicMessages => {
+                return Err(runtime_error_body(RuntimeError::UnsupportedKind(
+                    runtime.kind,
+                )));
+            }
+        };
+        let reasoning = reasoning_effort(request.thinking, &runtime.thinking);
+        let registry = read_only_registry();
+        let session = Session::new(request.session_id, lc_core::agent::PolicyMode::Plan)
+            .with_max_turns(request.max_turns)
+            .with_context(runtime.context_k, runtime.compress_at_k);
+        let instructions = session_instructions(request.workspace_root, DEFAULT_INSTRUCTIONS);
+        Ok(AgentLoop::new(
+            session,
+            Box::new(client),
+            Box::new(LocalToolExecutor::new(request.workspace_root)),
+            registry,
+            request.workspace_root,
+            runtime.model_id,
+        )
+        .with_instructions(instructions)
+        .with_reasoning(reasoning)
+        .with_tools(read_only_registry().llm_tools()))
+    }
+}
+
+/// plan 模式只暴露读工具；不注册 MCP、`task` 或 `db_*`，模型不会看到这些定义。
+fn read_only_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    for (name, risk) in [
+        ("read_file", Risk::Read),
+        ("glob", Risk::Read),
+        ("grep", Risk::Read),
+    ] {
+        registry
+            .register(ToolSpec::new(name, risk))
+            .expect("只读工具清单必须合法");
+    }
+    registry
+}
+
+/// 读取 provider 配置。文件不存在时不回退环境变量（鸿蒙宿主始终有显式
+/// `providers_file`），这样“未配置 provider”能稳定回退 stub。
+fn resolve_runtime(
+    path: &Path,
+    model: Option<&str>,
+    env: impl Fn(&str) -> Option<String> + Copy,
+) -> Result<AgentRuntime, RuntimeError> {
+    match ProvidersFile::load_path(path) {
+        Ok(None) => return Err(RuntimeError::NoModel),
+        Ok(Some(_)) => {}
+        Err(error) => return Err(RuntimeError::Config(error)),
+    }
+    load_from_model(path, model, |name| {
+        env(name).or_else(|| {
+            // `LC_API_KEY` 是全局覆盖；未设置时继续走 apiKey/ref，不用占位值
+            // 遮蔽用户保存的本地密钥。
+            if name == "LC_API_KEY" {
+                None
+            } else {
+                Some(PLACEHOLDER_API_KEY.to_owned())
+            }
+        })
+    })
+}
+
+/// `off` 不发送 reasoning；`max` 归一到 Responses 支持的 `high`。
+fn reasoning_effort(thinking: Option<&str>, supported: &[String]) -> Option<String> {
+    let level = thinking.map(str::trim).filter(|level| !level.is_empty())?;
+    if !supported.is_empty() && !supported.iter().any(|item| item == level) {
+        eprintln!("[ohos-agent] thinking {level} is not advertised by the model; ignoring");
+        return None;
+    }
+    match level {
+        "off" => None,
+        "low" => Some("low".into()),
+        "medium" => Some("medium".into()),
+        "high" | "max" => Some("high".into()),
+        other => {
+            eprintln!("[ohos-agent] unknown thinking level {other}; ignoring");
+            None
+        }
+    }
+}
+
+fn runtime_error_body(error: RuntimeError) -> ErrorBody {
+    match error {
+        RuntimeError::Io(detail) => ErrorBody::new(
+            ErrorCode::NotFound,
+            format!("cannot read providers config ({detail})"),
+        ),
+        RuntimeError::Config(error) => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid providers config: {error}"),
+        ),
+        RuntimeError::NoModel => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            "providers config has no usable model",
+        ),
+        RuntimeError::UnknownModel(model) => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("model {model} is not configured"),
+        ),
+        RuntimeError::ProviderUnavailable(provider) => ErrorBody::new(
+            ErrorCode::NotFound,
+            format!("provider {provider} is missing or disabled"),
+        ),
+        RuntimeError::UnresolvedKeyRef(reference) => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("cannot resolve apiKeyRef {reference}: only env:NAME is supported"),
+        ),
+        RuntimeError::MissingEnv(name) => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("environment variable {name} is not set"),
+        ),
+        RuntimeError::MissingApiKey => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            "provider has no API key (set apiKey, LC_API_KEY or apiKeyRef)",
+        ),
+        RuntimeError::UnsupportedKind(kind) => ErrorBody::new(
+            ErrorCode::InvalidArgument,
+            format!("provider kind {kind:?} has no streaming client"),
+        ),
+    }
+}
+
+struct AgentTurn {
+    text: String,
+    handle: SessionHandle,
+    root: PathBuf,
+    providers_file: PathBuf,
+    factory: Arc<dyn AgentFactory>,
+}
+
+/// 单轮执行：惰性构建/复用 `AgentLoop`，接收 LLM 事件并在失败时回退 stub。
+fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
+    let _running = RunningGuard(turn.handle.clone());
+    let AgentTurn {
+        text,
+        handle,
+        root,
+        providers_file,
+        factory,
+    } = turn;
+
+    let mut agent_slot = handle
+        .agent
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if agent_slot.is_none() {
+        let request = AgentBuildRequest {
+            session_id: &emitter.session_id,
+            workspace_root: &root,
+            providers_file: &providers_file,
+            model: handle.model.as_deref(),
+            thinking: handle.thinking.as_deref(),
+            max_turns: handle.info_snapshot().max_turns,
+            cancel: Arc::clone(&handle.cancel),
+        };
+        match factory.create(&request) {
+            Ok(agent) => {
+                let tools = emitter.clone();
+                let compaction = emitter.clone();
+                *agent_slot = Some(
+                    agent
+                        .with_cancel(Arc::clone(&handle.cancel))
+                        .with_tool_observer(Box::new(move |call_id, result| {
+                            tools.tool_result(call_id, result)
+                        }))
+                        .with_compaction_observer(Box::new(move |record| {
+                            compaction.compacted(record)
+                        })),
+                );
+            }
+            Err(error) => {
+                eprintln!(
+                    "[ohos-agent] provider unavailable, falling back to stub: {}",
+                    error.message
+                );
+                drop(agent_slot);
+                run_stub_agent(&handle, emitter);
+                return;
+            }
+        }
+    }
+
+    let agent = agent_slot.as_mut().expect("agent slot is populated above");
+    let mut visible_output = false;
+    let result = {
+        let mut on_event = |event: LlmEvent| {
+            if matches!(
+                event,
+                LlmEvent::TextDelta { .. } | LlmEvent::ToolUseStart { .. }
+            ) {
+                visible_output = true;
+            }
+            emitter.forward_llm(&event);
+        };
+        agent.run(&text, &mut on_event)
+    };
+    let session_after = session_info(agent.session());
+    drop(agent_slot);
+
+    if handle.cancel.swap(false, Ordering::AcqRel) {
+        emitter.cancelled();
+        return;
+    }
+
+    match result {
+        Ok(outcome) => {
+            emitter.session_state(session_after);
+            let mut events = loop_outcome(&emitter.session_id, &outcome);
+            let stop_reason = match &outcome {
+                LoopOutcome::Final { .. } => None,
+                LoopOutcome::NeedsApproval { .. } => Some("approval"),
+                LoopOutcome::Denied { .. } => Some("denied"),
+            };
+            for event in events.drain(..) {
+                emitter.event(event);
+            }
+            if let Some(stop_reason) = stop_reason {
+                emitter.done(stop_reason);
+            }
+        }
+        Err(error) => {
+            // 传输/解析失败且尚未产生任何可见输出：回退 stub，保证离线 demo 可用。
+            if matches!(error, LoopError::Llm(_)) && !visible_output {
+                eprintln!("[ohos-agent] LLM transport failed, falling back to stub: {error}");
+                run_stub_agent(&handle, emitter);
+                return;
+            }
+            emitter.error(loop_error_body(&error));
+            emitter.session_state(session_after);
+            emitter.done("error");
+        }
+    }
+}
+
+fn loop_error_body(error: &LoopError) -> ErrorBody {
+    match error {
+        LoopError::Session(lc_core::agent::SessionError::Cancelled) => {
+            ErrorBody::new(ErrorCode::Cancelled, "会话已取消")
+        }
+        LoopError::Session(error) => ErrorBody::new(ErrorCode::InvalidArgument, error.to_string()),
+        LoopError::ContextOverflow { .. } => {
+            ErrorBody::new(ErrorCode::InvalidArgument, error.to_string())
+        }
+        LoopError::UnknownTool(name) => {
+            ErrorBody::new(ErrorCode::NotFound, format!("模型请求了未知工具：{name}"))
+        }
+        LoopError::Provider { code, message } => ErrorBody::new(*code, message.clone()),
+        other => ErrorBody::new(ErrorCode::Internal, other.to_string()),
+    }
+}
+
+struct RunningGuard(SessionHandle);
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::Release);
+    }
+}
+
+/// 事件出口：注入会话 id、统一 seq，并在取消后抑制迟到事件。
+#[derive(Clone)]
+struct TurnEmitter {
     session_id: String,
     handle: SessionHandle,
     sink: Option<EventSink>,
     seq: Arc<AtomicU64>,
-) {
-    for index in 0..STUB_DELTAS {
-        if handle.cancel.load(Ordering::Acquire) {
-            finish_cancelled(&session_id, &handle, &sink, &seq);
+}
+
+impl TurnEmitter {
+    fn new(
+        session_id: String,
+        handle: SessionHandle,
+        sink: Option<EventSink>,
+        seq: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            session_id,
+            handle,
+            sink,
+            seq,
+        }
+    }
+
+    fn event(&self, event: CoreEvent) {
+        emit(&self.sink, &self.seq, event);
+    }
+
+    fn forward_llm(&self, event: &LlmEvent) {
+        if self.handle.cancel.load(Ordering::Acquire) {
             return;
         }
-        emit(
-            &sink,
-            &seq,
-            CoreEvent::AgentTextDelta {
-                session_id: session_id.clone(),
-                index,
-                text: format!("[stub] delta {index}\n"),
-            },
-        );
+        if let Some(event) = llm_event(&self.session_id, event) {
+            self.event(event);
+        }
+    }
+
+    fn tool_result(&self, call_id: &str, result: &Result<ToolOutput, ToolError>) {
+        if self.handle.cancel.load(Ordering::Acquire) {
+            return;
+        }
+        let (ok, text) = match result {
+            Ok(output) => (true, output.text.clone()),
+            Err(error) => (false, error.to_string()),
+        };
+        self.event(CoreEvent::AgentToolResult {
+            session_id: self.session_id.clone(),
+            call_id: call_id.to_owned(),
+            ok,
+            text,
+        });
+    }
+
+    fn compacted(&self, record: &CompactionRecord) {
+        if self.handle.cancel.load(Ordering::Acquire) {
+            return;
+        }
+        self.event(CoreEvent::AgentCompacted {
+            session_id: self.session_id.clone(),
+            record_id: record.id,
+            before_tokens: record.before_tokens,
+            after_tokens: record.after_tokens,
+            removed_messages: record.removed_messages,
+            summary: record.summary.clone(),
+        });
+    }
+
+    fn session_state(&self, mut info: SessionInfo) {
+        info.session_id = self.session_id.clone();
+        info.mode = SessionMode::Plan;
+        {
+            let mut stored = self
+                .handle
+                .info
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *stored = info.clone();
+        }
+        self.event(CoreEvent::AgentSessionState { session: info });
+    }
+
+    fn cancelled(&self) {
+        let mut info = self.handle.info_snapshot();
+        info.session_id = self.session_id.clone();
+        info.mode = SessionMode::Plan;
+        info.cancelled = true;
+        {
+            let mut stored = self
+                .handle
+                .info
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *stored = info.clone();
+        }
+        self.event(CoreEvent::AgentSessionState { session: info });
+        self.done(CANCELLED_STOP_REASON);
+    }
+
+    fn error(&self, error: ErrorBody) {
+        self.event(CoreEvent::Error { error });
+    }
+
+    fn done(&self, stop_reason: &str) {
+        self.event(CoreEvent::AgentDone {
+            session_id: self.session_id.clone(),
+            stop_reason: stop_reason.to_owned(),
+        });
+    }
+}
+
+fn run_stub_agent(handle: &SessionHandle, emitter: &TurnEmitter) {
+    for index in 0..STUB_DELTAS {
+        if handle.cancel.load(Ordering::Acquire) {
+            finish_cancelled(handle, emitter);
+            return;
+        }
+        emitter.event(CoreEvent::AgentTextDelta {
+            session_id: emitter.session_id.clone(),
+            index,
+            text: format!("[stub] delta {index}\n"),
+        });
         thread::sleep(STUB_DELAY);
     }
     if handle.cancel.load(Ordering::Acquire) {
-        finish_cancelled(&session_id, &handle, &sink, &seq);
+        finish_cancelled(handle, emitter);
         return;
     }
-    emit(
-        &sink,
-        &seq,
-        CoreEvent::AgentDone {
-            session_id,
-            stop_reason: "stop".to_owned(),
-        },
-    );
-    handle.running.store(false, Ordering::Release);
+    emitter.session_state(handle.info_snapshot());
+    emitter.done(STUB_STOP_REASON);
 }
 
-fn finish_cancelled(
-    session_id: &str,
-    handle: &SessionHandle,
-    sink: &Option<EventSink>,
-    seq: &Arc<AtomicU64>,
-) {
-    let session = {
-        let mut info = handle
-            .info
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        info.cancelled = true;
-        info.clone()
-    };
-    emit(sink, seq, CoreEvent::AgentSessionState { session });
-    emit(
-        sink,
-        seq,
-        CoreEvent::AgentDone {
-            session_id: session_id.to_owned(),
-            stop_reason: "cancelled".to_owned(),
-        },
-    );
-    handle.running.store(false, Ordering::Release);
+fn finish_cancelled(handle: &SessionHandle, emitter: &TurnEmitter) {
+    handle.cancel.store(false, Ordering::Release);
+    emitter.cancelled();
 }
 
 fn emit(sink: &Option<EventSink>, seq: &AtomicU64, event: CoreEvent) {
@@ -559,6 +1018,14 @@ fn required_string(args: &Value, key: &str) -> Result<String, ErrorBody> {
         .ok_or_else(|| invalid(format!("missing string argument `{key}`")))
 }
 
+fn optional_string(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn invalid(message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(ErrorCode::InvalidArgument, message)
 }
@@ -584,8 +1051,11 @@ fn unsupported(cmd: &str) -> ErrorBody {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::time::{Duration, Instant};
 
+    use lc_core::agent::{LlmStream, PolicyMode};
+    use lc_core::llm::{LlmError, LlmRequest, StopReason};
     use serde_json::json;
 
     use super::*;
@@ -602,19 +1072,27 @@ mod tests {
         base
     }
 
-    fn setup() -> (Host, PathBuf) {
+    fn setup_with_factory(factory: Option<Arc<dyn AgentFactory>>) -> (Host, PathBuf) {
         let base = temp_base();
         let root = base.join("workspace");
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         fs::write(base.join("outside.txt"), "secret\n").unwrap();
-        let host = Host::init(HostConfig {
+        let config = HostConfig {
             files_dir: base.join("files"),
             workspace_root: root,
             providers_file: base.join("files/providers.json"),
-        })
+        };
+        let host = match factory {
+            Some(factory) => Host::init_with_factory(config, factory),
+            None => Host::init(config),
+        }
         .unwrap();
         (host, base)
+    }
+
+    fn setup() -> (Host, PathBuf) {
+        setup_with_factory(None)
     }
 
     fn parse(raw: &str) -> Value {
@@ -655,17 +1133,127 @@ mod tests {
     }
 
     fn create_session(host: &Host) -> String {
+        create_session_with_model(host, None)
+    }
+
+    fn create_session_with_model(host: &Host, model: Option<&str>) -> String {
         let value = parse(
             &host
                 .dispatch(
                     "session_create",
-                    &json!({"mode": "plan", "model": null, "thinking": null}).to_string(),
+                    &json!({"mode": "plan", "model": model, "thinking": null}).to_string(),
                 )
                 .unwrap(),
         );
         assert_eq!(value["kind"], "session");
         assert_eq!(value["session"]["mode"], "plan");
         value["session"]["session_id"].as_str().unwrap().to_owned()
+    }
+
+    struct FakeLlm {
+        turns: Mutex<VecDeque<Vec<LlmEvent>>>,
+        requests: Arc<Mutex<Vec<LlmRequest>>>,
+    }
+
+    impl LlmStream for FakeLlm {
+        fn stream(
+            &self,
+            request: &LlmRequest,
+            sink: &mut dyn FnMut(LlmEvent),
+        ) -> Result<(), LlmError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(request.clone());
+            let events = self
+                .turns
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+                .unwrap_or_default();
+            for event in events {
+                sink(event);
+            }
+            Ok(())
+        }
+    }
+
+    struct FakeFactory {
+        turns: Mutex<VecDeque<Vec<LlmEvent>>>,
+        requests: Arc<Mutex<Vec<LlmRequest>>>,
+    }
+
+    impl FakeFactory {
+        fn new(turns: Vec<Vec<LlmEvent>>) -> Self {
+            Self {
+                turns: Mutex::new(turns.into()),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn requests(&self) -> Arc<Mutex<Vec<LlmRequest>>> {
+            Arc::clone(&self.requests)
+        }
+    }
+
+    impl AgentFactory for FakeFactory {
+        fn create(&self, request: &AgentBuildRequest<'_>) -> Result<AgentLoop, ErrorBody> {
+            let turns = std::mem::take(
+                &mut *self
+                    .turns
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            Ok(AgentLoop::new(
+                Session::new(request.session_id, PolicyMode::Plan)
+                    .with_max_turns(request.max_turns)
+                    .with_context(100, 80),
+                Box::new(FakeLlm {
+                    turns: Mutex::new(turns),
+                    requests: Arc::clone(&self.requests),
+                }),
+                Box::new(LocalToolExecutor::new(request.workspace_root)),
+                read_only_registry(),
+                request.workspace_root,
+                "fake-model",
+            )
+            .with_tools(read_only_registry().llm_tools()))
+        }
+    }
+
+    fn read_turn(ids: &[&str], path: &str) -> Vec<LlmEvent> {
+        let mut events = Vec::new();
+        for id in ids {
+            events.push(LlmEvent::ToolUseStart {
+                id: (*id).into(),
+                name: "read_file".into(),
+            });
+            events.push(LlmEvent::ToolUseArgsDelta {
+                id: (*id).into(),
+                json: json!({ "path": path }).to_string(),
+            });
+        }
+        events.push(LlmEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        });
+        events
+    }
+
+    fn final_turn(text: &str) -> Vec<LlmEvent> {
+        vec![
+            LlmEvent::TextDelta {
+                index: 0,
+                text: text.into(),
+            },
+            LlmEvent::Usage {
+                input: 42,
+                output: 7,
+                cached: 3,
+            },
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            },
+        ]
     }
 
     #[test]
@@ -956,7 +1544,19 @@ mod tests {
 
         let done = snapshot.last().unwrap();
         assert_eq!(done["event"]["type"], "agent:done");
-        assert_eq!(done["event"]["stop_reason"], "stop");
+        assert_eq!(done["event"]["stop_reason"], "stub");
+        assert!(
+            snapshot
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:session_state"),
+            "stub fallback must still report session state"
+        );
+        assert!(
+            snapshot
+                .iter()
+                .all(|event| event["event"]["type"] != "error"),
+            "missing provider is a fallback, not an error event"
+        );
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -1004,6 +1604,346 @@ mod tests {
             .filter(|event| event["event"]["type"] == "agent:text_delta")
             .count();
         assert!(deltas < 20, "cancel should interrupt before all deltas");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_runtime_without_env_key_uses_placeholder() {
+        let base = temp_base();
+        let path = base.join("providers.json");
+        fs::write(
+            &path,
+            r#"{
+              "providers": [{"id":"local-stub","kind":"openai-responses","label":"Local Stub",
+                             "baseUrl":"http://10.0.2.2:8765/v1","apiKeyRef":"env:LC_STUB_API_KEY","enabled":true}],
+              "models": [{"id":"stub-chat","provider":"local-stub","modelId":"stub-chat",
+                          "thinking":["off"],"contextK":100,"compressAtK":80,"capabilities":[]}],
+              "defaultModel": "stub-chat"
+            }"#,
+        )
+        .unwrap();
+
+        let runtime = resolve_runtime(&path, Some("stub-chat"), |_| None).expect("runtime");
+        assert_eq!(runtime.base_url, "http://10.0.2.2:8765/v1");
+        assert_eq!(runtime.model_id, "stub-chat");
+        assert_eq!(runtime.api_key, PLACEHOLDER_API_KEY);
+        assert_eq!(runtime.context_k, 100);
+        assert_eq!(runtime.compress_at_k, 80);
+
+        let missing = base.join("missing.json");
+        assert_eq!(
+            resolve_runtime(&missing, None, |_| None).err(),
+            Some(RuntimeError::NoModel)
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn transport_failure_falls_back_to_stub() {
+        let (host, base) = setup();
+        host.dispatch("providers_save", &stub_save_input().to_string())
+            .unwrap();
+        let events = collect_events(&host);
+        let session_id = create_session_with_model(&host, Some("stub-chat"));
+        save_unreachable_provider(&host);
+
+        host.dispatch(
+            "agent_send",
+            &json!({"session_id": session_id, "text": "read src/main.rs"}).to_string(),
+        )
+        .unwrap();
+
+        let snapshot = wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:done")
+        });
+        let deltas: Vec<&Value> = snapshot
+            .iter()
+            .filter(|event| event["event"]["type"] == "agent:text_delta")
+            .collect();
+        assert_eq!(deltas.len(), STUB_DELTAS as usize);
+        assert!(deltas.iter().all(|delta| {
+            delta["event"]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("[stub]")
+        }));
+        let done = snapshot.last().unwrap();
+        assert_eq!(done["event"]["stop_reason"], "stub");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn save_unreachable_provider(host: &Host) {
+        let mut input = stub_save_input();
+        input["input"]["providers"][0]["baseUrl"] = json!("http://127.0.0.1:1/v1");
+        input["input"]["providers"][0]["apiKey"] = json!("sk-test");
+        host.dispatch("providers_save", &input.to_string()).unwrap();
+    }
+
+    #[test]
+    fn fake_agent_runs_plan_tool_call_and_streams_events() {
+        let factory = Arc::new(FakeFactory::new(vec![
+            read_turn(&["call_1"], "src/main.rs"),
+            final_turn("main.rs 只有一个空的 main 函数。"),
+        ]));
+        let requests = factory.requests();
+        let (host, base) = setup_with_factory(Some(factory));
+        let events = collect_events(&host);
+        let session_id = create_session_with_model(&host, Some("fake-model"));
+
+        host.dispatch(
+            "agent_send",
+            &json!({"session_id": session_id, "text": "读取 src/main.rs 并解释"}).to_string(),
+        )
+        .unwrap();
+
+        let snapshot = wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:done")
+        });
+
+        let types: Vec<&str> = snapshot
+            .iter()
+            .map(|event| event["event"]["type"].as_str().unwrap())
+            .collect();
+        let tool_start = types
+            .iter()
+            .position(|kind| *kind == "agent:tool_start")
+            .expect("tool_start");
+        let tool_result = types
+            .iter()
+            .position(|kind| *kind == "agent:tool_result")
+            .expect("tool_result");
+        let text = types
+            .iter()
+            .position(|kind| *kind == "agent:text_delta")
+            .expect("text_delta");
+        assert!(tool_start < tool_result && tool_result < text, "{types:?}");
+
+        let start = &snapshot[tool_start]["event"];
+        assert_eq!(start["name"], "read_file");
+        assert_eq!(start["session_id"], session_id);
+        let result = &snapshot[tool_result]["event"];
+        assert_eq!(result["ok"], true);
+        assert!(result["text"].as_str().unwrap().contains("fn main() {}"));
+
+        let text: String = snapshot
+            .iter()
+            .filter(|event| event["event"]["type"] == "agent:text_delta")
+            .filter_map(|event| event["event"]["text"].as_str())
+            .collect();
+        assert_eq!(text, "main.rs 只有一个空的 main 函数。");
+        assert!(
+            snapshot
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:usage"
+                    && event["event"]["input"] == 42
+                    && event["event"]["cached"] == 3)
+        );
+
+        let state = snapshot
+            .iter()
+            .rev()
+            .find(|event| event["event"]["type"] == "agent:session_state")
+            .expect("session_state");
+        // turn 计的是 LLM 迭代次数：工具轮 + 最终回答轮。
+        assert_eq!(state["event"]["session"]["turn"], 2);
+        assert_eq!(state["event"]["session"]["mode"], "plan");
+        assert_eq!(state["event"]["session"]["context_k"], 100);
+
+        let done_count = types.iter().filter(|kind| **kind == "agent:done").count();
+        assert_eq!(
+            done_count, 1,
+            "one user turn must emit exactly one done: {types:?}"
+        );
+        let done = snapshot.last().unwrap();
+        assert_eq!(done["event"]["type"], "agent:done");
+        assert_eq!(done["event"]["stop_reason"], "end_turn");
+
+        let seqs: Vec<u64> = snapshot
+            .iter()
+            .map(|event| event["seq"].as_u64().unwrap())
+            .collect();
+        assert!(seqs.windows(2).all(|pair| pair[0] + 1 == pair[1]));
+        assert!(
+            snapshot
+                .iter()
+                .all(|event| event["event"]["type"] != "error"),
+            "plan read tools must not error: {snapshot:?}"
+        );
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].input.iter().any(|input| matches!(
+            input,
+            lc_core::llm::LlmInput::FunctionCallOutput { output, .. }
+                if output.contains("fn main() {}")
+        )));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn fake_agent_rejects_write_tool_in_read_only_registry() {
+        let factory = Arc::new(FakeFactory::new(vec![vec![
+            LlmEvent::ToolUseStart {
+                id: "write_1".into(),
+                name: "write_file".into(),
+            },
+            LlmEvent::ToolUseArgsDelta {
+                id: "write_1".into(),
+                json: json!({"path": "src/main.rs", "content": "x"}).to_string(),
+            },
+            LlmEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ]]));
+        let (host, base) = setup_with_factory(Some(factory));
+        let events = collect_events(&host);
+        let session_id = create_session_with_model(&host, Some("fake-model"));
+
+        host.dispatch(
+            "agent_send",
+            &json!({"session_id": session_id, "text": "覆盖 main.rs"}).to_string(),
+        )
+        .unwrap();
+
+        let snapshot = wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:done")
+        });
+        let error = snapshot
+            .iter()
+            .find(|event| event["event"]["type"] == "error")
+            .expect("write tool should be rejected");
+        // 只读注册表不含 write_file，模型即使幻觉出该调用也只会得到未知工具错误。
+        assert_eq!(error["event"]["error"]["code"], "not_found");
+        assert!(
+            error["event"]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("write_file")
+        );
+        assert!(
+            snapshot
+                .iter()
+                .all(|event| event["event"]["type"] != "agent:tool_result"),
+            "denied tool must not execute"
+        );
+        let done = snapshot.last().unwrap();
+        assert_eq!(done["event"]["stop_reason"], "error");
+        assert_eq!(
+            fs::read_to_string(base.join("workspace/src/main.rs")).unwrap(),
+            "fn main() {}\n",
+            "plan mode must not modify the file"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    struct SlowLlm {
+        cancel: Arc<AtomicBool>,
+    }
+
+    impl LlmStream for SlowLlm {
+        fn stream(
+            &self,
+            _request: &LlmRequest,
+            sink: &mut dyn FnMut(LlmEvent),
+        ) -> Result<(), LlmError> {
+            for index in 0..STUB_DELTAS {
+                if self.cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                sink(LlmEvent::TextDelta {
+                    index,
+                    text: format!("real {index} "),
+                });
+                thread::sleep(Duration::from_millis(20));
+            }
+            Ok(())
+        }
+    }
+
+    struct SlowFactory {
+        cancel: Arc<AtomicBool>,
+    }
+
+    impl AgentFactory for SlowFactory {
+        fn create(&self, request: &AgentBuildRequest<'_>) -> Result<AgentLoop, ErrorBody> {
+            Ok(AgentLoop::new(
+                Session::new(request.session_id, PolicyMode::Plan),
+                Box::new(SlowLlm {
+                    cancel: Arc::clone(&self.cancel),
+                }),
+                Box::new(LocalToolExecutor::new(request.workspace_root)),
+                read_only_registry(),
+                request.workspace_root,
+                "fake-model",
+            )
+            .with_tools(read_only_registry().llm_tools()))
+        }
+    }
+
+    #[test]
+    fn agent_cancel_interrupts_real_loop() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let factory = Arc::new(SlowFactory {
+            cancel: Arc::clone(&cancel),
+        });
+        let (host, base) = setup_with_factory(Some(factory));
+        let events = collect_events(&host);
+        let session_id = create_session_with_model(&host, Some("fake-model"));
+
+        host.dispatch(
+            "agent_send",
+            &json!({"session_id": session_id, "text": "go"}).to_string(),
+        )
+        .unwrap();
+        wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:text_delta")
+        });
+
+        host.dispatch(
+            "agent_cancel",
+            &json!({"session_id": session_id}).to_string(),
+        )
+        .unwrap();
+
+        let snapshot = wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:done")
+        });
+        let state = snapshot
+            .iter()
+            .rev()
+            .find(|event| event["event"]["type"] == "agent:session_state")
+            .expect("cancelled session state");
+        assert_eq!(state["event"]["session"]["cancelled"], true);
+        let done = snapshot.last().unwrap();
+        assert_eq!(done["event"]["stop_reason"], "cancelled");
+        let deltas = snapshot
+            .iter()
+            .filter(|event| event["event"]["type"] == "agent:text_delta")
+            .count();
+        assert!(
+            deltas < STUB_DELTAS as usize,
+            "cancel should stop the stream"
+        );
+        assert!(
+            snapshot
+                .iter()
+                .all(|event| event["event"]["type"] != "agent:done"
+                    || event["event"]["stop_reason"] == "cancelled")
+        );
 
         let _ = fs::remove_dir_all(&base);
     }

@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.53] - 2026-11-09
+
+- 鸿蒙真实 Agent 对话：`agent_send` 接入 lc-core AgentLoop（plan 只读工具 + OpenAI Responses 流式 + 5s 连接超时），provider 三级密钥解析，失败回退 stub 并标注；`UreqSseTransport::with_connect_timeout`；mock-llm.mjs 开发验证；模拟器端到端：真实流式 + read_file 工具实读 + 断网 stub 回退
+
 ## [0.6.1-preview.52] - 2026-11-09
 
 - 鸿蒙 providers 命令：`providers_load/save` 复用 lc-core（0600 + tmp/rename + 校验），camelCase ProvidersView 对齐桌面；`session_create` 上下文预算跟随所选模型；ArkTS 首启预置 stub provider；模拟器验证供应商就绪、模型 pill、0/100k 预算、20 delta 对话

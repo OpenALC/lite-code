@@ -65,6 +65,20 @@ pub struct UreqSseTransport {
     agent: ureq::Agent,
 }
 
+impl UreqSseTransport {
+    /// 自定义连接/DNS/TLS 握手超时。流式请求的整体超时仍为 600s；鸿蒙宿主
+    /// 用它避免 provider 离线时长时间停在“思考中”。
+    pub fn with_connect_timeout(connect: Duration) -> Self {
+        let config = ureq::Agent::config_builder()
+            .timeout_connect(Some(connect))
+            .timeout_global(Some(Duration::from_secs(600)))
+            .build();
+        Self {
+            agent: ureq::Agent::new_with_config(config),
+        }
+    }
+}
+
 impl Default for UreqSseTransport {
     fn default() -> Self {
         let config = ureq::Agent::config_builder()
