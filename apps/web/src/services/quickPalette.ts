@@ -18,7 +18,7 @@ export function matchQuickNav(
   return {
     chats: chats
       .filter(item =>
-        `${item.title} ${item.model} ${item.mode} ${item.workspace}`
+        `${item.title} ${item.model} ${item.mode} ${item.workspace} ${item.excerpt}`
           .toLocaleLowerCase()
           .includes(term),
       )

@@ -658,6 +658,7 @@ describe('Agent 会话命令', () => {
       turn: 2,
       messages: 3,
       archived: false,
+      excerpt: '请修复登录问题',
     }
     installTauri({
       invoke: async (cmd, args) => {

@@ -25,6 +25,33 @@ pub struct HistoryEntry {
     pub turn: u32,
     pub messages: usize,
     pub archived: bool,
+    /// 消息正文摘要，供快速打开检索；限制长度，避免列表响应过大。
+    pub excerpt: String,
+}
+
+const EXCERPT_LIMIT: usize = 4000;
+
+fn excerpt_of(agent: &Value) -> String {
+    let Some(messages) = agent.get("messages").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for message in messages {
+        let Some(raw) = message.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        if raw.trim().is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(raw);
+        if text.chars().count() >= EXCERPT_LIMIT {
+            break;
+        }
+    }
+    text.chars().take(EXCERPT_LIMIT).collect()
 }
 
 fn history_dir() -> Result<PathBuf, ErrorBody> {
@@ -96,6 +123,7 @@ fn summarize(id: String, payload: &Value) -> HistoryEntry {
             .get("archived")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        excerpt: excerpt_of(agent),
     }
 }
 
@@ -376,6 +404,36 @@ mod tests {
         delete_in(&dir, "s-1").unwrap();
         assert_eq!(list_in(&dir).unwrap().len(), 1);
         delete_in(&dir, "s-1").unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summary_includes_message_excerpt() {
+        let dir = temp_dir("excerpt");
+        save_in(
+            &dir,
+            "s-1",
+            &serde_json::json!({
+                "title": "修复登录",
+                "savedAt": 1,
+                "agent": {
+                    "turn": 1,
+                    "messages": [
+                        {"role": "user", "text": "请修复登录问题"},
+                        {"role": "assistant", "text": "我先看看代码"},
+                        {"role": "assistant", "text": "  "}
+                    ]
+                }
+            }),
+        )
+        .unwrap();
+
+        let entry = &list_in(&dir).unwrap()[0];
+        assert_eq!(
+            entry.excerpt,
+            "请修复登录问题
+我先看看代码"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

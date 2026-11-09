@@ -15,6 +15,7 @@ function chat(overrides: Partial<HistorySummary> = {}): HistorySummary {
     turn: 1,
     messages: 2,
     archived: false,
+    excerpt: '',
     ...overrides,
   }
 }
@@ -33,6 +34,13 @@ describe('命令面板工作区/会话匹配', () => {
     expect(matchQuickNav(chats, [], 'claude').chats.map(item => item.id)).toEqual(['s-2'])
     expect(matchQuickNav(chats, [], 'auto').chats).toHaveLength(2)
     expect(matchQuickNav(chats, [], 'work/app').chats).toHaveLength(2)
+    expect(
+      matchQuickNav(
+        [chat({ excerpt: '错误出在 token 刷新逻辑' }), chat({ id: 's-2', excerpt: '样式调整' })],
+        [],
+        'token',
+      ).chats.map(item => item.id),
+    ).toEqual(['s-1'])
   })
 
   it('工作区按名称与路径匹配，不区分大小写', () => {

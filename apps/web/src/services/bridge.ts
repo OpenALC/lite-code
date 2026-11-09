@@ -1738,6 +1738,8 @@ export interface HistorySummary {
   turn: number
   messages: number
   archived: boolean
+  /** 消息正文摘要，快速打开按它检索会话内容。 */
+  excerpt: string
 }
 
 const HISTORY_FALLBACK_KEY = 'lc.agentHistory'
@@ -1760,6 +1762,17 @@ function fallbackSaveHistory(): void {
   }
 }
 
+function excerptOf(agent: Record<string, unknown>): string {
+  const messages = Array.isArray(agent.messages) ? agent.messages : []
+  const parts: string[] = []
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') continue
+    const text = (message as Record<string, unknown>).text
+    if (typeof text === 'string' && text.trim()) parts.push(text)
+  }
+  return parts.join('\n').slice(0, 4000)
+}
+
 function summaryOf(id: string, value: unknown): HistorySummary | null {
   if (!value || typeof value !== 'object') return null
   const item = value as Record<string, unknown>
@@ -1776,6 +1789,7 @@ function summaryOf(id: string, value: unknown): HistorySummary | null {
     turn: Number(agent.turn ?? 0),
     messages: Array.isArray(agent.messages) ? agent.messages.length : 0,
     archived: Boolean(item.archived),
+    excerpt: excerptOf(agent),
   }
 }
 
