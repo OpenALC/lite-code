@@ -323,8 +323,16 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
 
-## preview.63：鸿蒙 UI 抛光
+## RELEASE-GATES 复审（随 .45–.63 打 tag 执行，2026-11-10）
 
+- **A 类两项已关闭并持续保持**：#5 arm64（.3 起入矩阵，资产三平台验证）；#6 更新器
+  （latest.json + 滚动清单 .63 + workflow_dispatch 人工兜底 + 版本守卫测试；
+  `signed:false` 与已知限制逐版披露，豁免条件第 4 条满足）。
+- §4 审计豁免条件 1–3：维持满足（SECURITY-AUDIT.md §2/§5、cargo-deny/pnpm audit/
+  lane 边界全绿、安全路径有测试）。
+- B 类 #1–4、#7 维持「等待维护者」，未触碰 RELEASE-GATES.md 状态列（按其 §6 要求）。
+
+## preview.63：鸿蒙 UI 抛光
 - 供应商 sheet 系统返回键关闭（ArkTS onBackPress 消费 + setSheetOpen 状态
   同步）、Tab 焦点陷阱、Escape；归档开关零计数无 N。
 - web 431 项（+7）；模拟器 uinput 返回键 e2e：sheet 关闭 Ability 不后台、
