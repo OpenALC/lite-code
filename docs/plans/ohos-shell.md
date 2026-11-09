@@ -366,7 +366,10 @@ Rust 官方把 `aarch64/armv7/x86_64-unknown-linux-ohos` 列为 Tier 2（带 hos
 
 - `ignore`/`globset`/`regex`：纯 Rust，风险低；
 - `notify`/`notify-debouncer-full`：inotify，可能可编译，但 OHOS 不需要 watch；
-- `ureq` + `rustls`/`ring`：**最大风险**，TLS 后端可能需要换成 OpenSSL；
+- `ureq` + `rustls`/`ring`：**~~最大风险~~ 已实测通过**（2026-11-09，preview.52）：
+  `cargo build --release --target x86_64/aarch64-unknown-linux-ohos -p lc-core`
+  零改动成功（ring 0.17.14 自带 OHOS 支持）；TLS 无需换 OpenSSL，Phase 4
+  真实 provider 对话无编译层阻碍；
 - `zip`/`sha2`：Node 下载用，OHOS 不需要；
 - `dirs`：`home_dir()` 在 OHOS 可能为 None，已用 `LC_PROVIDERS_FILE` 规避。
 

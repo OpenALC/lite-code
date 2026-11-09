@@ -65,7 +65,7 @@
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
 | P5 发布 | ✅ `v0.5.1-preview.1` **已发布**（非 draft）：6 资产 |
-| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers 命令（preview.51/52）：模拟器端到端通过（供应商就绪、模型 pill、0/100k 预算、20 delta 对话 637ms、取消 14ms）；待办：lc-core feature 化探针、供应商编辑 UI（Phase 4）、真机签名 |
+| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers 命令（preview.51/52）：模拟器端到端通过（供应商就绪、模型 pill、0/100k 预算、20 delta 对话 637ms、取消 14ms）；**lc-core 全量 OHOS 交叉编译双 target 零改动通过**（ureq/rustls/ring 无需替换，Phase 4 无编译阻碍）；待办：真实 provider 对话（AgentLoop 接入）、供应商编辑 UI、真机签名 |
 | P6 本地安全整改 | ✅ CSP frame-src/object-src；DB/MCP 输出不可信边界；审计范围写入 `docs/SECURITY-AUDIT.md` |
 | P6 A 类 arm64 | ✅ `v0.6.1-preview.3` tag 构建成功：aarch64 AppImage/deb、`lc-cli-arm64` 已发布 |
 | P6 A 类 更新器 | ✅ `update_check` + `latest.json` 生成器 + 回滚文档；无签名密钥时 `signed:false`，签名门禁未完全关闭 |
