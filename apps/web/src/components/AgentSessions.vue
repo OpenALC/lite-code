@@ -760,7 +760,7 @@ onBeforeUnmount(() => {
 }
 
 .thread-search:focus-within {
-  border-color: var(--border-strong);
+  border-color: var(--accent-line);
   background: var(--panel-3);
   color: var(--fg-dim);
 }

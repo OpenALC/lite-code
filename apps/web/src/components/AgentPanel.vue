@@ -1913,9 +1913,9 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .msg.user .msg-text {
   max-width: 86%;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent-line);
   border-radius: var(--r);
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
 }
 
 .msg.assistant .msg-text {
@@ -2568,7 +2568,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 .comp-box:focus-within {
-  border-color: var(--border-strong);
+  border-color: var(--accent-line);
 }
 
 .composer textarea {

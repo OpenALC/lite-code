@@ -1699,75 +1699,11 @@ onBeforeUnmount(() => {
 }
 
 .mode-chip.active {
-  background: var(--panel-4);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
-/* Agent 模式：Kimi Code Desktop 式中性色板与无边框面板 */
-.shell.agent-mode {
-  --bg: #141414;
-  --titlebar: #181818;
-  --panel: #181818;
-  --panel-2: #1b1b1b;
-  --panel-3: #212121;
-  --panel-4: #282828;
-  --border: rgb(255 255 255 / 7%);
-  --border-strong: rgb(255 255 255 / 12%);
-  --fg: #efefef;
-  --fg-2: #c1c1c1;
-  --fg-dim: #929292;
-  --fg-faint: #6b6b6b;
-  --accent: #dedede;
-  --accent-hov: #f5f5f5;
-  --accent-fg: #121212;
-  --accent-soft: rgb(255 255 255 / 7%);
-  --accent-line: rgb(255 255 255 / 18%);
-  --r: 12px;
-  --r-sm: 8px;
-  --r-xs: 6px;
-}
-
-:root[data-theme='light'] .shell.agent-mode {
-  --bg: #f6f6f6;
-  --titlebar: #f0f0f0;
-  --panel: #f0f0f0;
-  --panel-2: #ffffff;
-  --panel-3: #e9e9e9;
-  --panel-4: #dfdfdf;
-  --border: #dddddd;
-  --border-strong: #c6c6c6;
-  --fg: #1c1c1c;
-  --fg-2: #4d4d4d;
-  --fg-dim: #6c6c6c;
-  --fg-faint: #9a9a9a;
-  --accent: #262626;
-  --accent-hov: #111111;
-  --accent-fg: #ffffff;
-  --accent-soft: rgb(0 0 0 / 6%);
-  --accent-line: rgb(0 0 0 / 18%);
-  --r: 12px;
-  --r-sm: 8px;
-  --r-xs: 6px;
-}
-
-.shell.agent-mode .workspace {
-  padding: 0;
-  gap: 0;
-}
-
-.shell.agent-mode .agent-sessions {
-  width: 272px;
-  border: 0;
-  border-right: 1px solid var(--border);
-  border-radius: 0;
-}
-
-.shell.agent-mode .agent-main {
-  border: 0;
-  border-radius: 0;
-  background: var(--bg);
-}
-
+/* Agent 模式与 VSC 模式共用同一套色板、圆角与卡片间距，仅隐藏活动栏。 */
 .shell.agent-mode .activity {
   display: none;
 }
@@ -2260,11 +2196,11 @@ onBeforeUnmount(() => {
 }
 
 .welcome-mark {
-  width: 42px;
-  height: 42px;
+  width: 56px;
+  height: 56px;
   border-radius: 14px;
-  background: linear-gradient(135deg, var(--accent), #9d7bff);
-  box-shadow: 0 0 0 8px var(--accent-soft);
+  background: url('/favicon.png') center / cover no-repeat;
+  box-shadow: 0 0 0 1px var(--border), var(--shadow-soft);
   margin-bottom: 8px;
 }
 

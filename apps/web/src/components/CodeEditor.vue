@@ -316,11 +316,15 @@ onMounted(async () => {
     inherit: true,
     rules: [],
     colors: {
-      'editor.background': '#17181c',
-      'editorGutter.background': '#17181c',
-      'editor.lineHighlightBackground': '#1d1f24',
-      'editorLineNumber.foreground': '#5c616b',
-      'editorLineNumber.activeForeground': '#d9dade',
+      'editor.background': '#181b23',
+      'editorGutter.background': '#181b23',
+      'editor.lineHighlightBackground': '#1e222c',
+      'editorLineNumber.foreground': '#5c6578',
+      'editorLineNumber.activeForeground': '#e6e9ef',
+      'editorCursor.foreground': '#0a84ff',
+      'editor.selectionBackground': '#0a84ff33',
+      'editor.inactiveSelectionBackground': '#0a84ff1f',
+      'editorLink.activeForeground': '#0a84ff',
     },
   })
 
@@ -330,10 +334,14 @@ onMounted(async () => {
     rules: [],
     colors: {
       'editor.background': '#ffffff',
-      'editorGutter.background': '#f7f9fc',
-      'editor.lineHighlightBackground': '#f1f5fb',
+      'editorGutter.background': '#f4f6fa',
+      'editor.lineHighlightBackground': '#eef4ff',
       'editorLineNumber.foreground': '#99a3b5',
       'editorLineNumber.activeForeground': '#1c2330',
+      'editorCursor.foreground': '#0a84ff',
+      'editor.selectionBackground': '#0a84ff26',
+      'editor.inactiveSelectionBackground': '#0a84ff17',
+      'editorLink.activeForeground': '#006fdb',
     },
   })
 
