@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.52` 发布中；滚动清单 updater-manifest 已提升到 .51。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .52；鸿蒙真实 AgentLoop 切片进行中。
 
 ## 当前位置一览
 
@@ -330,7 +330,7 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - 模拟器验证：供应商就绪、模型 pill `stub-chat`、0/100k 预算、20 delta 对话；
   providers.json 0600；重启后状态保持。
 - 验证：cargo 618、workspace clippy、web 408、lanes、HAP 26.92MiB。
-- 发布：`v0.6.1-preview.52` 发布中。
+- 发布：`v0.6.1-preview.52` **已发布**（10 资产，fmt 修复后重跑成功）；滚动清单已提升到 .52。
 
 ## preview.51：鸿蒙 NAPI 桥接真实 core
 
