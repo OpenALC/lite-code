@@ -165,6 +165,7 @@ fn rename_in(dir: &Path, id: &str, title: &str) -> Result<(), ErrorBody> {
     }
     mutate_in(dir, id, |object| {
         object.insert("title".into(), Value::String(title.into()));
+        object.insert("titleLocked".into(), Value::Bool(true));
         Ok(())
     })
 }
@@ -176,13 +177,46 @@ fn archive_in(dir: &Path, id: &str, archived: bool) -> Result<(), ErrorBody> {
     })
 }
 
+/// 新一轮保存会带回头条消息生成的标题；保留用户重命名/归档的元数据。
+fn merge_metadata(path: &Path, payload: &mut Value) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(existing) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    let Some(old) = existing.as_object() else {
+        return;
+    };
+    let Some(new) = payload.as_object_mut() else {
+        return;
+    };
+    if !new.contains_key("archived")
+        && let Some(archived) = old.get("archived")
+    {
+        new.insert("archived".into(), archived.clone());
+    }
+    if old
+        .get("titleLocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if let Some(title) = old.get("title") {
+            new.insert("title".into(), title.clone());
+        }
+        new.insert("titleLocked".into(), Value::Bool(true));
+    }
+}
+
 fn save_in(dir: &Path, id: &str, payload: &Value) -> Result<(), ErrorBody> {
     if !payload.is_object() {
         return Err(invalid("会话数据必须是 JSON 对象"));
     }
     let path = path_for(dir, id)?;
-    let bytes =
-        serde_json::to_vec(payload).map_err(|error| invalid(format!("序列化会话失败：{error}")))?;
+    let mut payload = payload.clone();
+    merge_metadata(&path, &mut payload);
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|error| invalid(format!("序列化会话失败：{error}")))?;
     if bytes.len() > MAX_PAYLOAD_BYTES {
         return Err(invalid(format!(
             "会话数据超过 {} MiB",
@@ -396,6 +430,21 @@ mod tests {
         assert!(!list_in(&dir).unwrap()[0].archived);
 
         assert!(rename_in(&dir, "s-1", "   ").is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_preserves_renamed_title_and_archive() {
+        let dir = temp_dir("metadata");
+        save_in(&dir, "s-1", &payload("首条消息", 1)).unwrap();
+        rename_in(&dir, "s-1", "自定义标题").unwrap();
+        archive_in(&dir, "s-1", true).unwrap();
+
+        // 新一轮快照仍带首条消息标题，但不应覆盖用户元数据。
+        save_in(&dir, "s-1", &payload("首条消息", 2)).unwrap();
+        let list = list_in(&dir).unwrap();
+        assert_eq!(list[0].title, "自定义标题");
+        assert!(list[0].archived);
         let _ = fs::remove_dir_all(&dir);
     }
 }

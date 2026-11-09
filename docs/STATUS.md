@@ -320,10 +320,11 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 ## preview.19：Kimi Agent 功能移植（核心不变）
 
 - 排队发送：运行/审批中发送进入本地队列，done 后自动续发；可移除/清空；建会话期间不丢队列。
-- 对话管理：内联重命名、归档/恢复、已归档折叠区；Tauri `history_rename/history_archive`。
+- 对话管理：内联重命名、归档/恢复、已归档折叠区；Tauri `history_rename/history_archive`；
+  后续保存保留标题与归档元数据。
 - 上下文详情：点击上下文条查看预算/阈值/最近请求/缓存/累计每轮 token。
 - 消息复制：execCommand 回退，避免 WebView2 剪贴板权限条。
-- 验证：Web 364、Rust 606；真机双轮排队、重命名/归档/恢复、浮层与复制通过。
+- 验证：Web 364、Rust 607；真机双轮排队、重命名/归档/恢复、浮层与复制通过。
 
 ## preview.18：Agent（Kimi）/ 编辑器（新版 VSC）双模式视觉重构
 
@@ -434,5 +435,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 97 · lsp stdio 2 · web 364（22 文件）· 合计 **970**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、history 5）。
+lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 98 · lsp stdio 2 · web 364（22 文件）· 合计 **971**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、history 6）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
