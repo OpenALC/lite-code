@@ -3,12 +3,13 @@
 //
 // Steps (docs/plans/ohos-shell.md §2.3):
 //   1. validate DEVECO_SDK_HOME, project hvigorw and ohpm
-//   2. pnpm --filter @lite-code/web build:ohos
-//   3. assert dist-ohos/ohos.html exists and contains no Monaco chunk
-//   4. replace rawfile/web with dist-ohos
-//   5. ohpm install
-//   6. hvigorw assembleHap
-//   7. print the HAP path and hdc install/launch commands
+//   2. cargo build lc-ohos for the enabled OHOS ABIs
+//   3. pnpm --filter @lite-code/web build:ohos
+//   4. assert dist-ohos/ohos.html exists and contains no Monaco chunk
+//   5. replace rawfile/web with dist-ohos
+//   6. ohpm install
+//   7. hvigorw assembleHap
+//   8. print the HAP path and hdc install/launch commands
 //
 // Usage: node scripts/ohos/build.mjs [--skip-web]
 //   --skip-web  reuse the existing rawfile/web (and the committed ohos.html
@@ -199,6 +200,35 @@ function assertNoSigningMaterial() {
   }
 }
 
+function buildNativeHost(sdkHome, env) {
+  const nativeRoot = path.join(sdkHome, 'default', 'openharmony', 'native');
+  const llvmBin = path.join(nativeRoot, 'llvm', 'bin');
+  const exe = IS_WINDOWS ? '.exe' : '';
+  const clang = path.join(llvmBin, `clang${exe}`);
+  const llvmAr = path.join(llvmBin, `llvm-ar${exe}`);
+  if (!fs.existsSync(clang) || !fs.existsSync(llvmAr)) {
+    fail(`OHOS clang/llvm-ar not found under ${llvmBin}`);
+  }
+
+  const targets = [
+    ['x86_64', 'x86_64-unknown-linux-ohos'],
+    ['aarch64', 'aarch64-unknown-linux-ohos'],
+  ];
+  for (const [arch, triple] of targets) {
+    const key = `CARGO_TARGET_${triple.toUpperCase().replaceAll('-', '_')}`;
+    const envKey = triple.replaceAll('-', '_');
+    env[`${key}_LINKER`] = clang;
+    env[`${key}_AR`] = llvmAr;
+    env[`CC_${envKey}`] = clang;
+    env[`AR_${envKey}`] = llvmAr;
+    log(`  lc-ohos ${arch} -> ${triple}`);
+    run('cargo', ['build', '--release', '--target', triple, '-p', 'lc-ohos'], {
+      cwd: REPO_ROOT,
+      env,
+    });
+  }
+}
+
 function assertWebBuild() {
   const entryHtml = path.join(WEB_DIST, 'ohos.html');
   if (!fs.existsSync(entryHtml)) {
@@ -289,7 +319,7 @@ function main() {
 
   log('Lite Code · HarmonyOS shell build');
   log('');
-  log('[1/7] validate environment');
+  log('[1/8] validate environment');
 
   const sdkHome = resolveSdkHome(process.env.DEVECO_SDK_HOME);
   const devecoHome = path.dirname(sdkHome);
@@ -320,10 +350,13 @@ function main() {
     HVIGOR_USER_HOME: hvigorUserHome,
   };
 
+  log('[2/8] cargo build lc-ohos');
+  buildNativeHost(sdkHome, childEnv);
+
   if (skipWeb) {
-    log('[2/7] skip web build');
-    log('[3/7] skip dist-ohos validation');
-    log('[4/7] skip rawfile/web sync');
+    log('[3/8] skip web build');
+    log('[4/8] skip dist-ohos validation');
+    log('[5/8] skip rawfile/web sync');
     checkExistingAssets();
   } else {
     const webPackage = JSON.parse(fs.readFileSync(path.join(WEB_ROOT, 'package.json'), 'utf8'));
@@ -333,23 +366,23 @@ function main() {
           'The ohos web entry must land before a full build; use --skip-web for the shell slice.'
       );
     }
-    log('[2/7] pnpm --filter @lite-code/web build:ohos');
+    log('[3/8] pnpm --filter @lite-code/web build:ohos');
     run('pnpm', ['--filter', '@lite-code/web', 'build:ohos'], {
       cwd: REPO_ROOT,
       env: childEnv,
     });
 
-    log('[3/7] validate dist-ohos');
+    log('[4/8] validate dist-ohos');
     assertWebBuild();
 
-    log('[4/7] sync rawfile/web');
+    log('[5/8] sync rawfile/web');
     syncRawfile();
   }
 
-  log('[5/7] ohpm install');
+  log('[6/8] ohpm install');
   run(ohpm, ['install'], { cwd: OHOS_ROOT, env: childEnv });
 
-  log('[6/7] hvigorw assembleHap');
+  log('[7/8] hvigorw assembleHap');
   run(
     HVIGORW,
     [
@@ -367,7 +400,7 @@ function main() {
     { cwd: OHOS_ROOT, env: childEnv }
   );
 
-  log('[7/7] locate HAP');
+  log('[8/8] locate HAP');
   const hap = locateHap();
   const hapSize = fs.statSync(hap).size;
   log('');

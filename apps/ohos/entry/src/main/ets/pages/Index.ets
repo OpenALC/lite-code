@@ -1,6 +1,11 @@
 import { webview } from '@kit.ArkWeb';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { common } from '@kit.AbilityKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { resourceManager } from '@kit.LocalizationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+
+import { NativeBridge } from '../bridge/NativeBridge';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'LiteCodeOhos';
@@ -19,6 +24,10 @@ const DEV_SERVER_URL: string = 'http://10.0.2.2:5173/ohos.html';
 
 // Debug builds keep web inspection available; switch off before release.
 const ENABLE_WEB_DEBUG: boolean = true;
+
+const SAMPLE_DIR: string = 'sample-workspace';
+const PROVIDERS_JSON: string =
+  '{"providers":[],"models":[],"defaultModel":null,"defaultThinking":null,"subagentModel":null,"subagentThinking":null}\n';
 
 const MIME_TYPES: Record<string, string> = {
   'html': 'text/html',
@@ -108,17 +117,101 @@ function parseAssetPath(url: string): string | undefined {
 @Component
 struct Index {
   private controller: webview.WebviewController = new webview.WebviewController();
+  private bridge: NativeBridge = new NativeBridge();
 
   aboutToAppear(): void {
-    if (!ENABLE_WEB_DEBUG) {
-      return;
+    if (ENABLE_WEB_DEBUG) {
+      try {
+        webview.WebviewController.setWebDebuggingAccess(true);
+      } catch (error) {
+        const err = error as BusinessError;
+        hilog.warn(DOMAIN, TAG, 'setWebDebuggingAccess failed: %{public}s', err.message);
+      }
     }
     try {
-      webview.WebviewController.setWebDebuggingAccess(true);
+      const configJson: string = this.prepareHost();
+      this.bridge.attach(this.controller);
+      this.bridge.init(configJson);
     } catch (error) {
       const err = error as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'setWebDebuggingAccess failed: %{public}s', err.message);
+      hilog.error(DOMAIN, TAG, 'native host init failed: %{public}s', err.message);
     }
+  }
+
+  aboutToDisappear(): void {
+    // The NAPI env cleanup hook owns disposal. Calling dispose here can free the
+    // host while an async invoke or agent worker is still using it.
+  }
+
+  /** Copies the rawfile sample workspace into filesDir on first launch. */
+  private prepareHost(): string {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    const filesDir: string = context.filesDir;
+    const workspaceRoot: string = `${filesDir}/${SAMPLE_DIR}`;
+    const providersFile: string = `${filesDir}/providers.json`;
+
+    if (!fs.accessSync(workspaceRoot)) {
+      hilog.info(DOMAIN, TAG, 'copying rawfile %{public}s to %{public}s', SAMPLE_DIR, workspaceRoot);
+      this.copyRawTree(context.resourceManager, SAMPLE_DIR, workspaceRoot);
+    }
+    if (!fs.accessSync(providersFile)) {
+      this.writeText(providersFile, PROVIDERS_JSON);
+    }
+
+    hilog.info(DOMAIN, TAG, 'workspace root: %{public}s', workspaceRoot);
+    return JSON.stringify({
+      files_dir: filesDir,
+      workspace_root: workspaceRoot,
+      providers_file: providersFile
+    });
+  }
+
+  private copyRawTree(manager: resourceManager.ResourceManager, rawDir: string, destDir: string): void {
+    fs.mkdirSync(destDir, true);
+    const names: string[] = manager.getRawFileListSync(rawDir);
+    for (const name of names) {
+      const rawPath: string = `${rawDir}/${name}`;
+      const destPath: string = `${destDir}/${name}`;
+      let children: string[] = [];
+      try {
+        children = manager.getRawFileListSync(rawPath);
+      } catch (error) {
+        // getRawFileListSync throws for files; treat those as leaves.
+        children = [];
+      }
+      if (children.length > 0) {
+        this.copyRawTree(manager, rawPath, destPath);
+        continue;
+      }
+      const bytes: Uint8Array = manager.getRawFileContentSync(rawPath);
+      const file = fs.openSync(destPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(file.fd, bytes.buffer);
+      } finally {
+        fs.closeSync(file);
+      }
+    }
+  }
+
+  private writeText(path: string, text: string): void {
+    const file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(file.fd, text);
+    } finally {
+      fs.closeSync(file);
+    }
+  }
+
+  private probeBridge(url: string): void {
+    hilog.info(DOMAIN, TAG, 'page loaded: %{public}s', url);
+    this.controller
+      .runJavaScript('typeof window.__lcNative === "object" && typeof window.__lcNative.invoke === "function"')
+      .then((ready: string) => {
+        hilog.info(DOMAIN, TAG, 'page bridge ready: %{public}s', ready);
+      })
+      .catch((error: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'page bridge probe failed: %{public}s', error.message);
+      });
   }
 
   private readRawfile(rawPath: string): ArrayBuffer | undefined {
@@ -186,10 +279,16 @@ struct Index {
           .domStorageAccess(true)
           .fileAccess(false)
           .imageAccess(true)
+          .javaScriptProxy({
+            object: this.bridge,
+            name: '__lcNative',
+            methodList: ['invoke'],
+            controller: this.controller
+          })
           .width('100%')
           .height('100%')
           .onPageEnd((event) => {
-            hilog.info(DOMAIN, TAG, 'dev page loaded: %{public}s', event.url);
+            this.probeBridge(event.url);
           })
       } else {
         Web({ src: ENTRY_URL, controller: this.controller })
@@ -197,11 +296,17 @@ struct Index {
           .domStorageAccess(true)
           .fileAccess(false)
           .imageAccess(true)
+          .javaScriptProxy({
+            object: this.bridge,
+            name: '__lcNative',
+            methodList: ['invoke'],
+            controller: this.controller
+          })
           .onInterceptRequest((event: OnInterceptRequestEvent): WebResourceResponse => {
             return this.serve(event.request.getRequestUrl());
           })
           .onPageEnd((event) => {
-            hilog.info(DOMAIN, TAG, 'page loaded: %{public}s', event.url);
+            this.probeBridge(event.url);
           })
           .width('100%')
           .height('100%')

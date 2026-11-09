@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.51] - 2026-11-09
+
+- 鸿蒙 NAPI 桥与真实 core：`lc-ohos` C ABI + NAPI async work + threadsafe 事件通道 + ArkTS NativeBridge（javaScriptProxy）；x86_64/aarch64 OHOS 交叉编译入 HAP（26.75MiB）；模拟器端到端：真实 fs 文件树、三级目录中文只读预览、20 delta 流式对话（637ms）、取消 14ms、刷新重订阅无崩溃
+
 ## [0.6.1-preview.50] - 2026-11-09
 
 - 鸿蒙首版外壳 MVP：`apps/ohos` 工程（虚拟 origin + onInterceptRequest + MIME/路径防护）、`scripts/ohos/build.mjs`、`apps/web` ohos 只读入口（build:ohos 产物 318KiB 无 Monaco）、`crates/lc-ohos` 宿主（fs 命令 + plan 锁定 + stub agent）；API 26 模拟器安装启动与渲染验证通过，HAP 2.89MiB

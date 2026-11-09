@@ -20,6 +20,8 @@ use lc_proto::{
 };
 use serde_json::Value;
 
+pub mod ffi;
+
 pub type EventSink = Arc<dyn Fn(String) + Send + Sync>;
 
 const STUB_DELTAS: u32 = 20;
