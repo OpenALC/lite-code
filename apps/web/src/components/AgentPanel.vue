@@ -19,6 +19,7 @@ import {
 } from '../services/agentContext'
 import type { AgentSessionController, TurnStat } from '../services/agentSession'
 import { renderMarkdown } from '../services/markdown'
+import { forkBeforeUserMessage } from '../services/forkSession'
 import {
   buildFileIndex,
   searchFiles,
@@ -342,6 +343,38 @@ async function copyMessage(id: string, text: string): Promise<void> {
     copiedId.value = null
     copyTimer = null
   }, 1200)
+}
+
+function forkFromUser(userIndex: number, sendNow: boolean): void {
+  if (!agent.value || streaming.value || approvalPending.value || state.value.archived) {
+    return
+  }
+  const fork = forkBeforeUserMessage(state.value, userIndex, props.workspace ?? '')
+  if (!fork || !props.controller.loadHistory(fork.session)) return
+  if (sendNow) {
+    void props.controller.send(fork.prompt)
+    return
+  }
+  props.controller.setDraft(fork.prompt)
+  void nextTick(() => {
+    const el = composerEl.value
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(fork.prompt.length, fork.prompt.length)
+  })
+}
+
+function editFromUser(userIndex: number): void {
+  forkFromUser(userIndex, false)
+}
+
+function retryFromAssistant(messageIndex: number): void {
+  for (let index = messageIndex; index >= 0; index -= 1) {
+    if (messages.value[index]?.role === 'user') {
+      forkFromUser(index, true)
+      return
+    }
+  }
 }
 
 function onWindowKeydown(event: KeyboardEvent): void {
@@ -853,7 +886,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       </div>
 
       <div
-        v-for="message in messages"
+        v-for="(message, index) in messages"
         :key="message.id"
         class="msg"
         :class="message.role"
@@ -886,6 +919,26 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
             @click.stop="copyMessage(message.id, message.text)"
           >
             {{ copiedId === message.id ? t('agent.copied') : t('agent.copy') }}
+          </button>
+          <button
+            v-if="!state.archived && !streaming && !approvalPending"
+            type="button"
+            :title="t('agent.forkHint')"
+            @click.stop="retryFromAssistant(index)"
+          >
+            {{ t('agent.forkRetry') }}
+          </button>
+        </div>
+        <div
+          v-if="message.role === 'user' && message.text && !state.archived && !streaming && !approvalPending"
+          class="msg-actions user-actions"
+        >
+          <button
+            type="button"
+            :title="t('agent.forkHint')"
+            @click.stop="editFromUser(index)"
+          >
+            {{ t('agent.forkEdit') }}
           </button>
         </div>
       </div>
