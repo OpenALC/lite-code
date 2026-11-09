@@ -16,6 +16,13 @@ pub mod envelope {
     /// （Tauri 事件插件 / NAPI threadsafe function → runJavaScript）。
     pub type EventSink = Arc<dyn Fn(String) + Send + Sync>;
 
+    /// CoreEvent 级事件出口（桌面形状，M3a 下沉）：生产实现把事件推到底层
+    /// 通道（Tauri 事件插件）。鸿蒙的 JSON fn-pointer 出口见 [`EventSink`]；
+    /// 两形状经 [`envelope`] 统一信封与 seq 语义。
+    pub trait CoreEventSink: Send + Sync {
+        fn emit(&self, event: CoreEvent);
+    }
+
     /// 单调 seq（1 起）。进程内唯一，跨会话连续；web 侧按 seq 检测丢序。
     /// 内部 Arc：`Seq` 可 clone，跨 worker 线程共享同一计数器。
     #[derive(Default, Clone)]
@@ -25,17 +32,29 @@ pub mod envelope {
         pub fn next(&self) -> u64 {
             self.0.fetch_add(1, Ordering::SeqCst) + 1
         }
+
+        /// 从已有计数续接（种子 n：下一个返回 n+1）。桌面迁移用：替换
+        /// `AtomicU64::new(n)` 种子场景（测试断言首信封 seq 连续）。
+        pub fn from_u64(seed: u64) -> Self {
+            Self(Arc::new(AtomicU64::new(seed)))
+        }
     }
 
     /// 封装一条契约事件为信封 JSON 并推给 sink；sink 缺失或序列化失败为 no-op。
     pub fn emit_envelope(sink: &Option<EventSink>, seq: &Seq, event: CoreEvent) {
         let Some(sink) = sink else { return };
-        let envelope = EventEnvelope {
-            seq: seq.next(),
-            event,
-        };
+        let envelope = envelope(seq, event);
         if let Ok(json) = serde_json::to_string(&envelope) {
             sink(json);
+        }
+    }
+
+    /// 包一条契约事件为信封（seq 取共享 [`Seq`] 的下一个值，1 起，SeqCst）。
+    /// 桌面 `next_envelope` 的下移替代：两端信封形状与 seq 语义由此统一。
+    pub fn envelope(seq: &Seq, event: CoreEvent) -> EventEnvelope {
+        EventEnvelope {
+            seq: seq.next(),
+            event,
         }
     }
 
@@ -45,7 +64,7 @@ pub mod envelope {
 
         use lc_proto::{CoreEvent, ErrorBody, ErrorCode};
 
-        use super::{EventSink, Seq, emit_envelope};
+        use super::{CoreEventSink, EventSink, Seq, emit_envelope, envelope};
 
         fn collecting() -> (EventSink, Arc<Mutex<Vec<String>>>) {
             let out = Arc::new(Mutex::new(Vec::new()));
@@ -59,6 +78,13 @@ pub mod envelope {
             assert_eq!(seq.next(), 1);
             assert_eq!(seq.next(), 2);
             assert_eq!(seq.next(), 3);
+        }
+
+        #[test]
+        fn seq_from_u64_continues_after_seed() {
+            let seq = Seq::from_u64(41);
+            assert_eq!(seq.next(), 42);
+            assert_eq!(seq.next(), 43);
         }
 
         #[test]
@@ -89,6 +115,47 @@ pub mod envelope {
                 },
             );
             assert_eq!(seq.next(), 1, "无 sink 时不得消耗 seq");
+        }
+
+        #[test]
+        fn envelope_wraps_seq_and_event() {
+            let seq = Seq::default();
+            let first = envelope(
+                &seq,
+                CoreEvent::AgentDone {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                },
+            );
+            assert_eq!(first.seq, 1);
+            let second = envelope(
+                &seq,
+                CoreEvent::Error {
+                    error: ErrorBody::new(ErrorCode::Internal, "boom"),
+                },
+            );
+            assert_eq!(second.seq, 2, "envelope() 与 emit_envelope() 同一 seq 语义");
+        }
+
+        #[test]
+        fn core_event_sink_trait_is_implementable() {
+            struct Recording {
+                events: Mutex<Vec<CoreEvent>>,
+            }
+            impl CoreEventSink for Recording {
+                fn emit(&self, event: CoreEvent) {
+                    self.events.lock().unwrap().push(event);
+                }
+            }
+            let recording = Arc::new(Recording {
+                events: Mutex::new(Vec::new()),
+            });
+            let boxed: Arc<dyn CoreEventSink> = recording.clone();
+            boxed.emit(CoreEvent::AgentDone {
+                session_id: "s".into(),
+                stop_reason: "end_turn".into(),
+            });
+            assert_eq!(recording.events.lock().unwrap().len(), 1);
         }
     }
 }

@@ -14,7 +14,6 @@
 //! 状态的命令（connect/disconnect/save/delete）下发 `db:status`，
 //! list/schema/query/execute/explain 不发状态事件。
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lc_core::agent::{ToolCall, ToolError, ToolExecutor, ToolOutput};
@@ -94,15 +93,12 @@ impl DbState {
 /// 与 agent/task 的 seq 相互独立。
 #[derive(Default, Clone)]
 pub(crate) struct DbEvents {
-    seq: Arc<AtomicU64>,
+    seq: lc_host::envelope::Seq,
 }
 
 impl DbEvents {
     fn next_envelope(&self, event: CoreEvent) -> EventEnvelope {
-        EventEnvelope {
-            seq: self.seq.fetch_add(1, Ordering::Relaxed),
-            event,
-        }
+        lc_host::envelope::envelope(&self.seq, event)
     }
 
     pub(crate) fn sink(&self, app: tauri::AppHandle) -> Arc<dyn EventSink> {
@@ -387,7 +383,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::Mutex;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use lc_core::agent::ToolCall;
     use lc_proto::{DbConnectionInfo, DbKind, DbSchemaNodeKind};
@@ -826,9 +822,11 @@ mod tests {
         let first = events.next_envelope(CoreEvent::DbStatus {
             connection: connection.clone(),
         });
-        assert_eq!(first.seq, 0);
+        // M3a：seq 语义统一到 lc-host `Seq`（1 起；原 0 基 fetch_add 的
+        // 0/1 对应现在的 1/2）。
+        assert_eq!(first.seq, 1);
         let json = serde_json::to_value(&first).expect("serialize db status");
-        assert_eq!(json["seq"], 0);
+        assert_eq!(json["seq"], 1);
         assert_eq!(json["event"]["type"], "db:status");
         assert_eq!(json["event"]["connection"]["connection_id"], "main");
         assert_eq!(json["event"]["connection"]["state"], "connected");
@@ -836,7 +834,7 @@ mod tests {
         assert_eq!(json["event"]["connection"]["kind"], "sqlite");
 
         let second = events.next_envelope(CoreEvent::DbStatus { connection });
-        assert_eq!(second.seq, 1);
+        assert_eq!(second.seq, 2);
     }
 
     #[test]
@@ -867,8 +865,9 @@ mod tests {
                 error: None,
             },
         });
-        assert_eq!(first.seq, 0);
-        assert_eq!(second.seq, 1, "克隆共享同一 seq 计数器");
+        // M3a：1 基 seq（原 0 基的 0/1 对应现在的 1/2）。
+        assert_eq!(first.seq, 1);
+        assert_eq!(second.seq, 2, "克隆共享同一 seq 计数器");
     }
 
     struct Fallback;

@@ -33,6 +33,7 @@ ureq = "3.5.1"
 # 原生文件夹选择器（打开工作区）；仅桌面壳使用。
 rfd = "0.15"
 lc-core = { workspace = true }
+lc-host = { workspace = true }
 lc-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

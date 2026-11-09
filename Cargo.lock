@@ -2246,6 +2246,7 @@ name = "lc-desktop"
 version = "0.6.1-preview.64"
 dependencies = [
  "lc-core",
+ "lc-host",
  "lc-proto",
  "rfd",
  "serde",

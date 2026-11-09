@@ -6,8 +6,8 @@
 //! 观察者据此抑制取消后的事件。
 //!
 //! 所有下行事件统一走 `core:event` 单通道（与 apps/web 的 bridge 约定一致），
-//! 载荷是契约 [`EventEnvelope`]；`seq` 由应用级 [`AgentSessions`] 持有的
-//! 原子计数器分配，多会话共享同一序列。
+//! 载荷是契约 [`EventEnvelope`]；`seq` 由 lc-host `Seq` 统一分配（1 起，
+//! 与鸿蒙端同一语义），多会话共享同一序列。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -25,8 +25,8 @@ use lc_core::llm::{LlmEvent, RuntimeError, load_for_model};
 use lc_core::mcp::{McpConfig, McpExecutor, McpHost};
 use lc_core::task::TaskError;
 use lc_proto::{
-    ApprovalDecision, CommandResult, CoreEvent, ErrorBody, ErrorCode, EventEnvelope, SessionMode,
-    TaskInfo, TaskStatus,
+    ApprovalDecision, CommandResult, CoreEvent, ErrorBody, ErrorCode, SessionMode, TaskInfo,
+    TaskStatus,
 };
 use tauri::Emitter;
 
@@ -56,7 +56,7 @@ pub(crate) struct AgentSessions {
 #[derive(Default)]
 struct SessionsInner {
     sessions: Mutex<HashMap<String, SessionHandle>>,
-    seq: Arc<AtomicU64>,
+    seq: lc_host::envelope::Seq,
     counter: AtomicU64,
 }
 
@@ -159,29 +159,21 @@ fn unknown_session(id: &str) -> ErrorBody {
 
 // ==== 事件发射 ====
 
-/// 事件下行抽象。生产实现是 Tauri `AppHandle::emit`；单测用记录型 sink，
-/// 不启动 Tauri 运行时。
-pub(crate) trait EventSink: Send + Sync {
-    fn emit(&self, event: CoreEvent);
-}
+/// 事件下行抽象：lc-host `CoreEventSink` 的桌面重导出（M3a 下沉，两端
+/// 统一 trait 形状与 seq 语义）。生产实现是 Tauri `AppHandle::emit`；单测
+/// 用记录型 sink，不启动 Tauri 运行时。
+pub(crate) use lc_host::envelope::CoreEventSink as EventSink;
 
 struct AppEventSink {
     app: tauri::AppHandle,
-    seq: Arc<AtomicU64>,
+    seq: lc_host::envelope::Seq,
 }
 
 impl EventSink for AppEventSink {
     fn emit(&self, event: CoreEvent) {
-        let envelope = next_envelope(&self.seq, event);
+        let envelope = lc_host::envelope::envelope(&self.seq, event);
         // 窗口销毁/重建期间 emit 可能失败；事件流不是命令通道，忽略即可。
         let _ = self.app.emit(CORE_EVENT_CHANNEL, envelope);
-    }
-}
-
-fn next_envelope(seq: &AtomicU64, event: CoreEvent) -> EventEnvelope {
-    EventEnvelope {
-        seq: seq.fetch_add(1, Ordering::Relaxed),
-        event,
     }
 }
 
@@ -877,6 +869,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
     use lc_core::agent::{
@@ -1394,26 +1387,28 @@ mod tests {
     fn envelopes_are_sequenced_and_contract_shaped() {
         assert_eq!(CORE_EVENT_CHANNEL, "core:event");
 
-        let seq = AtomicU64::new(41);
-        let first = next_envelope(
+        // M3a：seq 语义统一到 lc-host `Seq`（1 起，种子 n 的下一个为 n+1；
+        // 原 AtomicU64 0 基 fetch_add 的 41/42 对应现在的 42/43）。
+        let seq = lc_host::envelope::Seq::from_u64(41);
+        let first = lc_host::envelope::envelope(
             &seq,
             CoreEvent::AgentThinkingDelta {
                 session_id: "s1".into(),
                 text: "think".into(),
             },
         );
-        let second = next_envelope(
+        let second = lc_host::envelope::envelope(
             &seq,
             CoreEvent::AgentDone {
                 session_id: "s1".into(),
                 stop_reason: "end_turn".into(),
             },
         );
-        assert_eq!(first.seq, 41);
-        assert_eq!(second.seq, 42);
+        assert_eq!(first.seq, 42);
+        assert_eq!(second.seq, 43);
 
         let json = serde_json::to_value(&second).expect("serialize envelope");
-        assert_eq!(json["seq"], 42);
+        assert_eq!(json["seq"], 43);
         assert_eq!(json["event"]["type"], "agent:done");
         assert_eq!(json["event"]["stop_reason"], "end_turn");
     }
@@ -2090,8 +2085,10 @@ mod tests {
 
     #[test]
     fn task_link_events_have_contract_shape() {
-        let seq = AtomicU64::new(9);
-        let needs = next_envelope(
+        // M3a：seq 1 基（Seq::from_u64(9) 的下一个为 10；原 0 基 fetch_add 的
+        // 9/10 对应现在的 10/11）。
+        let seq = lc_host::envelope::Seq::from_u64(9);
+        let needs = lc_host::envelope::envelope(
             &seq,
             CoreEvent::TaskNeedsInput {
                 task_id: "task-1".into(),
@@ -2099,12 +2096,12 @@ mod tests {
             },
         );
         let json = serde_json::to_value(&needs).expect("serialize needs_input");
-        assert_eq!(json["seq"], 9);
+        assert_eq!(json["seq"], 10);
         assert_eq!(json["event"]["type"], "task:needs_input");
         assert_eq!(json["event"]["task_id"], "task-1");
         assert_eq!(json["event"]["kind"], "approval");
 
-        let updated = next_envelope(
+        let updated = lc_host::envelope::envelope(
             &seq,
             CoreEvent::TaskUpdated {
                 task: TaskInfo {
@@ -2124,7 +2121,7 @@ mod tests {
             },
         );
         let json = serde_json::to_value(&updated).expect("serialize updated");
-        assert_eq!(json["seq"], 10);
+        assert_eq!(json["seq"], 11);
         assert_eq!(json["event"]["type"], "task:updated");
         assert_eq!(json["event"]["task"]["task_id"], "task-1");
         assert_eq!(json["event"]["task"]["status"], "review");
