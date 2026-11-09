@@ -305,6 +305,32 @@ function printUsage() {
   log('  --skip-web   skip the web build and rawfile sync, reusing current assets');
 }
 
+function syncVersionCode() {
+  const appJsonPath = path.join(OHOS_ROOT, 'AppScope', 'app.json5');
+  const rootPkgPath = path.join(OHOS_ROOT, '..', '..', 'package.json');
+  const appJson = fs.readFileSync(appJsonPath, 'utf8');
+  const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, 'utf8'));
+  const match = /-preview\.(\d+)$/.exec(rootPkg.version ?? '');
+  if (!match) {
+    fail(`root package.json version lacks -preview.N: ${rootPkg.version}`);
+  }
+  const versionCode = 1000000 + Number(match[1]);
+  const updated = appJson.replace(/"versionCode":\s*\d+/, `"versionCode": ${versionCode}`);
+  if (updated === appJson) {
+    fail(`app.json5 has no numeric versionCode to update: ${appJsonPath}`);
+  }
+  fs.writeFileSync(appJsonPath, updated);
+  // app.json5 是入库文件：无论构建成败/中断，退出时还原，避免工作区脏。
+  process.once('exit', () => {
+    try {
+      fs.writeFileSync(appJsonPath, appJson);
+    } catch {
+      /* best effort */
+    }
+  });
+  log(`versionCode ${versionCode} (from ${rootPkg.version})`);
+}
+
 function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
@@ -316,6 +342,10 @@ function main() {
     fail(`unknown argument(s): ${unknown.join(' ')}\n\nRun with --help for usage.`);
   }
   const skipWeb = args.includes('--skip-web');
+
+  // versionCode 跟随 root package.json 的 preview 序号（0.6.1-preview.N → 1000000+N），
+  // 保证真机/商店升级链单调（signing.md 路径 B 的 versionCode 规则）。
+  syncVersionCode();
 
   log('Lite Code · HarmonyOS shell build');
   log('');

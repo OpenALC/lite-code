@@ -4,6 +4,7 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { resourceManager } from '@kit.LocalizationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import BuildProfile from 'BuildProfile';
 
 import { NativeBridge } from '../bridge/NativeBridge';
 
@@ -22,8 +23,10 @@ const ENTRY_URL: string = `${ORIGIN}/${ENTRY_PATH}`;
 const USE_DEV_SERVER: boolean = false;
 const DEV_SERVER_URL: string = 'http://10.0.2.2:5173/ohos.html';
 
-// Debug builds keep web inspection available; switch off before release.
-const ENABLE_WEB_DEBUG: boolean = true;
+// Web inspection follows the hvigor build mode: debug builds (emulator/dev) keep
+// it on, release builds turn it off. BuildProfile.DEBUG is generated per build
+// mode; see scripts/ohos/signing.md.
+const ENABLE_WEB_DEBUG: boolean = BuildProfile.DEBUG;
 
 const SAMPLE_DIR: string = 'sample-workspace';
 // The OHOS shell now runs lc-core's real AgentLoop; the host mock
