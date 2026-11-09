@@ -657,8 +657,8 @@ P6 出口要求包含无法在本会话/本机完成的项，需维护者或外�
 1. **30 天无 P0/P1 缺陷、崩溃率 < 0.1%**：需要真实用户/长周期遥测；当前仓库无遥测后端。
 2. **第三方安全审计高危清零**：需要外部审计方与报告。
 3. **代码签名（SignPath / Azure Trusted Signing）**：需要证书/账号与仓库 secrets；当前安装包未签名。
-4. **HarmonyOS spike**：需要 DevEco/ArkWeb SDK 与真机；本机未安装。
-5. **Linux arm64 正式包**：需要 arm64 构建/运行环境与发布矩阵扩展。
+4. **HarmonyOS 产品外壳**：spike 已完成（`spikes/harmony-arkweb`，DevEco 26/API26 模拟器验证 ArkWeb+NAPI）；剩余产品化（只读+对话首版）需排期。
+5. **Linux arm64**：已进发布矩阵（CI 构建 aarch64 AppImage/deb/lc-cli 并发布）；剩余真机运行验收。
 6. **更新器与回滚通道**：需要签名密钥与发布端点。
 
 可本地完成的部分（i18n 完整性、cargo-deny、clippy/test、性能回归）已纳入 CI。
