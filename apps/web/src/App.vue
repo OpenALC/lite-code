@@ -20,7 +20,7 @@ import TaskList from './components/TaskList.vue'
 import TaskStatusBar from './components/TaskStatusBar.vue'
 import TaskWorkbench from './components/TaskWorkbench.vue'
 import { createAgentSession } from './services/agentSession'
-import { createHistoryRecorder } from './services/agentHistory'
+import { createHistoryRecorder, flushHistory, loadStoredSession } from './services/agentHistory'
 import {
   loadWorkspaces,
   removeWorkspace,
@@ -47,8 +47,10 @@ import {
   gitStage,
   gitStatus,
   gitUnstage,
+  historyList,
   historyMigrateWorkspace,
   isTauri,
+  type HistorySummary,
   onCoreEvent,
   lspStartPlugins,
   onLspDiagnostics,
@@ -74,6 +76,7 @@ import { createTaskController } from './services/taskStore'
 import { extensionsExecuteCommand, extensionsList } from './services/extensions'
 import { subscribeAgentContext } from './services/agentContext'
 import { setFileDiagnostics } from './services/lspDiagnostics'
+import { matchQuickNav } from './services/quickPalette'
 import { activateTab, closeTab, openTab, renameTab, tabsStore } from './services/tabs'
 import {
   initUiPrefs,
@@ -345,6 +348,7 @@ const searchSeed = ref({ query: '', seq: 0 })
 const quickInput = ref<HTMLInputElement | null>(null)
 const quickOpen = ref(false)
 const quickIndex = ref(0)
+const quickChats = ref<HistorySummary[]>([])
 
 interface QuickItem {
   id: string
@@ -409,6 +413,24 @@ const commands = computed<QuickItem[]>(() => [
 const quickResults = computed<QuickItem[]>(() => {
   const query = quickQuery.value.trim().toLowerCase()
   if (!query) return []
+  const nav = matchQuickNav(quickChats.value, workspaces.value, quickQuery.value, 4)
+  const workspaceItems: QuickItem[] = nav.workspaces.map(item => ({
+    id: `ws:${item.root}`,
+    label: item.name,
+    detail: item.root,
+    action: async () => {
+      if (await activateWorkspace(item.root)) setAppMode('agent')
+    },
+  }))
+  const chatItems: QuickItem[] = nav.chats.map(item => {
+    const workspace = workspaces.value.find(entry => samePath(entry.root, item.workspace))
+    return {
+      id: `chat:${item.id}`,
+      label: item.title,
+      detail: `${(workspace?.name ?? item.workspace) || t('agent.noSession')} · ${item.archived ? t('agent.archived') : t('agent.history')}`,
+      action: () => openQuickChat(item),
+    }
+  })
   const files: QuickItem[] = openTabs.value
     .filter(tab => `${tab.title} ${tab.path ?? ''}`.toLowerCase().includes(query))
     .map(tab => ({
@@ -429,7 +451,7 @@ const quickResults = computed<QuickItem[]>(() => {
       sidebarView.value = 'search'
     },
   }
-  return [...files, ...cmds, searchInFiles].slice(0, 8)
+  return [...workspaceItems, ...chatItems, ...files, ...cmds, searchInFiles].slice(0, 10)
 })
 
 watch(quickResults, list => {
@@ -439,6 +461,7 @@ watch(quickResults, list => {
 
 function openQuick(): void {
   void refreshPluginCommands()
+  void refreshQuickChats()
   quickOpen.value = true
   void nextTick(() => quickInput.value?.focus())
 }
@@ -449,6 +472,27 @@ function runQuick(item: QuickItem | undefined): void {
   quickQuery.value = ''
   quickInput.value?.blur()
   void item.action()
+}
+
+async function refreshQuickChats(): Promise<void> {
+  await flushHistory()
+  const res = await historyList()
+  if (res.ok) quickChats.value = res.data
+}
+
+async function openQuickChat(item: HistorySummary): Promise<void> {
+  if (item.workspace && !samePath(item.workspace, projectRoot.value)) {
+    if (!(await activateWorkspace(item.workspace))) return
+  }
+  const session = await loadStoredSession(item.id)
+  if (!session) {
+    workspaceError.value = t('agent.historyLoadFailed')
+    return
+  }
+  if (!agentSession.loadHistory(session)) return
+  rightTab.value = 'agent'
+  rightVisible.value = true
+  setAppMode('agent')
 }
 
 /** 点击快速打开以外的区域时收起面板（含清空查询），与 VS Code 行为一致。 */
