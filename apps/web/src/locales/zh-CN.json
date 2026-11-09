@@ -474,6 +474,10 @@
     "output": "输出",
     "problems": "问题",
     "noProblems": "没有发现问题",
+    "noFilteredProblems": "当前筛选没有问题",
+    "filterAll": "全部",
+    "filterErrors": "错误",
+    "filterWarnings": "警告",
     "collapse": "折叠底部面板",
     "show": "显示底部面板"
   },

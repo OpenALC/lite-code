@@ -474,6 +474,10 @@
     "output": "Output",
     "problems": "Problems",
     "noProblems": "No problems detected",
+    "noFilteredProblems": "No problems match this filter",
+    "filterAll": "All",
+    "filterErrors": "Errors",
+    "filterWarnings": "Warnings",
     "collapse": "Collapse bottom panel",
     "show": "Show bottom panel"
   },

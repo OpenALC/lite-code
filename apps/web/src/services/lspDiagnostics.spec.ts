@@ -4,6 +4,7 @@ import type { LspDiagnostic } from './bridge'
 import {
   clearDiagnostics,
   diagnosticsFor,
+  filterProblems,
   flattenDiagnostics,
   setFileDiagnostics,
   subscribeDiagnostics,
@@ -65,6 +66,19 @@ describe('lspDiagnostics', () => {
 
   it('flattening empty state returns []', () => {
     expect(flattenDiagnostics({})).toEqual([])
+  })
+
+  it('filters problems by severity without mutating the source', () => {
+    const items = [
+      { path: 'a', serverId: 'lsp', diagnostic: { ...diagnostic('e'), severity: 1 } },
+      { path: 'a', serverId: 'lsp', diagnostic: { ...diagnostic('w'), severity: 2 } },
+      { path: 'a', serverId: 'lsp', diagnostic: { ...diagnostic('i'), severity: 3 } },
+    ]
+
+    expect(filterProblems(items, 'errors').map(item => item.diagnostic.message)).toEqual(['e'])
+    expect(filterProblems(items, 'warnings').map(item => item.diagnostic.message)).toEqual(['w'])
+    expect(filterProblems(items, 'all')).toHaveLength(3)
+    expect(items).toHaveLength(3)
   })
 
   it('subscribers receive aggregated state and stop after unsubscribe', () => {

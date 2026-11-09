@@ -79,10 +79,12 @@ import { subscribeAgentContext } from './services/agentContext'
 import { requestReveal } from './services/editorReveal'
 import { resolveEditorStrategy } from './services/largeFile'
 import {
+  filterProblems,
   flattenDiagnostics,
   setFileDiagnostics,
   subscribeDiagnostics,
   type DiagnosticsByPath,
+  type ProblemFilter,
 } from './services/lspDiagnostics'
 import { matchQuickNav, parseQuickQuery } from './services/quickPalette'
 import {
@@ -224,6 +226,15 @@ const unsubscribeDiagnostics = subscribeDiagnostics(state => {
   diagnosticsByPath.value = state
 })
 const problemItems = computed(() => flattenDiagnostics(diagnosticsByPath.value))
+const problemFilter = ref<ProblemFilter>('all')
+const visibleProblemItems = computed(() =>
+  filterProblems(problemItems.value, problemFilter.value),
+)
+const problemCounts = computed(() => ({
+  all: problemItems.value.length,
+  errors: filterProblems(problemItems.value, 'errors').length,
+  warnings: filterProblems(problemItems.value, 'warnings').length,
+}))
 
 type ResizeTarget = 'sidebar' | 'right' | 'bottom'
 function startResize(target: ResizeTarget, event: PointerEvent): void {
@@ -1393,14 +1404,40 @@ onBeforeUnmount(() => {
             v-if="bottomTab === 'problems'"
             class="problems"
           >
+            <div class="problem-filters">
+              <button
+                type="button"
+                class="problem-filter"
+                :class="{ active: problemFilter === 'all' }"
+                @click="problemFilter = 'all'"
+              >
+                {{ t('bottom.filterAll') }} {{ problemCounts.all }}
+              </button>
+              <button
+                type="button"
+                class="problem-filter"
+                :class="{ active: problemFilter === 'errors' }"
+                @click="problemFilter = 'errors'"
+              >
+                {{ t('bottom.filterErrors') }} {{ problemCounts.errors }}
+              </button>
+              <button
+                type="button"
+                class="problem-filter"
+                :class="{ active: problemFilter === 'warnings' }"
+                @click="problemFilter = 'warnings'"
+              >
+                {{ t('bottom.filterWarnings') }} {{ problemCounts.warnings }}
+              </button>
+            </div>
             <div
-              v-if="problemItems.length === 0"
+              v-if="visibleProblemItems.length === 0"
               class="problems-empty"
             >
-              {{ t('bottom.noProblems') }}
+              {{ problemItems.length === 0 ? t('bottom.noProblems') : t('bottom.noFilteredProblems') }}
             </div>
             <button
-              v-for="(item, index) in problemItems"
+              v-for="(item, index) in visibleProblemItems"
               :key="`${item.path}-${item.serverId}-${item.diagnostic.line}-${item.diagnostic.column}-${index}`"
               type="button"
               class="problem-row"
@@ -2325,6 +2362,30 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: auto;
   padding: 4px 0;
+}
+
+.problem-filters {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 6px;
+}
+
+.problem-filter {
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--r-xs);
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.problem-filter:hover {
+  color: var(--fg);
+}
+
+.problem-filter.active {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .problems-empty {

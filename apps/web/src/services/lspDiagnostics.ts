@@ -53,6 +53,18 @@ export function flattenDiagnostics(state: DiagnosticsByPath): ProblemItem[] {
   )
 }
 
+export type ProblemFilter = 'all' | 'errors' | 'warnings'
+
+/** 问题面板筛选：errors=severity 1，warnings=severity 2。 */
+export function filterProblems(
+  items: readonly ProblemItem[],
+  filter: ProblemFilter,
+): ProblemItem[] {
+  if (filter === 'all') return [...items]
+  const severity = filter === 'errors' ? 1 : 2
+  return items.filter(item => item.diagnostic.severity === severity)
+}
+
 export function clearDiagnostics(): void {
   store.set({})
 }
