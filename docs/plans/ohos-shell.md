@@ -465,7 +465,10 @@ HDC='D:\ide\Huawei\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe'
   （3 个大文件 +57 MiB、5 轮对话 +20 MiB）。证据：`.tmp/ohos-perf/*/summary.txt`。
 - 平板：**已验证**——`Relay_Tablet_API26`（2880×1920）冷启动安装产品 HAP，
   三栏布局（文件树 | 预览 | Agent）渲染正确（`lc-tablet4.jpeg`）。
-  2in1 `-create` 支持但镜像未下载，未验证。
+- 2in1：镜像已下载（HarmonyOS 7.0.0 pc_all_x86，2.38GB），但
+  `Emulator.exe -create -deviceType 2in1` 在本 build 静默无效（带/不带
+  `-screenProfile 'MateBook Pro'` 均不落盘）；需 DevEco Device Manager GUI
+  创建。风险低：壳为响应式布局且 tablet 形态已验证，2in1 属同族大屏。
 - 注意：模拟器 filesDir 的 sample-workspace 仅在首启复制；换装不同
   sample 的 HAP 需 uninstall 后重装（install -r 不重置数据）。
 
