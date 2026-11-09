@@ -86,10 +86,12 @@ crates/lc-ohos
      Ok 分支，error 路径留宿主。cancel 收尾形状两侧相同（swap 复位 →
      cancelled state → done）但 info 来源不同（桌面从 `Session` 快照、ohos
      从句柄写回），各留薄壳不合。
-   - **3c. 桌面 `AgentSessions` 表切 `Sessions<P>`（stretch，可选）**：桌面无
-     回收语义（会话活到断开/退出），limit/ordinal 价值有限；若做则
-     `limit = usize::MAX`、`P = desktop SessionHandle`，落盘/路由不动。
-     优先级低，可并入 M4。
+   - **3c. 桌面 `AgentSessions` 表切 `Sessions<P>`：不做（M3a/M3b 实施后判定）**。
+     桌面注册表语义与 `Sessions` 的本质不同：worker 长驻 + `Weak` 注册表自移除
+     （无回收，alive 无用）、id 用 millis+counter（ordinal 无用）、busy CAS
+     在命令线程表外完成（begin_turn 无用）、会话活到断开（limit 恒不触发）。
+     硬套 `Sessions<P>` 只剩一个更差的 HashMap——判定为仪式性统一。桌面
+     `AgentSessions` 保持宿主私有（命令通道生命周期是桌面特性，不是重复）。
    - **3d. ApprovalHook trait：不做**。plan 模式只读工具不会 NeedsApproval；
      桌面审批 resume 绑定长驻 worker 命令循环，抽象后两端都用不上。第三
      宿主出现再提取。
