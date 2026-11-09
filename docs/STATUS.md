@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54/55/56/57/58/59/60/61/62/63` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .63；`preview.64` 发布中（lc-host M1）；鸿蒙手机/平板模拟器端到端全绿（PSS 已实测）。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54/55/56/57/58/59/60/61/62/63/64` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .64；鸿蒙手机/平板模拟器端到端全绿（PSS 已实测）。
 
 ## 当前位置一览
 
@@ -336,8 +336,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 
 - 新 crate `lc-host`（envelope：EventSink/Seq/emit_envelope +3 单测）；
   lc-ohos 切换共享实现，无行为变化。
-- 验证：workspace 654、clippy/fmt、web 431、lanes、HAP 27.33MiB。
-- 发布：`v0.6.1-preview.64` 发布中。
+- 验证：workspace 654、clippy/fmt、web 431、lanes、HAP 27.33MiB；
+  模拟器冒烟（session_create/agent_send/seq 连续）通过；real-path 流式
+  中断为当晚宿主网络降级所致（.63 对照同样表现，非 M1 回归，已排查留证）。
+- 发布：`v0.6.1-preview.64` **已发布**（10 资产，deny 修复后重跑成功）；滚动清单已提升到 .64。
 
 ## preview.63：鸿蒙 UI 抛光
 - 供应商 sheet 系统返回键关闭（ArkTS onBackPress 消费 + setSheetOpen 状态
