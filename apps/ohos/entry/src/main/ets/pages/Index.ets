@@ -26,8 +26,30 @@ const DEV_SERVER_URL: string = 'http://10.0.2.2:5173/ohos.html';
 const ENABLE_WEB_DEBUG: boolean = true;
 
 const SAMPLE_DIR: string = 'sample-workspace';
+// The OHOS shell has no real LLM transport yet (agent_send is a native stub), but
+// AgentPanel only enables the composer when providers_load reports a model whose
+// provider has a key (apiKeyRef counts). Seed a local stub provider without a
+// real secret so the first launch shows a usable model pill.
 const PROVIDERS_JSON: string =
-  '{"providers":[],"models":[],"defaultModel":null,"defaultThinking":null,"subagentModel":null,"subagentThinking":null}\n';
+  '{"providers":[{"id":"local-stub","kind":"openai-responses","label":"Local Stub",' +
+  '"baseUrl":"http://10.0.2.2:8765/v1","apiKeyRef":"env:LC_STUB_API_KEY","enabled":true}],' +
+  '"models":[{"id":"stub-chat","provider":"local-stub","modelId":"stub-chat",' +
+  '"thinking":["off"],"contextK":100,"compressAtK":80,"capabilities":[]}],' +
+  '"defaultModel":"stub-chat","defaultThinking":"off",' +
+  '"subagentModel":null,"subagentThinking":null}\n';
+
+interface ProvidersTemplate {
+  models?: Object[];
+}
+
+function hasProviderModels(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as ProvidersTemplate;
+    return Array.isArray(parsed.models) && parsed.models.length > 0;
+  } catch (error) {
+    return false;
+  }
+}
 
 const MIME_TYPES: Record<string, string> = {
   'html': 'text/html',
@@ -154,9 +176,7 @@ struct Index {
       hilog.info(DOMAIN, TAG, 'copying rawfile %{public}s to %{public}s', SAMPLE_DIR, workspaceRoot);
       this.copyRawTree(context.resourceManager, SAMPLE_DIR, workspaceRoot);
     }
-    if (!fs.accessSync(providersFile)) {
-      this.writeText(providersFile, PROVIDERS_JSON);
-    }
+    this.ensureProvidersFile(providersFile);
 
     hilog.info(DOMAIN, TAG, 'workspace root: %{public}s', workspaceRoot);
     return JSON.stringify({
@@ -164,6 +184,27 @@ struct Index {
       workspace_root: workspaceRoot,
       providers_file: providersFile
     });
+  }
+
+  /**
+   * Seeds the providers template on first launch. Files created by older builds
+   * have no models, which leaves the AgentPanel composer disabled; rewrite those
+   * too (the shell still has no provider editor to produce a deliberate empty
+   * config).
+   */
+  private ensureProvidersFile(providersFile: string): void {
+    let needsTemplate: boolean = !fs.accessSync(providersFile);
+    if (!needsTemplate) {
+      try {
+        needsTemplate = !hasProviderModels(fs.readTextSync(providersFile));
+      } catch (error) {
+        needsTemplate = true;
+      }
+    }
+    if (needsTemplate) {
+      hilog.info(DOMAIN, TAG, 'writing providers template to %{public}s', providersFile);
+      this.writeText(providersFile, PROVIDERS_JSON);
+    }
   }
 
   private copyRawTree(manager: resourceManager.ResourceManager, rawDir: string, destDir: string): void {

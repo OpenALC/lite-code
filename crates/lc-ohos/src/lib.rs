@@ -4,6 +4,8 @@
 //! - `workspace_root` / `fs_read_dir` / `fs_read_file` 复用 lc-core 的路径校验与按层读取；
 //! - `session_create` 强制 `plan` 模式（只读 + 对话）；
 //! - `agent_send` / `agent_cancel` 是 stub：20 个 `text_delta` 后 `done`，取消可中断；
+//! - `providers_load` / `providers_save` 读写 `HostConfig.providers_file`，形状与桌面
+//!   `providers.rs` 的 `ProvidersView` 一致（密钥只回传 `hasApiKey`/末四位提示）；
 //! - 其余命令返回 `not_implemented`（契约没有独立的 `unsupported` 错误码）。
 
 use std::collections::HashMap;
@@ -15,9 +17,11 @@ use std::thread;
 use std::time::Duration;
 
 use lc_core::fs::{RealPathResolver, display_path, ensure_within_root, read_dir_level};
+use lc_core::llm::{ModelConfig, ProviderConfig, ProviderError, ProviderKind, ProvidersFile};
 use lc_proto::{
     CommandResult, CoreEvent, ErrorBody, ErrorCode, EventEnvelope, SessionInfo, SessionMode,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod ffi;
@@ -37,6 +41,7 @@ pub struct HostConfig {
 pub struct Host {
     root: PathBuf,
     root_display: String,
+    providers_file: PathBuf,
     sessions: Mutex<HashMap<String, SessionHandle>>,
     sink: Mutex<Option<EventSink>>,
     seq: Arc<AtomicU64>,
@@ -83,6 +88,7 @@ impl Host {
         Ok(Host {
             root_display: display_path(&root),
             root,
+            providers_file: config.providers_file,
             sessions: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
             seq: Arc::new(AtomicU64::new(0)),
@@ -124,7 +130,7 @@ impl Host {
                 }
             }
             "session_create" => CommandResult::Session {
-                session: self.create_session(),
+                session: self.create_session(&args),
             },
             "agent_send" => {
                 self.agent_send(&args)?;
@@ -134,6 +140,8 @@ impl Host {
                 self.agent_cancel(&args)?;
                 CommandResult::Ack
             }
+            "providers_load" => return self.providers_load(),
+            "providers_save" => return self.providers_save(&args),
             _ => return Err(unsupported(cmd)),
         };
         serde_json::to_string(&result).map_err(|error| {
@@ -146,20 +154,38 @@ impl Host {
         *self.sink_slot() = Some(sink);
     }
 
-    fn create_session(&self) -> SessionInfo {
+    fn create_session(&self, args: &Value) -> SessionInfo {
         let number = self.next_session.fetch_add(1, Ordering::Relaxed) + 1;
+        let (context_k, compress_at_k) = self.model_budget(args.get("model").and_then(Value::as_str));
         let info = SessionInfo {
             session_id: format!("ohos-{number}"),
             mode: SessionMode::Plan,
             turn: 0,
             max_turns: 25,
-            context_k: 400,
-            compress_at_k: 300,
+            context_k,
+            compress_at_k,
             cancelled: false,
         };
         self.sessions_slot()
             .insert(info.session_id.clone(), SessionHandle::new(info.clone()));
         info
+    }
+
+    /// 会话预算跟随所选模型的 `contextK/compressAtK`；缺省模型或配置缺失时回退 400/300。
+    fn model_budget(&self, model: Option<&str>) -> (u32, u32) {
+        let Some(model) = model else {
+            return (400, 300);
+        };
+        let Ok(Some(file)) = ProvidersFile::load_path(&self.providers_file) else {
+            return (400, 300);
+        };
+        for config in &file.models {
+            if config.id == model {
+                let context_k = config.context_k.max(1);
+                return (context_k, config.compress_at_k.clamp(1, context_k));
+            }
+        }
+        (400, 300)
     }
 
     fn agent_send(&self, args: &Value) -> Result<(), ErrorBody> {
@@ -192,6 +218,35 @@ impl Host {
         Ok(())
     }
 
+    /// 读取供应商配置。文件缺失或 JSON 损坏时返回空视图：首版壳没有供应商
+    /// 编辑入口，空视图让前端继续显示“请先配置供应商”，而不是整页报错。
+    fn providers_load(&self) -> Result<String, ErrorBody> {
+        let file = match ProvidersFile::load_path(&self.providers_file) {
+            Ok(Some(file)) => file,
+            Ok(None) | Err(ProviderError::Parse(_)) => ProvidersFile::default(),
+            Err(error) => return Err(provider_error(error)),
+        };
+        serialize_view(file)
+    }
+
+    /// 保存供应商配置。入参形状与桌面 `providers_save` 一致：`{ input }`，
+    /// 空 `apiKey` 表示保留旧值；写入复用 lc-core 的 0600 + tmp/rename。
+    fn providers_save(&self, args: &Value) -> Result<String, ErrorBody> {
+        let input = args
+            .get("input")
+            .ok_or_else(|| invalid("missing object argument `input`"))?;
+        let input: ProvidersSaveInput = serde_json::from_value(input.clone())
+            .map_err(|error| invalid(format!("invalid providers input: {error}")))?;
+        if input.models.is_empty() {
+            return Err(invalid("models must be a non-empty array"));
+        }
+        let existing = ProvidersFile::load_path(&self.providers_file).map_err(provider_error)?;
+        let file = merge_and_validate(existing, input).map_err(provider_error)?;
+        file.save_path(&self.providers_file)
+            .map_err(provider_error)?;
+        serialize_view(file)
+    }
+
     fn session(&self, id: &str) -> Result<SessionHandle, ErrorBody> {
         self.sessions_slot()
             .get(id)
@@ -220,6 +275,194 @@ impl Host {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// 与 `apps/desktop/src-tauri/src/providers.rs` 的 `ProviderView` 同形：
+/// `apiKey` 永不回传，只给 `hasApiKey` 与末四位提示。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderView {
+    pub id: String,
+    pub kind: ProviderKind,
+    pub label: String,
+    pub base_url: String,
+    pub enabled: bool,
+    pub api_key_ref: String,
+    pub has_api_key: bool,
+    pub api_key_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvidersView {
+    pub providers: Vec<ProviderView>,
+    pub models: Vec<ModelConfig>,
+    pub default_model: Option<String>,
+    pub default_thinking: Option<String>,
+    pub subagent_model: Option<String>,
+    pub subagent_thinking: Option<String>,
+}
+
+impl From<ProvidersFile> for ProvidersView {
+    fn from(file: ProvidersFile) -> Self {
+        Self {
+            providers: file
+                .providers
+                .into_iter()
+                .map(|provider| {
+                    let key = provider
+                        .api_key
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty());
+                    ProviderView {
+                        id: provider.id,
+                        kind: provider.kind,
+                        label: provider.label,
+                        base_url: provider.base_url,
+                        enabled: provider.enabled,
+                        api_key_ref: provider.api_key_ref,
+                        has_api_key: key.is_some(),
+                        api_key_hint: key.map(key_hint),
+                    }
+                })
+                .collect(),
+            models: file.models,
+            default_model: file.default_model,
+            default_thinking: file.default_thinking,
+            subagent_model: file.subagent_model,
+            subagent_thinking: file.subagent_thinking,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderInput {
+    id: String,
+    kind: ProviderKind,
+    label: String,
+    base_url: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    /// 用户新输入的密钥；空/缺省表示保留旧值。
+    #[serde(default)]
+    api_key: Option<String>,
+    /// 旧配置的环境变量引用；缺省表示沿用旧值。
+    #[serde(default)]
+    api_key_ref: Option<String>,
+    #[serde(default)]
+    clear_api_key: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProvidersSaveInput {
+    providers: Vec<ProviderInput>,
+    models: Vec<ModelConfig>,
+    #[serde(default)]
+    default_model: Option<String>,
+    #[serde(default)]
+    default_thinking: Option<String>,
+    #[serde(default)]
+    subagent_model: Option<String>,
+    #[serde(default)]
+    subagent_thinking: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 合并旧配置里的密钥/引用，再走 lc-core 校验（与桌面命令语义一致）。
+fn merge_and_validate(
+    existing: Option<ProvidersFile>,
+    input: ProvidersSaveInput,
+) -> Result<ProvidersFile, ProviderError> {
+    let mut old_providers: HashMap<String, ProviderConfig> = existing
+        .unwrap_or_default()
+        .providers
+        .into_iter()
+        .map(|provider| (provider.id.clone(), provider))
+        .collect();
+
+    let providers = input
+        .providers
+        .into_iter()
+        .map(|provider| {
+            let old = old_providers.remove(&provider.id);
+            let new_key = provider
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_string);
+            let api_key = if provider.clear_api_key {
+                None
+            } else {
+                new_key.or_else(|| old.as_ref().and_then(|p| p.api_key.clone()))
+            };
+            let api_key_ref = if provider.clear_api_key {
+                String::new()
+            } else {
+                provider
+                    .api_key_ref
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reference| !reference.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| old.map(|p| p.api_key_ref))
+                    .unwrap_or_default()
+            };
+            ProviderConfig {
+                id: provider.id,
+                kind: provider.kind,
+                label: provider.label,
+                base_url: provider.base_url,
+                api_key,
+                api_key_ref,
+                enabled: provider.enabled,
+            }
+        })
+        .collect();
+
+    let file = ProvidersFile {
+        providers,
+        models: input.models,
+        default_model: input.default_model,
+        default_thinking: input.default_thinking,
+        subagent_model: input.subagent_model,
+        subagent_thinking: input.subagent_thinking,
+    };
+    file.validate()?;
+    Ok(file)
+}
+
+fn serialize_view(file: ProvidersFile) -> Result<String, ErrorBody> {
+    serde_json::to_string(&ProvidersView::from(file)).map_err(|error| {
+        ErrorBody::new(
+            ErrorCode::Internal,
+            format!("serialize providers view: {error}"),
+        )
+    })
+}
+
+/// 只暴露末四位；短密钥整体打码，避免把 4 位以内的密钥直接回显。
+fn key_hint(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() < 8 {
+        return "••••".into();
+    }
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("••••{tail}")
+}
+
+fn provider_error(error: ProviderError) -> ErrorBody {
+    let code = match error {
+        ProviderError::Io(_) => ErrorCode::Io,
+        _ => ErrorCode::InvalidArgument,
+    };
+    ErrorBody::new(code, error.to_string())
 }
 
 fn run_stub_agent(
@@ -334,7 +577,7 @@ fn unsupported(cmd: &str) -> ErrorBody {
         format!("unsupported command on ohos shell: {cmd}"),
     )
     .with_detail(
-        "supported: workspace_root, fs_read_dir, fs_read_file, session_create, agent_send, agent_cancel",
+        "supported: workspace_root, fs_read_dir, fs_read_file, session_create, agent_send, agent_cancel, providers_load, providers_save",
     )
 }
 
@@ -491,6 +734,167 @@ mod tests {
             .dispatch("fs_read_dir", &json!({"path": ".."}).to_string())
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::PathOutsideRoot);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn stub_save_input() -> Value {
+        json!({
+            "input": {
+                "providers": [{
+                    "id": "local-stub",
+                    "kind": "openai-responses",
+                    "label": "Local Stub",
+                    "baseUrl": "http://10.0.2.2:8765/v1",
+                    "enabled": true,
+                    "apiKeyRef": "env:LC_STUB_API_KEY"
+                }],
+                "models": [{
+                    "id": "stub-chat",
+                    "provider": "local-stub",
+                    "modelId": "stub-chat",
+                    "thinking": ["off"],
+                    "contextK": 100,
+                    "compressAtK": 80,
+                    "capabilities": []
+                }],
+                "defaultModel": "stub-chat",
+                "defaultThinking": "off",
+                "subagentModel": null,
+                "subagentThinking": null
+            }
+        })
+    }
+
+    #[test]
+    fn session_create_uses_model_budget() {
+        let (host, base) = setup();
+        host.dispatch("providers_save", &stub_save_input().to_string())
+            .unwrap();
+
+        let with_model = parse(
+            &host
+                .dispatch(
+                    "session_create",
+                    r#"{"mode":"plan","model":"stub-chat"}"#,
+                )
+                .unwrap(),
+        );
+        assert_eq!(with_model["session"]["context_k"], 100);
+        assert_eq!(with_model["session"]["compress_at_k"], 80);
+
+        let without_model = parse(&host.dispatch("session_create", "{}").unwrap());
+        assert_eq!(without_model["session"]["context_k"], 400);
+        assert_eq!(without_model["session"]["compress_at_k"], 300);
+
+        let unknown = parse(
+            &host
+                .dispatch("session_create", r#"{"model":"no-such-model"}"#)
+                .unwrap(),
+        );
+        assert_eq!(unknown["session"]["context_k"], 400);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn providers_load_missing_file_returns_empty_view() {
+        let (host, base) = setup();
+
+        let view = parse(&host.dispatch("providers_load", "{}").unwrap());
+        assert_eq!(view["providers"], json!([]));
+        assert_eq!(view["models"], json!([]));
+        assert!(view["defaultModel"].is_null());
+        assert!(view["defaultThinking"].is_null());
+        assert!(view["subagentModel"].is_null());
+        assert!(view["subagentThinking"].is_null());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn providers_load_corrupt_json_returns_empty_view() {
+        let (host, base) = setup();
+        let providers = base.join("files/providers.json");
+        fs::write(&providers, "{ this is not json").unwrap();
+
+        let view = parse(&host.dispatch("providers_load", "{}").unwrap());
+        assert_eq!(view["providers"], json!([]));
+        assert_eq!(view["models"], json!([]));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn providers_save_round_trips_through_load() {
+        let (host, base) = setup();
+        let providers = base.join("files/providers.json");
+
+        let saved = parse(
+            &host
+                .dispatch("providers_save", &stub_save_input().to_string())
+                .unwrap(),
+        );
+        assert_eq!(saved["providers"][0]["id"], "local-stub");
+        assert_eq!(saved["providers"][0]["hasApiKey"], false);
+        assert!(saved["providers"][0]["apiKeyHint"].is_null());
+        assert_eq!(saved["providers"][0]["apiKeyRef"], "env:LC_STUB_API_KEY");
+        assert_eq!(saved["models"][0]["id"], "stub-chat");
+        assert_eq!(saved["models"][0]["contextK"], 100);
+        assert_eq!(saved["defaultModel"], "stub-chat");
+        assert_eq!(saved["defaultThinking"], "off");
+
+        let disk: Value = serde_json::from_str(&fs::read_to_string(&providers).unwrap()).unwrap();
+        assert_eq!(disk["providers"][0]["baseUrl"], "http://10.0.2.2:8765/v1");
+        assert!(disk["providers"][0].get("apiKey").is_none());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&providers).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "providers.json must be private");
+        }
+
+        let loaded = parse(&host.dispatch("providers_load", "{}").unwrap());
+        assert_eq!(loaded, saved);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn providers_save_rejects_invalid_input() {
+        let (host, base) = setup();
+        let providers = base.join("files/providers.json");
+
+        let error = host.dispatch("providers_save", "{}").unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("input"));
+
+        let mut empty_models = stub_save_input();
+        empty_models["input"]["models"] = json!([]);
+        let error = host
+            .dispatch("providers_save", &empty_models.to_string())
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("models"));
+
+        let mut unknown_provider = stub_save_input();
+        unknown_provider["input"]["models"][0]["provider"] = json!("missing");
+        let error = host
+            .dispatch("providers_save", &unknown_provider.to_string())
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("missing"));
+
+        let mut bad_budget = stub_save_input();
+        bad_budget["input"]["models"][0]["compressAtK"] = json!(100);
+        let error = host
+            .dispatch("providers_save", &bad_budget.to_string())
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("compressAtK"));
+
+        assert!(!providers.exists(), "rejected input must not be written");
 
         let _ = fs::remove_dir_all(&base);
     }

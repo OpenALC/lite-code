@@ -13,4 +13,5 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 lc-core = { workspace = true }
 lc-proto = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }

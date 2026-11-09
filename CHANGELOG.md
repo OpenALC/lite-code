@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.52] - 2026-11-09
+
+- 鸿蒙 providers 命令：`providers_load/save` 复用 lc-core（0600 + tmp/rename + 校验），camelCase ProvidersView 对齐桌面；`session_create` 上下文预算跟随所选模型；ArkTS 首启预置 stub provider；模拟器验证供应商就绪、模型 pill、0/100k 预算、20 delta 对话
+
 ## [0.6.1-preview.51] - 2026-11-09
 
 - 鸿蒙 NAPI 桥与真实 core：`lc-ohos` C ABI + NAPI async work + threadsafe 事件通道 + ArkTS NativeBridge（javaScriptProxy）；x86_64/aarch64 OHOS 交叉编译入 HAP（26.75MiB）；模拟器端到端：真实 fs 文件树、三级目录中文只读预览、20 delta 流式对话（637ms）、取消 14ms、刷新重订阅无崩溃
