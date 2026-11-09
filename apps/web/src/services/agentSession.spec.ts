@@ -67,6 +67,8 @@ interface HarnessOptions {
     decision: ApprovalDecision,
   ) => BridgeResult<AckResult>
   confirmYolo?: () => boolean | Promise<boolean>
+  /** 模拟 sessionCreate 的异步窗口；用于验证建会话期间的排队。 */
+  createGate?: Promise<void>
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -91,6 +93,7 @@ function harness(options: HarnessOptions = {}) {
 
   const deps: AgentSessionDeps = {
     sessionCreate: async (mode, model = null, thinking = null) => {
+      if (options.createGate) await options.createGate
       created.push(mode)
       selections.push({ model, thinking })
       return createResult(mode)
@@ -601,8 +604,7 @@ describe('活动状态与每轮 token', () => {
 })
 
 describe('历史会话', () => {
-  it('载入历史为只读视图，清理审批并在发送时带上下文新建会话', async () => {
-    const source = harness()
+  it('载入历史为只读视图，清理审批并在发送时带上下文新建会话', async () => {    const source = harness()
     await source.controller.send('旧问题')
     source.emit(textDelta('旧回答'))
     source.emit({
@@ -645,5 +647,86 @@ describe('历史会话', () => {
     expect(wire).toContain('旧回答')
     expect(wire).toContain('继续')
     expect(h.controller.getState().archived).toBe(false)
+  })
+})
+
+describe('消息排队', () => {
+  const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 10))
+
+  it('运行中发送进入队列，done 后自动发送', async () => {
+    const h = harness()
+    await h.controller.send('first')
+    expect(h.sent).toHaveLength(1)
+
+    await h.controller.send('second')
+    expect(h.sent).toHaveLength(1)
+    expect(h.controller.getState().queue).toHaveLength(1)
+    expect(h.controller.getState().draft).toBe('')
+
+    h.emit(done())
+    await tick()
+
+    expect(h.sent.map(item => item.text)).toEqual(['first', 'second'])
+    expect(h.controller.getState().queue).toHaveLength(0)
+  })
+
+  it('可移除与清空排队消息', async () => {
+    const h = harness()
+    await h.controller.send('first')
+    await h.controller.send('second')
+    await h.controller.send('third')
+    expect(h.controller.getState().queue).toHaveLength(2)
+
+    const firstId = h.controller.getState().queue[0]!.id
+    expect(h.controller.removeQueued(firstId)).toBe(true)
+    expect(h.controller.getState().queue).toHaveLength(1)
+
+    h.controller.clearQueue()
+    expect(h.controller.getState().queue).toHaveLength(0)
+  })
+
+  it('审批挂起时保持排队，审批解决且本轮完成后发送', async () => {
+    const h = harness()
+    await h.controller.send('first')
+    h.emit({ type: 'agent:tool_start', session_id: 's1', call_id: 'c1', name: 'shell' })
+    h.emit(approvalRequired(5))
+    expect(h.controller.getState().streaming).toBe(false)
+
+    await h.controller.send('second')
+    expect(h.controller.getState().queue).toHaveLength(1)
+
+    h.emit(done())
+    await tick()
+    expect(h.sent).toHaveLength(1)
+
+    await h.controller.resolve(5, 'allow_once')
+    h.emit(done())
+    await tick()
+
+    expect(h.sent.map(item => item.text)).toEqual(['first', 'second'])
+    expect(h.controller.getState().queue).toHaveLength(0)
+  })
+
+  it('建会话期间的排队不会被首个会话提交覆盖', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const h = harness({ createGate: gate })
+
+    const first = h.controller.send('first')
+    await Promise.resolve()
+    await h.controller.send('second')
+    expect(h.controller.getState().queue).toHaveLength(1)
+
+    release()
+    await first
+    expect(h.sent).toHaveLength(1)
+
+    h.emit(done())
+    await tick()
+
+    expect(h.sent.map(item => item.text)).toEqual(['first', 'second'])
+    expect(h.controller.getState().queue).toHaveLength(0)
   })
 })

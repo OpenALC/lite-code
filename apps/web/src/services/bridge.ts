@@ -1737,6 +1737,7 @@ export interface HistorySummary {
   model: string
   turn: number
   messages: number
+  archived: boolean
 }
 
 const HISTORY_FALLBACK_KEY = 'lc.agentHistory'
@@ -1774,6 +1775,7 @@ function summaryOf(id: string, value: unknown): HistorySummary | null {
     model: typeof item.model === 'string' ? item.model : '',
     turn: Number(agent.turn ?? 0),
     messages: Array.isArray(agent.messages) ? agent.messages.length : 0,
+    archived: Boolean(item.archived),
   }
 }
 
@@ -1843,6 +1845,48 @@ export async function historyMigrateWorkspace(
     return { ok: true, data: moved, fallback: true }
   }
   return invokeCustom<number>('history_migrate_workspace', { workspace })
+}
+
+export async function historyRename(
+  id: string,
+  title: string,
+): Promise<BridgeResult<null>> {
+  if (!isTauri()) {
+    const store = fallbackHistory()
+    const value = store[id]
+    if (!value || typeof value !== 'object') {
+      return {
+        ok: false,
+        error: { code: 'not_found', message: '会话不存在', detail: null },
+        fallback: false,
+      }
+    }
+    ;(value as Record<string, unknown>).title = title
+    fallbackSaveHistory()
+    return { ok: true, data: null, fallback: true }
+  }
+  return invokeCustom<null>('history_rename', { id, title })
+}
+
+export async function historyArchive(
+  id: string,
+  archived: boolean,
+): Promise<BridgeResult<null>> {
+  if (!isTauri()) {
+    const store = fallbackHistory()
+    const value = store[id]
+    if (!value || typeof value !== 'object') {
+      return {
+        ok: false,
+        error: { code: 'not_found', message: '会话不存在', detail: null },
+        fallback: false,
+      }
+    }
+    ;(value as Record<string, unknown>).archived = archived
+    fallbackSaveHistory()
+    return { ok: true, data: null, fallback: true }
+  }
+  return invokeCustom<null>('history_archive', { id, archived })
 }
 
 // ==== 供应商管理 ====

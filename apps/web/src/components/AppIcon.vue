@@ -161,5 +161,10 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 })
     <template v-else-if="name === 'code'">
       <path d="m8 6-5 6 5 6M16 6l5 6-5 6" />
     </template>
+    <template v-else-if="name === 'archive'">
+      <path d="M4 7h16v3H4z" />
+      <path d="M6 10v10h12V10" />
+      <path d="M10 14h4" />
+    </template>
   </svg>
 </template>

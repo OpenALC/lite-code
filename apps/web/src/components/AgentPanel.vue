@@ -245,6 +245,12 @@ const turnText = computed(() =>
   agent.value ? `${agent.value.turn}/${agent.value.maxTurns}` : '—',
 )
 const turnStats = computed<TurnStat[]>(() => state.value.turnStats)
+const totalTurnInput = computed(() =>
+  turnStats.value.reduce((sum, stat) => sum + stat.input, 0),
+)
+const totalTurnOutput = computed(() =>
+  turnStats.value.reduce((sum, stat) => sum + stat.output, 0),
+)
 const sessionLabel = computed(() => {
   const firstUser = agent.value?.messages.find(message => message.role === 'user')
   const line = firstUser?.text.split('\n')[0]?.trim() ?? ''
@@ -279,13 +285,46 @@ function closeHistory(): void {
 }
 
 const openMenu = ref<'mode' | 'model' | 'thinking' | null>(null)
+const ctxOpen = ref(false)
+const copiedId = ref<string | null>(null)
+let copyTimer: ReturnType<typeof setTimeout> | null = null
 
 function toggleMenu(menu: 'mode' | 'model' | 'thinking'): void {
   openMenu.value = openMenu.value === menu ? null : menu
 }
 
+function toggleCtx(): void {
+  ctxOpen.value = !ctxOpen.value
+  openMenu.value = null
+}
+
 function closeMenus(): void {
   openMenu.value = null
+  ctxOpen.value = false
+}
+
+async function copyMessage(id: string, text: string): Promise<void> {
+  // 不用 navigator.clipboard：WebView2 会弹系统剪贴板权限条。
+  const area = document.createElement('textarea')
+  area.value = text
+  area.style.position = 'fixed'
+  area.style.opacity = '0'
+  document.body.appendChild(area)
+  area.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+  area.remove()
+  if (!copied) return
+  copiedId.value = id
+  if (copyTimer !== null) clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    copiedId.value = null
+    copyTimer = null
+  }, 1200)
 }
 
 function onWindowKeydown(event: KeyboardEvent): void {
@@ -308,18 +347,18 @@ function chooseThinking(level: string): void {
 }
 const composerHint = computed(() => {
   if (!tauri) return t('agent.browserDemo')
-  if (streaming.value) return t('agent.streaming')
-  if (approvalPending.value) return t('agent.approval.pendingHint')
+  if (streaming.value) return t('agent.queueHint')
+  if (approvalPending.value) return t('agent.queueApprovalHint')
   return t('agent.sendHint')
 })
 const sendDisabled = computed(
   () =>
     !tauri ||
-    streaming.value ||
-    approvalPending.value ||
     switching.value ||
     (draft.value.trim().length === 0 && attachments.value.length === 0),
 )
+
+const queue = computed(() => state.value.queue)
 
 const attachments = ref<AgentAttachment[]>([])
 const attachmentError = ref('')
@@ -379,6 +418,7 @@ onBeforeUnmount(() => {
   offAgentContext?.()
   offAgentContext = null
   if (flashTimer !== null) clearTimeout(flashTimer)
+  if (copyTimer !== null) clearTimeout(copyTimer)
 })
 
 function formatTokens(tokens: number): string {
@@ -478,8 +518,16 @@ async function submit(): Promise<void> {
   }
 }
 
+function removeQueued(id: number): void {
+  props.controller.removeQueued(id)
+}
+
+function clearQueue(): void {
+  props.controller.clearQueue()
+}
+
 async function pickFiles(): Promise<void> {
-  if (!tauri || streaming.value) return
+  if (!tauri) return
   attachmentError.value = ''
   const res = await agentPickFiles()
   if (!res.ok) {
@@ -648,6 +696,17 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           class="msg-text markdown"
           v-html="renderMarkdown(message.text)"
         />
+        <div
+          v-if="message.role === 'assistant' && message.text"
+          class="msg-actions"
+        >
+          <button
+            type="button"
+            @click.stop="copyMessage(message.id, message.text)"
+          >
+            {{ copiedId === message.id ? t('agent.copied') : t('agent.copy') }}
+          </button>
+        </div>
       </div>
 
       <details
@@ -849,6 +908,40 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       <span>{{ t('agent.archivedHint') }}</span>
     </div>
 
+    <div
+      v-if="queue.length > 0"
+      class="queue"
+    >
+      <div class="queue-head">
+        <span>{{ t('agent.queueTitle', { count: queue.length }) }}</span>
+        <button
+          type="button"
+          @click="clearQueue"
+        >
+          {{ t('agent.queueClear') }}
+        </button>
+      </div>
+      <div
+        v-for="item in queue"
+        :key="item.id"
+        class="queue-item"
+      >
+        <span class="queue-text">{{ item.display }}</span>
+        <button
+          type="button"
+          class="queue-remove"
+          :title="t('agent.queueRemove')"
+          :aria-label="t('agent.queueRemove')"
+          @click="removeQueued(item.id)"
+        >
+          <AppIcon
+            name="x"
+            :size="11"
+          />
+        </button>
+      </div>
+    </div>
+
     <div class="composer">
       <div class="comp-box">
         <div
@@ -1006,7 +1099,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           <button
             type="button"
             class="icon-btn attach-btn"
-            :disabled="!tauri || streaming"
+            :disabled="!tauri"
             :title="t('agent.addAttachment')"
             :aria-label="t('agent.addAttachment')"
             @click="pickFiles"
@@ -1037,7 +1130,15 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       </div>
 
       <div class="ctx">
-        <div class="ctx-top">
+        <div
+          class="ctx-top"
+          role="button"
+          tabindex="0"
+          :aria-expanded="ctxOpen"
+          :title="t('agent.contextDetails')"
+          @click.stop="toggleCtx"
+          @keydown.enter.prevent="toggleCtx"
+        >
           <span class="ctx-label">{{ t('agent.contextLabel') }}</span>
           <div
             class="ctx-bar"
@@ -1064,6 +1165,36 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         <div class="ctx-meta">
           <span class="ctx-val">{{ contextText }}</span>
           <span v-if="compressAtK > 0">{{ contextThresholdTitle }}</span>
+        </div>
+
+        <div
+          v-if="ctxOpen"
+          class="ctx-pop"
+          @click.stop
+        >
+          <div class="ctx-pop-title">
+            {{ t('agent.contextDetails') }}
+          </div>
+          <div class="ctx-pop-row">
+            <span>{{ t('agent.contextUsed') }}</span>
+            <strong>{{ formatTokens(usedTokens) }} / {{ contextK }}k</strong>
+          </div>
+          <div class="ctx-pop-row">
+            <span>{{ t('agent.compressThreshold') }}</span>
+            <strong>{{ compressAtK }}k</strong>
+          </div>
+          <div class="ctx-pop-row">
+            <span>{{ t('agent.lastRequest') }}</span>
+            <strong>↑ {{ formatTokens(agent?.usage.input ?? 0) }} · ↓ {{ formatTokens(agent?.usage.output ?? 0) }}</strong>
+          </div>
+          <div class="ctx-pop-row">
+            <span>{{ t('agent.cachedTokens') }}</span>
+            <strong>{{ formatTokens(agent?.usage.cached ?? 0) }}</strong>
+          </div>
+          <div class="ctx-pop-row">
+            <span>{{ t('agent.totalTurnTokens') }}</span>
+            <strong>↑ {{ formatTokens(totalTurnInput) }} · ↓ {{ formatTokens(totalTurnOutput) }}</strong>
+          </div>
         </div>
       </div>
     </div>
@@ -1362,6 +1493,29 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .msg.system .msg-text {
   color: var(--fg-dim);
   font-size: 11.5px;
+}
+
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.msg:hover .msg-actions {
+  opacity: 1;
+}
+
+.msg-actions button {
+  padding: 2px 6px;
+  border-radius: var(--r-xs, 4px);
+  color: var(--fg-faint);
+  font-size: 10.5px;
+}
+
+.msg-actions button:hover {
+  background: var(--panel-2);
+  color: var(--fg-dim);
 }
 
 .thinking {
@@ -1680,6 +1834,65 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   background: var(--accent-soft);
   color: var(--fg-dim);
   font-size: 10.5px;
+}
+
+.queue {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 112px;
+  overflow-y: auto;
+  margin: 0 10px 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+
+.queue-head button {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.queue-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-remove {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--fg-faint);
+}
+
+.queue-remove:hover {
+  background: var(--panel-4);
+  color: var(--red);
 }
 
 /* yolo 确认 */
@@ -2004,8 +2217,51 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 /* 上下文条 */
 .ctx {
+  position: relative;
   margin-top: 8px;
   padding: 0 1px;
+}
+
+.ctx-top {
+  cursor: pointer;
+}
+
+.ctx-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 25;
+  width: 270px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  box-shadow: var(--shadow);
+}
+
+.ctx-pop-title {
+  margin-bottom: 6px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ctx-pop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+}
+
+.ctx-pop-row strong {
+  color: var(--fg-dim);
+  font: 10.5px var(--font-mono);
+  font-weight: 400;
 }
 
 .ctx-top {
@@ -2187,5 +2443,12 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 :global(.shell.agent-mode .archive-banner) {
   margin-bottom: 8px;
+}
+
+:global(.shell.agent-mode .queue) {
+  width: calc(100% - 48px);
+  max-width: 860px;
+  margin-right: auto;
+  margin-left: auto;
 }
 </style>

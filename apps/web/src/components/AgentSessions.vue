@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
 import type { AgentSessionController } from '../services/agentSession'
 import { flushHistory, loadStoredSession } from '../services/agentHistory'
-import { historyDelete, historyList, type HistorySummary } from '../services/bridge'
+import {
+  historyArchive,
+  historyDelete,
+  historyList,
+  historyRename,
+  type HistorySummary,
+} from '../services/bridge'
 import { samePath, type WorkspaceEntry } from '../services/workspaceStore'
 
 const props = defineProps<{
@@ -40,6 +46,8 @@ const collapsed = ref<Set<string>>(new Set())
 const pendingOpenId = ref<string | null>(null)
 const confirmId = ref<string | null>(null)
 const confirmWorkspace = ref<string | null>(null)
+const renamingId = ref<string | null>(null)
+const renameDraft = ref('')
 let confirmTimer: ReturnType<typeof setTimeout> | null = null
 let workspaceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -60,10 +68,15 @@ function matchesQuery(item: HistorySummary): boolean {
 
 const items = computed(() =>
   allItems.value.filter(item => {
+    if (item.archived) return false
     if (!matchesQuery(item)) return false
     if (!props.workspace) return !item.workspace
     return !item.workspace || samePath(item.workspace, props.workspace)
   }),
+)
+
+const archivedItems = computed(() =>
+  allItems.value.filter(item => item.archived && matchesQuery(item)),
 )
 
 const groups = computed<WorkspaceGroup[]>(() => {
@@ -71,6 +84,7 @@ const groups = computed<WorkspaceGroup[]>(() => {
     workspace,
     items: allItems.value.filter(
       item =>
+        !item.archived &&
         matchesQuery(item) &&
         (item.workspace
           ? samePath(item.workspace, workspace.root)
@@ -164,6 +178,48 @@ async function remove(item: HistorySummary): Promise<void> {
   allItems.value = allItems.value.filter(entry => entry.id !== item.id)
 }
 
+function startRename(item: HistorySummary): void {
+  clearConfirm()
+  renamingId.value = item.id
+  renameDraft.value = item.title
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>('.thread-rename')
+    input?.focus()
+    input?.select()
+  })
+}
+
+function cancelRename(): void {
+  renamingId.value = null
+  renameDraft.value = ''
+}
+
+async function commitRename(item: HistorySummary): Promise<void> {
+  if (renamingId.value !== item.id) return
+  const title = renameDraft.value.trim()
+  renamingId.value = null
+  if (!title || title === item.title) return
+  const res = await historyRename(item.id, title)
+  if (!res.ok) {
+    error.value = res.error.message
+    return
+  }
+  allItems.value = allItems.value.map(entry =>
+    entry.id === item.id ? { ...entry, title } : entry,
+  )
+}
+
+async function toggleArchive(item: HistorySummary, archived: boolean): Promise<void> {
+  const res = await historyArchive(item.id, archived)
+  if (!res.ok) {
+    error.value = res.error.message
+    return
+  }
+  allItems.value = allItems.value.map(entry =>
+    entry.id === item.id ? { ...entry, archived } : entry,
+  )
+}
+
 async function showItem(item: HistorySummary): Promise<void> {
   if (state.value.streaming) return
   const session = await loadStoredSession(item.id)
@@ -209,6 +265,16 @@ function shortModel(model: string): string {
   if (!model) return t('agent.modelDefault')
   const slash = model.lastIndexOf('/')
   return slash >= 0 ? model.slice(slash + 1) : model
+}
+
+function workspaceLabel(root: string): string {
+  if (!root) return ''
+  const found = (props.workspaces ?? []).find(workspace =>
+    samePath(workspace.root, root),
+  )
+  if (found) return found.name
+  const parts = root.replace(/\\/g, '/').split('/').filter(Boolean)
+  return parts[parts.length - 1] ?? root
 }
 
 function formatTime(savedAt: number): string {
@@ -411,8 +477,103 @@ onBeforeUnmount(() => {
               @click="open(item)"
               @keydown.enter.prevent="open(item)"
             >
+              <template v-if="renamingId === item.id">
+                <input
+                  v-model="renameDraft"
+                  class="thread-rename"
+                  maxlength="120"
+                  @click.stop
+                  @keydown.enter.prevent="commitRename(item)"
+                  @keydown.esc.prevent="cancelRename"
+                  @blur="commitRename(item)"
+                >
+              </template>
+              <template v-else>
+                <span class="thread-title">{{ item.title }}</span>
+                <span class="thread-time">{{ formatTime(item.savedAt) }}</span>
+                <button
+                  type="button"
+                  class="thread-action"
+                  :title="t('agent.renameChat')"
+                  :aria-label="t('agent.renameChat')"
+                  @click.stop="startRename(item)"
+                >
+                  <AppIcon
+                    name="pencil"
+                    :size="11"
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="thread-action"
+                  :title="t('agent.archiveChat')"
+                  :aria-label="t('agent.archiveChat')"
+                  @click.stop="toggleArchive(item, true)"
+                >
+                  <AppIcon
+                    name="archive"
+                    :size="11"
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="thread-delete"
+                  :title="item.id === confirmId ? t('agent.historyDeleteConfirm') : t('agent.historyDelete')"
+                  :aria-label="t('agent.historyDelete')"
+                  @click.stop="remove(item)"
+                >
+                  <AppIcon
+                    name="x"
+                    :size="11"
+                  />
+                </button>
+              </template>
+            </div>
+            <p
+              v-if="group.items.length === 0"
+              class="thread-empty"
+            >
+              {{ t('agent.noChatsInWorkspace') }}
+            </p>
+          </div>
+        </section>
+
+        <details
+          v-if="archivedItems.length > 0"
+          class="archived"
+        >
+          <summary class="archived-head">
+            <AppIcon
+              name="archive"
+              :size="13"
+            />
+            <span>{{ t('agent.archived') }}</span>
+            <span class="archived-count">{{ archivedItems.length }}</span>
+          </summary>
+          <div class="archived-list">
+            <div
+              v-for="item in archivedItems"
+              :key="item.id"
+              class="thread-row archived-row"
+              role="button"
+              tabindex="0"
+              @click="open(item)"
+              @keydown.enter.prevent="open(item)"
+            >
               <span class="thread-title">{{ item.title }}</span>
-              <span class="thread-time">{{ formatTime(item.savedAt) }}</span>
+              <span class="thread-time">{{ workspaceLabel(item.workspace) }}</span>
+              <button
+                type="button"
+                class="thread-action"
+                :title="t('agent.restoreChat')"
+                :aria-label="t('agent.restoreChat')"
+                @click.stop="toggleArchive(item, false)"
+              >
+                <AppIcon
+                  name="archive"
+                  :size="11"
+                />
+              </button>
               <button
                 type="button"
                 class="thread-delete"
@@ -426,14 +587,8 @@ onBeforeUnmount(() => {
                 />
               </button>
             </div>
-            <p
-              v-if="group.items.length === 0"
-              class="thread-empty"
-            >
-              {{ t('agent.noChatsInWorkspace') }}
-            </p>
           </div>
-        </section>
+        </details>
 
         <button
           v-if="groups.length === 0"
@@ -776,6 +931,76 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   color: var(--fg-faint);
   opacity: 0;
+}
+
+.thread-action {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--fg-faint);
+  opacity: 0;
+}
+
+.thread-row:hover .thread-action,
+.thread-row.active .thread-action {
+  opacity: 1;
+}
+
+.thread-action:hover {
+  background: var(--panel-4);
+  color: var(--fg);
+}
+
+.thread-rename {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  outline: none;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 11.5px;
+}
+
+.archived {
+  margin-top: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.archived-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.archived-head::-webkit-details-marker {
+  display: none;
+}
+
+.archived-count {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font: 9.5px var(--font-mono);
+}
+
+.archived-list {
+  padding-left: 14px;
+}
+
+.archived-row {
+  color: var(--fg-faint);
 }
 
 .thread-row:hover .thread-delete,

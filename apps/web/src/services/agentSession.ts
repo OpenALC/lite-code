@@ -47,6 +47,14 @@ export interface StoredAgentSession {
   agent: AgentState
 }
 
+/** 运行中排队等待发送的一条用户消息。 */
+export interface QueuedPrompt {
+  id: number
+  text: string
+  display: string
+  attachments: AgentAttachment[]
+}
+
 export interface AgentSessionState {
   /** 当前（或下一次创建会话时使用的）模式；会话建立后以 SessionInfo 为准。 */
   mode: SessionMode
@@ -67,6 +75,8 @@ export interface AgentSessionState {
   status: AgentStatus
   /** 已完成轮次的 token 与耗时，按 turn 升序。 */
   turnStats: TurnStat[]
+  /** 运行中提交的消息；当前轮 done 后按序自动发送。 */
+  queue: QueuedPrompt[]
   /** 从历史记录载入的只读视图；发送时会新建会话并带上上下文。 */
   archived: boolean
 }
@@ -106,6 +116,9 @@ export interface AgentSessionController {
   /** 丢弃当前会话（不取消运行中的轮次），下一次发送重新创建。 */
   resetSession(): boolean
   send(text?: string, attachments?: AgentAttachment[]): Promise<void>
+  /** 移除一条排队消息；返回是否找到。 */
+  removeQueued(id: number): boolean
+  clearQueue(): void
   cancel(): Promise<void>
   resolve(approvalId: number, decision: ApprovalDecision): Promise<void>
   switchMode(mode: SessionMode, options?: SwitchModeOptions): Promise<boolean>
@@ -174,6 +187,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     resolvingApprovals: [],
     status: 'idle',
     turnStats: [],
+    queue: [],
     archived: false,
   }
   const listeners = new Set<(state: AgentSessionState) => void>()
@@ -183,6 +197,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
   let turnUsage: AgentUsage = emptyUsage()
   let turnStartedAt = 0
   let historyPreamble: string | null = null
+  let queueSeq = 0
 
   function commit(next: AgentSessionState): void {
     state = next
@@ -285,6 +300,11 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
       streaming = false
     }
     commit({ ...state, agent, mode: agent.mode, streaming, status, turnStats })
+    if (event.type === 'agent:done') {
+      queueMicrotask(() => {
+        void drainQueue()
+      })
+    }
   })
 
   function setModel(model: string | null, thinking: string | null): void {
@@ -303,6 +323,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
       model: session.model,
       thinking: session.thinking,
       turnStats: session.turnStats ?? [],
+      queue: [],
       archived: true,
       streaming: false,
       status: 'archived',
@@ -326,18 +347,56 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
       archived: false,
       status: 'idle',
       turnStats: [],
+      queue: [],
       error: null,
       resolvingApprovals: [],
     })
     return true
   }
 
-  async function send(text?: string, attachments: AgentAttachment[] = []): Promise<void> {
-    if (disposed || state.streaming || sending) return
-    // 活跃会话的审批挂起时本轮处于暂停态，但不应允许再插一条用户消息。
+  function queuePrompt(content: string, attachments: AgentAttachment[]): void {
+    const names = attachments.map(file => file.name).join(', ')
+    const display = [content, names ? `[附件: ${names}]` : '']
+      .filter(Boolean)
+      .join('\n\n')
+    commit({
+      ...state,
+      queue: [
+        ...state.queue,
+        {
+          id: ++queueSeq,
+          text: content,
+          display,
+          attachments,
+        },
+      ],
+      draft: '',
+      error: null,
+    })
+  }
+
+  /** 当前轮结束后按序发送下一条；审批挂起时保持排队。 */
+  async function drainQueue(): Promise<void> {
+    if (disposed || sending || state.streaming) return
     if (state.agent && !state.archived && state.agent.approvals.length > 0) return
+    const next = state.queue[0]
+    if (!next) return
+    commit({ ...state, queue: state.queue.slice(1) })
+    await send(next.text, next.attachments)
+  }
+
+  async function send(text?: string, attachments: AgentAttachment[] = []): Promise<void> {
+    if (disposed) return
     const content = (text ?? state.draft).trim()
     if (!content && attachments.length === 0) return
+    // 运行中/审批挂起/建会话中：消息进入本地队列，done 后自动发送。
+    const approvalPending = Boolean(
+      state.agent && !state.archived && state.agent.approvals.length > 0,
+    )
+    if (state.streaming || approvalPending || sending) {
+      queuePrompt(content, attachments)
+      return
+    }
 
     sending = true
     try {
@@ -483,6 +542,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
         archived: false,
         status: 'idle',
         turnStats: [],
+        queue: [],
         error: null,
       })
       return true
@@ -506,10 +566,24 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
       archived: false,
       status: 'idle',
       turnStats: [],
+      queue: [],
       error: null,
       resolvingApprovals: [],
     })
     return true
+  }
+
+  function removeQueued(id: number): boolean {
+    if (disposed) return false
+    const next = state.queue.filter(item => item.id !== id)
+    if (next.length === state.queue.length) return false
+    commit({ ...state, queue: next })
+    return true
+  }
+
+  function clearQueue(): void {
+    if (disposed || state.queue.length === 0) return
+    commit({ ...state, queue: [] })
   }
 
   function setDraft(text: string): void {
@@ -539,6 +613,8 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     loadHistory,
     resetSession,
     send,
+    removeQueued,
+    clearQueue,
     cancel,
     resolve,
     switchMode,

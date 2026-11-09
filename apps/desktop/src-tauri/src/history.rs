@@ -24,6 +24,7 @@ pub struct HistoryEntry {
     pub model: String,
     pub turn: u32,
     pub messages: usize,
+    pub archived: bool,
 }
 
 fn history_dir() -> Result<PathBuf, ErrorBody> {
@@ -91,6 +92,10 @@ fn summarize(id: String, payload: &Value) -> HistoryEntry {
             .get("messages")
             .and_then(Value::as_array)
             .map_or(0, Vec::len),
+        archived: payload
+            .get("archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -134,6 +139,41 @@ fn load_in(dir: &Path, id: &str) -> Result<Value, ErrorBody> {
     let text =
         fs::read_to_string(&path).map_err(|error| io_error(format!("读取会话失败：{error}")))?;
     serde_json::from_str(&text).map_err(|error| invalid(format!("会话 JSON 无效：{error}")))
+}
+
+fn mutate_in(
+    dir: &Path,
+    id: &str,
+    mutate: impl FnOnce(&mut serde_json::Map<String, Value>) -> Result<(), ErrorBody>,
+) -> Result<(), ErrorBody> {
+    let path = path_for(dir, id)?;
+    let text =
+        fs::read_to_string(&path).map_err(|error| io_error(format!("读取会话失败：{error}")))?;
+    let mut payload = serde_json::from_str::<Value>(&text)
+        .map_err(|error| invalid(format!("会话 JSON 无效：{error}")))?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| invalid("会话数据不是 JSON 对象"))?;
+    mutate(object)?;
+    save_in(dir, id, &payload)
+}
+
+fn rename_in(dir: &Path, id: &str, title: &str) -> Result<(), ErrorBody> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > 120 {
+        return Err(invalid("会话标题不能为空且不超过 120 字"));
+    }
+    mutate_in(dir, id, |object| {
+        object.insert("title".into(), Value::String(title.into()));
+        Ok(())
+    })
+}
+
+fn archive_in(dir: &Path, id: &str, archived: bool) -> Result<(), ErrorBody> {
+    mutate_in(dir, id, |object| {
+        object.insert("archived".into(), Value::Bool(archived));
+        Ok(())
+    })
 }
 
 fn save_in(dir: &Path, id: &str, payload: &Value) -> Result<(), ErrorBody> {
@@ -240,6 +280,16 @@ pub fn history_migrate_workspace(workspace: String) -> Result<usize, ErrorBody> 
     migrate_workspace_in(&history_dir()?, &workspace)
 }
 
+#[tauri::command]
+pub fn history_rename(id: String, title: String) -> Result<(), ErrorBody> {
+    rename_in(&history_dir()?, &id, &title)
+}
+
+#[tauri::command]
+pub fn history_archive(id: String, archived: bool) -> Result<(), ErrorBody> {
+    archive_in(&history_dir()?, &id, archived)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -329,6 +379,23 @@ mod tests {
         assert_eq!(list_in(&dir).unwrap()[0].workspace, "D:/work/a");
         assert_eq!(migrate_workspace_in(&dir, "D:/work/b").unwrap(), 0);
         assert_eq!(list_in(&dir).unwrap()[0].workspace, "D:/work/a");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_and_archive_roundtrip() {
+        let dir = temp_dir("rename");
+        save_in(&dir, "s-1", &payload("旧标题", 1)).unwrap();
+
+        rename_in(&dir, "s-1", "  新标题  ").unwrap();
+        assert_eq!(list_in(&dir).unwrap()[0].title, "新标题");
+
+        archive_in(&dir, "s-1", true).unwrap();
+        assert!(list_in(&dir).unwrap()[0].archived);
+        archive_in(&dir, "s-1", false).unwrap();
+        assert!(!list_in(&dir).unwrap()[0].archived);
+
+        assert!(rename_in(&dir, "s-1", "   ").is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 }

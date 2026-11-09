@@ -34,7 +34,8 @@ use db::{
 };
 use git::{git_commit, git_diff, git_log, git_stage, git_status, git_unstage};
 use history::{
-    history_delete, history_list, history_load, history_migrate_workspace, history_save,
+    history_archive, history_delete, history_list, history_load, history_migrate_workspace,
+    history_rename, history_save,
 };
 use lc_core::config::{JsonConfigStore, NodeRuntime, load_workspace_root, store_workspace_root};
 use lc_core::fs::{
@@ -836,6 +837,8 @@ pub fn run() {
             history_save,
             history_delete,
             history_migrate_workspace,
+            history_rename,
+            history_archive,
             db_list,
             db_connect,
             db_disconnect,
