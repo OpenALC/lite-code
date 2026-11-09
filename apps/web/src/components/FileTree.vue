@@ -101,6 +101,8 @@ watch(
     actionError.value = null
     state.value = reRoot(state.value, next)
     fileError.value = null
+    focusedPath.value = null
+    rowEls.clear()
     void loadRoot()
   },
 )
@@ -116,6 +118,8 @@ watch(
     dropTargetPath.value = null
     actionError.value = null
     fileError.value = null
+    focusedPath.value = null
+    rowEls.clear()
     state.value = createTreeState(props.root, !isTauri())
     void loadRoot()
   },
@@ -132,6 +136,62 @@ async function loadLayer(path: string): Promise<void> {
     state.value = layerLoaded(state.value, path, res.data.entries)
   } else {
     state.value = layerFailed(state.value, path, res.error)
+  }
+}
+
+const focusedPath = ref<string | null>(null)
+const rowEls = new Map<string, HTMLButtonElement>()
+
+function setRowEl(path: string, el: unknown): void {
+  if (el instanceof HTMLButtonElement) rowEls.set(path, el)
+  else rowEls.delete(path)
+}
+
+function entryRows() {
+  return rows.value.filter(row => row.kind === 'entry')
+}
+
+function focusRow(path: string): void {
+  focusedPath.value = path
+  void nextTick(() => rowEls.get(path)?.focus())
+}
+
+/** VSC 式键盘导航：上下移动、左右展开/折叠、Home/End 跳首尾。 */
+function onRowKeydown(event: KeyboardEvent, row: (typeof rows.value)[number]): void {
+  if (row.kind !== 'entry') return
+  const list = entryRows()
+  const index = list.findIndex(item => item.entry.path === row.entry.path)
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    const next = list[index + (event.key === 'ArrowDown' ? 1 : -1)]
+    if (next) focusRow(next.entry.path)
+    return
+  }
+  if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    const next = event.key === 'Home' ? list[0] : list[list.length - 1]
+    if (next) focusRow(next.entry.path)
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    if (row.entry.kind === 'dir' && !row.expanded) {
+      event.preventDefault()
+      void onEntryClick(row.entry)
+    }
+    return
+  }
+  if (event.key !== 'ArrowLeft') return
+  event.preventDefault()
+  if (row.entry.kind === 'dir' && row.expanded) {
+    void onEntryClick(row.entry)
+    return
+  }
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const candidate = list[i]
+    if (candidate && candidate.depth < row.depth) {
+      focusRow(candidate.entry.path)
+      return
+    }
   }
 }
 
@@ -452,10 +512,13 @@ function onDragEnd(): void {
       >
         <button
           v-if="row.kind === 'entry'"
+          :ref="el => setRowEl(row.entry.path, el)"
           type="button"
           class="row"
           role="treeitem"
           :aria-expanded="row.entry.kind === 'dir' ? row.expanded : undefined"
+          :aria-selected="focusedPath === row.entry.path"
+          :tabindex="focusedPath === row.entry.path || (!focusedPath && index === 0) ? 0 : -1"
           :style="{ paddingLeft: `${12 + row.depth * 14}px` }"
           :title="row.entry.path"
           :draggable="canMutate"
@@ -463,6 +526,8 @@ function onDragEnd(): void {
             dragging: dragSource?.path === row.entry.path,
             'drop-target': dropTargetPath === row.entry.path,
           }"
+          @focus="focusedPath = row.entry.path"
+          @keydown="onRowKeydown($event, row)"
           @click="onEntryClick(row.entry)"
           @contextmenu.prevent.stop="openContextMenu($event, row.entry)"
           @dragstart="onDragStart(row.entry, $event)"
@@ -660,6 +725,12 @@ function onDragEnd(): void {
   text-align: left;
   font-size: 12px;
   color: var(--fg-2);
+}
+
+.row:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+  background: var(--accent-soft);
 }
 
 .row:hover {
