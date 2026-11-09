@@ -2,6 +2,9 @@
   "app": {
     "title": "Lite Code"
   },
+  "quick": {
+    "goToLine": "Go to line {line}"
+  },
   "mode": {
     "editor": "Editor",
     "agent": "Agent",

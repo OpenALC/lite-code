@@ -84,7 +84,7 @@ import {
   subscribeDiagnostics,
   type DiagnosticsByPath,
 } from './services/lspDiagnostics'
-import { matchQuickNav } from './services/quickPalette'
+import { matchQuickNav, parseQuickQuery } from './services/quickPalette'
 import {
   loadQuickRecent,
   rememberRecent,
@@ -503,14 +503,54 @@ function quickTabItem(tab: Tab): QuickItem {
     id: `tab:${tab.id}`,
     label: tab.title,
     detail: tab.path ?? '',
-    action: () => activateEditor(tab.id),
+    action: () => {
+      setAppMode('editor')
+      activateEditor(tab.id)
+    },
   }
 }
 
+/** 最近命令在前，其余命令按原顺序补齐。 */
+function recentCommandItems(): QuickItem[] {
+  const byId = new Map(commands.value.map(item => [item.id, item]))
+  const recent = quickRecent.value.commands.flatMap(id => {
+    const item = byId.get(id)
+    return item ? [item] : []
+  })
+  const seen = new Set(recent.map(item => item.id))
+  return [...recent, ...commands.value.filter(item => !seen.has(item.id))]
+}
+
 const quickResults = computed<QuickItem[]>(() => {
-  const queryText = quickQuery.value.trim()
+  const parsed = parseQuickQuery(quickQuery.value)
+  const queryText = parsed.term
   const query = queryText.toLowerCase()
   const tabs = openTabs.value
+
+  if (parsed.mode === 'line') {
+    const line = Number(parsed.term)
+    const active = tabs.find(tab => tab.id === activeTabId.value)
+    if (!active?.path || !Number.isFinite(line) || line < 1) return []
+    return [{
+      id: `line:${line}`,
+      label: t('quick.goToLine', { line }),
+      detail: active.title,
+      action: () => {
+        setAppMode('editor')
+        requestReveal(active.id, line, 1)
+      },
+    }]
+  }
+
+  if (parsed.mode === 'commands') {
+    const cmds = query
+      ? sortByRecent(
+          commands.value.filter(cmd => cmd.label.toLowerCase().includes(query)),
+          quickRecent.value.commands,
+        )
+      : recentCommandItems()
+    return cmds.slice(0, 10)
+  }
 
   if (!query) {
     const recentTabs = quickRecent.value.files.flatMap(id => {
@@ -525,16 +565,7 @@ const quickResults = computed<QuickItem[]>(() => {
     ]
       .slice(0, 6)
       .map(quickTabItem)
-    const byId = new Map(commands.value.map(item => [item.id, item]))
-    const recentCommands = quickRecent.value.commands.flatMap(id => {
-      const item = byId.get(id)
-      return item ? [item] : []
-    })
-    const seenCommands = new Set(recentCommands.map(item => item.id))
-    const cmds = [
-      ...recentCommands,
-      ...commands.value.filter(item => !seenCommands.has(item.id)),
-    ].slice(0, 4)
+    const cmds = recentCommandItems().slice(0, 4)
     return [...files, ...cmds].slice(0, 10)
   }
 

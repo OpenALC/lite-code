@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { HistorySummary } from './bridge'
-import { matchQuickNav } from './quickPalette'
+import { matchQuickNav, parseQuickQuery } from './quickPalette'
 import type { WorkspaceEntry } from './workspaceStore'
 
 function chat(overrides: Partial<HistorySummary> = {}): HistorySummary {
@@ -23,6 +23,23 @@ function chat(overrides: Partial<HistorySummary> = {}): HistorySummary {
 function workspace(overrides: Partial<WorkspaceEntry> = {}): WorkspaceEntry {
   return { root: 'D:/work/app', name: 'app', addedAt: 1, ...overrides }
 }
+
+describe('快速打开前缀语法', () => {
+  it('> 进入命令模式并去掉前缀空白', () => {
+    expect(parseQuickQuery('>')).toEqual({ mode: 'commands', term: '' })
+    expect(parseQuickQuery('  > 设置 ')).toEqual({ mode: 'commands', term: '设置' })
+  })
+
+  it(':数字 进入跳行模式，其他冒号查询保持普通模式', () => {
+    expect(parseQuickQuery(':42')).toEqual({ mode: 'line', term: '42' })
+    expect(parseQuickQuery(':12abc')).toEqual({ mode: 'all', term: ':12abc' })
+    expect(parseQuickQuery(':')).toEqual({ mode: 'all', term: ':' })
+  })
+
+  it('普通查询返回 all 模式并保留原有匹配', () => {
+    expect(parseQuickQuery(' login ')).toEqual({ mode: 'all', term: 'login' })
+  })
+})
 
 describe('命令面板工作区/会话匹配', () => {
   it('按标题、模型、模式与工作区路径匹配会话', () => {
