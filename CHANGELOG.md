@@ -123,3 +123,4 @@
 - 设置/搜索/Agent/快捷键/关于图标换为 Kimi 风格 24×24 线性路径；打开设置页自动收起右栏与底部面板
 - 活动栏与工具栏图标批量 Kimi 化：文件树/任务/终端/文件/铅笔/加号/关闭/归档/箭头/面包屑 chevron 换为 Kimi 24×24 填充路径；git/db/供应商/插件保留线性图标
 - Agent composer 图标 Kimi 化：停止按钮/审批盾牌/模式 pill 换为 kimi-stop、kimi-shield-question、kimi-thinking
+- 右键菜单视觉统一：文件树/编辑器/标签栏菜单共用全局 menu.css（8px 圆角、200px、hover panel-3），删除三份 scoped 重复样式

@@ -413,44 +413,6 @@ function onClose(tabId: string): void {
   background: var(--accent);
 }
 
-.tab-menu {
-  position: fixed;
-  z-index: 80;
-  width: 188px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--panel-2);
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-}
-
-.tab-menu button {
-  height: 26px;
-  padding: 0 8px;
-  border-radius: var(--r-xs);
-  color: var(--fg-2);
-  font-size: 12px;
-  text-align: left;
-}
-
-.tab-menu button:hover:not(:disabled) {
-  background: var(--panel-3);
-  color: var(--fg);
-}
-
-.tab-menu button:disabled {
-  color: var(--fg-faint);
-  cursor: default;
-}
-
-.tab-menu-sep {
-  height: 1px;
-  margin: 4px 6px;
-  background: var(--border);
-}
-
 .empty {
   align-self: center;
   padding: 0 12px;

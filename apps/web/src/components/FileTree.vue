@@ -815,46 +815,4 @@ function onDragEnd(): void {
   color: var(--fg-faint);
   border-top: 1px solid var(--border);
 }
-
-.menu {
-  position: fixed;
-  z-index: 1000;
-  min-width: 200px;
-  max-width: 260px;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-}
-
-.menu-item {
-  height: 30px;
-  padding: 0 10px;
-  display: flex;
-  align-items: center;
-  border-radius: var(--r-sm);
-  text-align: left;
-  font-size: 12px;
-  color: var(--fg-2);
-  white-space: nowrap;
-}
-
-.menu-item:hover:not(:disabled) {
-  background: var(--panel-3);
-  color: var(--fg);
-}
-
-.menu-item:disabled {
-  color: var(--fg-faint);
-  cursor: default;
-}
-
-.menu-sep {
-  height: 1px;
-  margin: 4px 6px;
-  background: var(--border);
-}
 </style>

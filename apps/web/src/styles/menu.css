@@ -1,0 +1,52 @@
+/* 统一的上下文菜单：文件树、编辑器、标签栏右键菜单共用一套视觉。 */
+
+.menu,
+.editor-menu,
+.tab-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 260px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.menu-item,
+.editor-menu button,
+.tab-menu button {
+  height: 30px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: 12px;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+
+.menu-item:hover:not(:disabled),
+.editor-menu button:hover:not(:disabled),
+.tab-menu button:hover:not(:disabled) {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.menu-item:disabled,
+.editor-menu button:disabled,
+.tab-menu button:disabled {
+  color: var(--fg-faint);
+  cursor: default;
+}
+
+.menu-sep,
+.tab-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}

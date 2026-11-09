@@ -530,35 +530,7 @@ onBeforeUnmount(() => {
 }
 
 .editor-menu {
-  position: fixed;
-  z-index: 100;
   min-width: 170px;
-  padding: 5px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  box-shadow: var(--shadow);
-}
-
-.editor-menu button {
-  display: block;
-  width: 100%;
-  padding: 6px 10px;
-  text-align: left;
-  border-radius: var(--r-xs);
-  color: var(--fg-2);
-  font-size: 12px;
-}
-
-.editor-menu button:hover {
-  background: var(--accent-soft);
-  color: var(--fg);
-}
-
-.menu-sep {
-  height: 1px;
-  margin: 4px 6px;
-  background: var(--border);
 }
 
 .save-note {
