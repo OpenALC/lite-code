@@ -357,7 +357,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   本地 trait 改重导出，`next_envelope`/`AtomicU64` seq 删除，统一 1 起
   （桌面首信封 seq 0→1，web 不消费 envelope seq，已核实无影响）。
 - 验证：lc-host 15、lc-desktop 100、workspace 全绿；check-all 全量门禁
-  通过；桌面 dev 重编运行正常。lc-ohos 未动（additive only）。
+  通过；桌面 dev 重编运行正常。lc-ohos 未动（additive only）。M2 diff 已
+  全量复审（原子序/锁序/错误文案逐 hunk 核对，修复 1 处遗留悬空 doc-link）；
+  M3a 桌面运行时 e2e 未重跑——变更面仅 seq 生成，证据=100 项单测+干净启动
+  （应用未注全局 Tauri 句柄，CDP 直驱成本高，留维护者验收时覆盖）。
 - 发布：未推 tag，同 M2 留 09:00 审查后。
 
 ## main：lc-host M2 会话编排骨架下沉
