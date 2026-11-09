@@ -35,11 +35,13 @@ lite-code/
 │  ├─ lc-proto/                 # DTO + codegen
 │  ├─ lc-core/                  # 服务实现
 │  │  └─ src/{runtime,fs,watch,process,git,ssh,lsp,ext,agent,mcp,llm,config,secrets}/
+│  ├─ lc-ohos/                  # 鸿蒙宿主（C ABI + fs/providers/history + 真实 AgentLoop）
 │  └─ lc-cli/                   # headless 前端
 ├─ apps/
 │  ├─ desktop/src-tauri/        # 薄壳
+│  ├─ ohos/                     # HarmonyOS 工程（ArkWeb + NAPI，build.mjs 构建）
 │  └─ web/                      # Vue 3
-│     └─ src/{editor,tabs,tree,agent,settings,services}/
+│     └─ src/{editor,tabs,tree,agent,settings,services,ohos}/
 ├─ sidecars/{db-bridge,mcp-runner}/
 └─ docs/
 ```
@@ -207,7 +209,7 @@ try {
 
 通用 JSON-RPC over stdio 客户端。**不捆绑 language server**，只检测用户已安装的 `rust-analyzer` / `gopls` / `pyright`。v1 只保证 TS/JS（用 Monaco 内置 worker）。
 
-### 5.7 HarmonyOS / ArkWeb（P6 spike 结论）
+### 5.7 HarmonyOS / ArkWeb（首版外壳已交付）
 
 2026-11-05 在本机 DevEco 26.0.0（API 26）+ Relay_Phone_API26 模拟器完成 spike，
 工程在 `spikes/harmony-arkweb`：
@@ -224,6 +226,15 @@ try {
 **决策**：按 MILESTONES 门禁“只过前两项 → 只读 + 对话”，鸿蒙首版不启用可编辑 Monaco；
 保留 ArkWeb + NAPI 的只读代码预览与 Agent 会话。若要升级为可编辑，需要先解决
 rawfile 资源加载（HTTP/自定义 scheme/单文件构建）、内存占用与 IME 三项。
+
+**首版外壳 MVP（preview.50–.63 已交付）**：产品工程 `apps/ohos`
+（bundleName `dev.litecode.ohos`）+ 宿主 crate `crates/lc-ohos`（C ABI + fs/
+providers/history 命令 + 真实 AgentLoop，plan 只读）+ 前端 ohos 只读入口
+（`build:ohos`，Monaco 不进构建图，~105 KiB gzip）。资源管线用虚拟 origin
+（`https://app.litecode.example` + `onInterceptRequest`）；模拟器手机/平板端到端
+全绿（供应商编辑、历史持久/迁移/管理、离线 stub 回退 ~1.3s、会话回收）；
+PSS 基线 ~300 MiB（ArkWeb 引擎 ~134 MiB 结构性）。详见
+`docs/plans/ohos-shell.md`；真机签名 walkthrough 见 `scripts/ohos/signing.md`。
 
 ## 6. 生命周期
 
@@ -251,6 +262,6 @@ rawfile 资源加载（HTTP/自定义 scheme/单文件构建）、内存占用�
 |---|---|
 | Windows x64 | `.msi` + `.exe`(NSIS) + portable |
 | Linux x64 / arm64 | `.deb` + `.rpm` + AppImage（依赖系统 webkit2gtk-4.1） |
-| HarmonyOS | `.hap`（后续独立工作流） |
+| HarmonyOS | `.hap`（`apps/ohos`，`node scripts/ohos/build.mjs` 本机构建；未签名仅模拟器） |
 
 不生产内嵌 WebKit 的 AppImage——与"轻量"定位直接矛盾。
