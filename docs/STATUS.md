@@ -332,6 +332,24 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   lane 边界全绿、安全路径有测试）。
 - B 类 #1–4、#7 维持「等待维护者」，未触碰 RELEASE-GATES.md 状态列（按其 §6 要求）。
 
+## 审查前自审（09:00 大规模审查输入，05:10 快照）
+
+- **M2 语义等价证据**：39 处机械迁移全部经脚本唯一匹配断言；lc-ohos 36 项
+  测试不改语义全过；锁序 1:1（insert+reclaim 同锁、`begin_turn` 查表+CAS
+  同锁）；错误文案 `session not found: {id}` / `agent turn already running: {id}`
+  逐字保留；alive 迟到抑制/回收只挑 `!running` 不变式由 lc-host 9 项新单测
+  钉住（含「全 running 时新会话插入即回收」的真实可达语义）。
+- **模拟器证据（M2 HAP）**：b（工具流 716ms end_turn）、c（三轮复用 298ms）、
+  d（取消 cancelled）、f（40 会话：ohos-5 not_found、ohos-41 ack）、
+  e-online（mock 流式 9 delta 318ms）、e-offline（会话内 5s 在途回退 20 stub）
+  + 新会话 800ms 探测回退 803ms 首 delta——两条回退路径分工符合设计
+  （预探路径 <2.5s 成立）；hilog 无 panic。
+- **M3a 唯一行为差异**：桌面信封 seq 0→1 基；已核实 web 不消费 envelope seq，
+  两端形状不变；桌面 100 项测试全绿（两个 seq 断言随语义更新）。
+- **RELEASE-GATES**：A 类维持关闭（check-all 含 lanes/cargo-deny 全绿）；
+  B 类（soak/审计/签名/Win11）未触碰，按 §6 等待维护者。
+- **发布纪律**：M2/M3a 均未推 tag；preview.65 与 M3b/3c 留审查后。
+
 ## main(2)：lc-host M3a 事件出口统一（f8a4cce）
 
 - lc-host envelope 新增 `CoreEventSink` trait（CoreEvent 级，桌面形状）+
