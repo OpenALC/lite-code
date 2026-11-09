@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.60] - 2026-11-10
+
+- 鸿蒙会话历史原生持久化：lc-ohos history.rs（list/save/load/delete，0600，50 条驱逐，路径校验，序号续接），shim 优先原生回退 localStorage；lc-ohos 32 单测；模拟器 force-stop 重启历史仍在
+
 ## [0.6.1-preview.59] - 2026-11-10
 
 - providers 视图/合并逻辑下沉 lc-core（providers_view.rs）：桌面/鸿蒙删 355 行重复，lc-core 新增 6 项单测；薄适配层（错误码映射、空 models 前置校验）保留并注释

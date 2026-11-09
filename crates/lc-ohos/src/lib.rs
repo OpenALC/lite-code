@@ -12,6 +12,9 @@
 //! - `agent_cancel` 置位 `AgentLoop` 共享的取消令牌；
 //! - `providers_load` / `providers_save` 读写 `HostConfig.providers_file`，形状与桌面
 //!   `providers.rs` 的 `ProvidersView` 一致（密钥只回传 `hasApiKey`/末四位提示）；
+//! - `history_list` / `history_save` / `history_load` / `history_delete` 把会话快照
+//!   持久化到 `<files_dir>/history/<id>.json`（0600、tmp/rename、上限 50 条），
+//!   形状与桌面 `history.rs` 及前端 `HistorySummary` 一致；
 //! - 其余命令返回 `not_implemented`（契约没有独立的 `unsupported` 错误码）。
 
 use std::collections::HashMap;
@@ -42,6 +45,8 @@ use lc_proto::{
 use serde_json::Value;
 
 pub mod ffi;
+
+mod history;
 
 /// 视图类型保留在 crate 根，避免破坏 lc-ohos 既有公开接口。
 pub use lc_core::llm::{ProviderView, ProvidersView};
@@ -100,6 +105,7 @@ pub struct Host {
     root: PathBuf,
     root_display: String,
     providers_file: PathBuf,
+    history_dir: PathBuf,
     factory: Arc<dyn AgentFactory>,
     sessions: Mutex<HashMap<String, SessionHandle>>,
     max_sessions: usize,
@@ -198,16 +204,21 @@ impl Host {
         {
             fs::create_dir_all(parent).map_err(|error| io_body(parent, error))?;
         }
+        let history_dir = config.files_dir.join("history");
+        fs::create_dir_all(&history_dir).map_err(|error| io_body(&history_dir, error))?;
+        // 进程重启后从已落盘历史续接序号，避免新会话覆盖同名旧记录。
+        let next_session = history::max_session_ordinal(&history_dir);
         Ok(Host {
             root_display: display_path(&root),
             root,
             providers_file: config.providers_file,
+            history_dir,
             factory,
             sessions: Mutex::new(HashMap::new()),
             max_sessions: max_sessions.max(1),
             sink: Mutex::new(None),
             seq: Arc::new(AtomicU64::new(0)),
-            next_session: AtomicU64::new(0),
+            next_session: AtomicU64::new(next_session),
         })
     }
 
@@ -257,6 +268,10 @@ impl Host {
             }
             "providers_load" => return self.providers_load(),
             "providers_save" => return self.providers_save(&args),
+            "history_list" => return self.history_list(),
+            "history_load" => return self.history_load(&args),
+            "history_save" => return self.history_save(&args),
+            "history_delete" => return self.history_delete(&args),
             _ => return Err(unsupported(cmd)),
         };
         serde_json::to_string(&result).map_err(|error| {
@@ -409,6 +424,30 @@ impl Host {
         serialize_view(file)
     }
 
+    fn history_list(&self) -> Result<String, ErrorBody> {
+        serialize_json(&history::list(&self.history_dir)?)
+    }
+
+    fn history_load(&self, args: &Value) -> Result<String, ErrorBody> {
+        let id = required_string(args, "id")?;
+        serialize_json(&history::load(&self.history_dir, &id)?)
+    }
+
+    fn history_save(&self, args: &Value) -> Result<String, ErrorBody> {
+        let id = required_string(args, "id")?;
+        let payload = args
+            .get("payload")
+            .ok_or_else(|| invalid("missing object argument `payload`"))?;
+        history::save(&self.history_dir, &id, payload)?;
+        Ok("null".to_string())
+    }
+
+    fn history_delete(&self, args: &Value) -> Result<String, ErrorBody> {
+        let id = required_string(args, "id")?;
+        history::delete(&self.history_dir, &id)?;
+        Ok("null".to_string())
+    }
+
     fn session(&self, id: &str) -> Result<SessionHandle, ErrorBody> {
         self.sessions_slot()
             .get(id)
@@ -476,6 +515,11 @@ fn reclaim_terminated_sessions(sessions: &mut HashMap<String, SessionHandle>, ma
             handle.reclaim();
         }
     }
+}
+
+fn serialize_json<T: serde::Serialize>(value: &T) -> Result<String, ErrorBody> {
+    serde_json::to_string(value)
+        .map_err(|error| ErrorBody::new(ErrorCode::Internal, format!("serialize result: {error}")))
 }
 
 fn serialize_view(file: ProvidersFile) -> Result<String, ErrorBody> {
@@ -1087,7 +1131,7 @@ fn unsupported(cmd: &str) -> ErrorBody {
         format!("unsupported command on ohos shell: {cmd}"),
     )
     .with_detail(
-        "supported: workspace_root, fs_read_dir, fs_read_file, session_create, agent_send, agent_cancel, providers_load, providers_save",
+        "supported: workspace_root, fs_read_dir, fs_read_file, session_create, agent_send, agent_cancel, providers_load, providers_save, history_list, history_save, history_load, history_delete",
     )
 }
 
@@ -2434,5 +2478,116 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "IP literal must skip DNS"
         );
+    }
+
+    #[test]
+    fn history_commands_roundtrip_through_dispatch() {
+        let (host, base) = setup();
+        let payload = json!({
+            "id": "ohos-1",
+            "title": "修复登录",
+            "savedAt": 123,
+            "workspace": "/work/project",
+            "mode": "plan",
+            "model": "gpt-5",
+            "turnStats": [],
+            "agent": {
+                "turn": 2,
+                "messages": [
+                    {"role": "user", "text": "请修复登录问题"},
+                    {"role": "assistant", "text": "我先看看代码"}
+                ]
+            }
+        });
+        let saved = host
+            .dispatch(
+                "history_save",
+                &json!({"id": "ohos-1", "payload": payload}).to_string(),
+            )
+            .unwrap();
+        assert_eq!(saved, "null");
+
+        let listed = parse(&host.dispatch("history_list", "{}").unwrap());
+        assert_eq!(listed[0]["id"], "ohos-1");
+        assert_eq!(listed[0]["title"], "修复登录");
+        assert_eq!(listed[0]["savedAt"], 123);
+        assert_eq!(listed[0]["turn"], 2);
+        assert_eq!(listed[0]["messages"], 2);
+        assert_eq!(listed[0]["excerpt"], "请修复登录问题\n我先看看代码");
+
+        let loaded = parse(
+            &host
+                .dispatch("history_load", &json!({"id": "ohos-1"}).to_string())
+                .unwrap(),
+        );
+        assert_eq!(loaded["title"], "修复登录");
+
+        assert_eq!(
+            host.dispatch("history_delete", &json!({"id": "ohos-1"}).to_string())
+                .unwrap(),
+            "null"
+        );
+        assert_eq!(
+            parse(&host.dispatch("history_list", "{}").unwrap())
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        let missing = host
+            .dispatch("history_load", &json!({"id": "ohos-1"}).to_string())
+            .unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
+
+        let escaped = host
+            .dispatch(
+                "history_save",
+                &json!({"id": "../escape", "payload": payload}).to_string(),
+            )
+            .unwrap_err();
+        assert_eq!(escaped.code, ErrorCode::InvalidArgument);
+        assert!(!host.history_dir.join("../escape.json").exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn restart_resumes_session_ordinal_from_history() {
+        let base = temp_base();
+        let root = base.join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        let config = || HostConfig {
+            files_dir: base.join("files"),
+            workspace_root: root.clone(),
+            providers_file: base.join("files/providers.json"),
+        };
+
+        let host = Host::init_with_factory(config(), Arc::new(RealAgentFactory)).unwrap();
+        let first = create_session(&host);
+        host.dispatch(
+            "history_save",
+            &json!({
+                "id": first,
+                "payload": {"title": "重启前的会话", "savedAt": 1, "agent": {"messages": []}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        drop(host);
+
+        let host = Host::init_with_factory(config(), Arc::new(RealAgentFactory)).unwrap();
+        let second = create_session(&host);
+        assert_ne!(second, first);
+        let loaded = parse(
+            &host
+                .dispatch("history_load", &json!({"id": first}).to_string())
+                .unwrap(),
+        );
+        assert_eq!(loaded["title"], "重启前的会话");
+        let listed = parse(&host.dispatch("history_list", "{}").unwrap());
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["title"], "重启前的会话");
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

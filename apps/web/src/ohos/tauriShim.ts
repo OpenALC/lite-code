@@ -1,6 +1,7 @@
 // 鸿蒙只读外壳的 Tauri IPC 伪装层。
 // 目标：让 bridge.ts 的 isTauri() 分支原样工作——命令转发到 ArkTS 注入的
-// window.__lcNative，原生事件回灌到 core:event，历史用 localStorage。
+// window.__lcNative，原生事件回灌到 core:event；历史优先走原生落盘，
+// 原生桥不可用（或旧宿主未实现该命令）时回退 localStorage。
 import type { SessionMode } from '@lc-proto'
 
 import type { HistorySummary } from '../services/bridge'
@@ -20,6 +21,18 @@ const FORWARDED = new Set([
   'approval_resolve',
   'providers_load',
   'providers_save',
+  'history_list',
+  'history_save',
+  'history_load',
+  'history_delete',
+])
+
+/** 原生宿主实现的 history 命令；其余 history_* 仍走 localStorage。 */
+const NATIVE_HISTORY = new Set([
+  'history_list',
+  'history_save',
+  'history_load',
+  'history_delete',
 ])
 
 interface ErrorBodyLike {
@@ -167,7 +180,7 @@ function summaryOf(id: string, value: unknown): HistorySummary | null {
   }
 }
 
-function historyInvoke(cmd: string, args: Record<string, unknown>): unknown {
+function historyLocalInvoke(cmd: string, args: Record<string, unknown>): unknown {
   const store = readHistory()
   switch (cmd) {
     case 'history_list':
@@ -220,6 +233,24 @@ function historyInvoke(cmd: string, args: Record<string, unknown>): unknown {
   }
 }
 
+/** 原生历史优先；没有原生桥或旧宿主不认识命令时才回退 localStorage。 */
+async function historyInvoke<T>(
+  cmd: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  const native: LcNativeBridge | undefined = window.__lcNative
+  if (NATIVE_HISTORY.has(cmd) && native && typeof native.invoke === 'function') {
+    try {
+      const raw = await native.invoke(cmd, JSON.stringify(args))
+      return JSON.parse(raw) as T
+    } catch (error) {
+      const body = asErrorBody(error)
+      if (body.code !== 'not_implemented') throw body
+    }
+  }
+  return historyLocalInvoke(cmd, args) as T
+}
+
 // ==== invoke ====
 
 async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
@@ -229,7 +260,7 @@ async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promi
     unlistenEvent(args)
     return null as T
   }
-  if (command.startsWith('history_')) return historyInvoke(command, args) as T
+  if (command.startsWith('history_')) return historyInvoke<T>(command, args)
   if (!FORWARDED.has(command)) {
     throw errorBody('not_implemented', `unsupported command on ohos shell: ${command}`)
   }

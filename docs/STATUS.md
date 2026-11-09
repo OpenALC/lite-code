@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-10，main HEAD：preview.59 提交（见 `git log`）；版本 `0.6.1-preview.59`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-10，main HEAD：preview.60 提交（见 `git log`）；版本 `0.6.1-preview.60`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -322,6 +322,14 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 5. **UI**：活动栏「插件」页、启停/重载/打开目录、命令执行、Ctrl+P 命令；
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
+
+## preview.60：鸿蒙历史原生持久化
+
+- lc-ohos history.rs：原生 list/save/load/delete（0600、50 条驱逐、序号续接）；
+  shim 优先原生、回退 localStorage；lc-ohos 32 项单测。
+- 模拟器 e2e：force-stop 重启后历史仍在、localStorage 无 history key。
+- 待办：rename/archive 原生命令、localStorage 一次性迁移。
+- 发布：`v0.6.1-preview.60` 待打标签（等 .59 release 完成后推送）。
 
 ## preview.59：providers 逻辑下沉 lc-core
 
