@@ -112,6 +112,12 @@ const rightVisible = ref(true)
 const appMode = ref<AppMode>(
   localStorage.getItem(APP_MODE_KEY) === 'agent' ? 'agent' : 'editor',
 )
+const agentRail = ref<'git' | null>(null)
+
+function toggleAgentRail(rail: 'git'): void {
+  agentRail.value = agentRail.value === rail ? null : rail
+  if (agentRail.value === 'git') void refreshGit()
+}
 
 function setAppMode(mode: AppMode): void {
   appMode.value = mode
@@ -1231,11 +1237,25 @@ onBeforeUnmount(() => {
           >
             {{ workspaceError }}
           </p>
-          <AgentPanel
-            :controller="agentSession"
-            :workspace="projectRoot"
-            @manage-providers="openProviders"
-          />
+          <div class="agent-chat">
+            <AgentPanel
+              :controller="agentSession"
+              :workspace="projectRoot"
+              show-rail-toggle
+              :rail-open="agentRail === 'git'"
+              @manage-providers="openProviders"
+              @toggle-rail="toggleAgentRail('git')"
+            />
+            <aside
+              v-if="agentRail === 'git'"
+              class="agent-rail"
+            >
+              <GitPanel
+                :controller="gitSession"
+                @close="agentRail = null"
+              />
+            </aside>
+          </div>
         </main>
       </template>
     </div>
@@ -1689,6 +1709,27 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: var(--r);
   overflow: hidden;
+}
+
+.agent-chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.agent-rail {
+  flex: none;
+  width: clamp(320px, 34vw, 420px);
+  min-width: 0;
+  display: flex;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.agent-rail :deep(.git-panel) {
+  flex: 1;
+  min-width: 0;
 }
 
 .agent-sidebar-footer {

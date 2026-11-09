@@ -109,6 +109,7 @@
     "queueTitle": "排队 {count} 条",
     "queueClear": "清空队列",
     "queueRemove": "移除排队消息",
+    "queueEdit": "编辑排队消息",
     "queueHint": "运行中，发送将排队",
     "queueApprovalHint": "审批挂起，发送将排队",
     "copy": "复制",

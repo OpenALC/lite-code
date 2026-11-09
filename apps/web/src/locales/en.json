@@ -109,6 +109,7 @@
     "queueTitle": "Queued {count}",
     "queueClear": "Clear queue",
     "queueRemove": "Remove queued message",
+    "queueEdit": "Edit queued message",
     "queueHint": "Running — send will queue",
     "queueApprovalHint": "Approval pending — send will queue",
     "copy": "Copy",

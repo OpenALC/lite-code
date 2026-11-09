@@ -27,8 +27,13 @@ import {
   type ProviderView,
 } from '../services/bridge'
 
-const props = defineProps<{ controller: AgentSessionController; workspace?: string }>()
-const emit = defineEmits<{ 'manage-providers': [] }>()
+const props = defineProps<{
+  controller: AgentSessionController
+  workspace?: string
+  showRailToggle?: boolean
+  railOpen?: boolean
+}>()
+const emit = defineEmits<{ 'manage-providers': []; 'toggle-rail': [] }>()
 const { t, te } = useI18n()
 
 const MODES: SessionMode[] = ['plan', 'chat', 'auto', 'yolo']
@@ -522,6 +527,15 @@ function removeQueued(id: number): void {
   props.controller.removeQueued(id)
 }
 
+function editQueued(id: number): void {
+  const item = state.value.queue.find(entry => entry.id === id)
+  if (!item) return
+  props.controller.removeQueued(id)
+  props.controller.setDraft(item.text)
+  attachments.value = [...item.attachments]
+  attachmentError.value = ''
+}
+
 function clearQueue(): void {
   props.controller.clearQueue()
 }
@@ -591,6 +605,20 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         class="turn"
         :title="t('agent.turn')"
       >{{ turnText }}</span>
+      <button
+        v-if="props.showRailToggle"
+        type="button"
+        class="icon-btn"
+        :class="{ active: props.railOpen }"
+        :title="t('activity.git')"
+        :aria-label="t('activity.git')"
+        @click="emit('toggle-rail')"
+      >
+        <AppIcon
+          name="git"
+          :size="15"
+        />
+      </button>
       <button
         type="button"
         class="icon-btn"
@@ -926,7 +954,14 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         :key="item.id"
         class="queue-item"
       >
-        <span class="queue-text">{{ item.display }}</span>
+        <button
+          type="button"
+          class="queue-text"
+          :title="t('agent.queueEdit')"
+          @click="editQueued(item.id)"
+        >
+          {{ item.display }}
+        </button>
         <button
           type="button"
           class="queue-remove"
@@ -1874,10 +1909,18 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  border: 0;
+  background: transparent;
   color: var(--fg-dim);
   font-size: 11px;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.queue-text:hover {
+  color: var(--fg);
 }
 
 .queue-remove {

@@ -87,3 +87,5 @@
   面包屑导航、34px 面板标签、标题栏编辑器/Agent 模式切换
 - Agent 功能移植：运行中消息排队并自动续发、对话重命名/归档/恢复、上下文详情浮层、
   助手消息复制（execCommand，避免 WebView2 剪贴板权限条）
+- Agent Git 侧栏：Agent 模式头部 Git 按钮打开 420px 变更栏，复用 GitPanel 的分支/暂存/提交/日志/Diff
+- 队列消息可点击载回 composer 编辑，原消息从队列移除
