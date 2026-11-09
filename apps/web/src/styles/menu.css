@@ -1,9 +1,21 @@
-/* 统一的上下文菜单：文件树、编辑器、标签栏右键菜单共用一套视觉。 */
+/* 统一的上下文/下拉菜单：文件树、编辑器、标签栏右键菜单与顶栏菜单共用一套视觉。 */
 
 .menu,
 .editor-menu,
 .tab-menu {
   position: fixed;
+}
+
+.menu-pop {
+  position: absolute;
+  top: 30px;
+  left: 0;
+}
+
+.menu,
+.editor-menu,
+.tab-menu,
+.menu-pop {
   z-index: 1000;
   min-width: 200px;
   max-width: 260px;
@@ -18,7 +30,8 @@
 
 .menu-item,
 .editor-menu button,
-.tab-menu button {
+.tab-menu button,
+.menu-pop button {
   height: 30px;
   padding: 0 10px;
   display: flex;
@@ -32,14 +45,16 @@
 
 .menu-item:hover:not(:disabled),
 .editor-menu button:hover:not(:disabled),
-.tab-menu button:hover:not(:disabled) {
+.tab-menu button:hover:not(:disabled),
+.menu-pop button:hover:not(:disabled) {
   background: var(--panel-3);
   color: var(--fg);
 }
 
 .menu-item:disabled,
 .editor-menu button:disabled,
-.tab-menu button:disabled {
+.tab-menu button:disabled,
+.menu-pop button:disabled {
   color: var(--fg-faint);
   cursor: default;
 }

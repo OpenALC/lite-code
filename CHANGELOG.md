@@ -125,3 +125,4 @@
 - Agent composer 图标 Kimi 化：停止按钮/审批盾牌/模式 pill 换为 kimi-stop、kimi-shield-question、kimi-thinking
 - 右键菜单视觉统一：文件树/编辑器/标签栏菜单共用全局 menu.css（8px 圆角、200px、hover panel-3），删除三份 scoped 重复样式
 - 发布维护：滚动清单 updater-manifest 提升到 .46（人工补齐 .45/.46 未触发的提升）；清理陈旧 draft release .5/.9（tag 保留）
+- 顶栏下拉菜单并入全局 menu.css：文件/编辑/查看/帮助菜单与右键菜单同一套圆角/描边/hover

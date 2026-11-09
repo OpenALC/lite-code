@@ -1787,34 +1787,6 @@ onBeforeUnmount(() => {
   color: var(--fg);
 }
 
-.menu-pop {
-  position: absolute;
-  top: 30px;
-  left: 0;
-  z-index: 60;
-  min-width: 190px;
-  padding: 5px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  box-shadow: var(--shadow);
-}
-
-.menu-pop button {
-  display: block;
-  width: 100%;
-  padding: 7px 10px;
-  text-align: left;
-  border-radius: var(--r-xs);
-  font-size: 12px;
-  color: var(--fg-2);
-}
-
-.menu-pop button:hover {
-  background: var(--accent-soft);
-  color: var(--fg);
-}
-
 .quick-wrap {
   position: relative;
   flex: 1;
