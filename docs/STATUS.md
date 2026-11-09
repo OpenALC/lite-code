@@ -65,7 +65,7 @@
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
 | P5 发布 | ✅ `v0.5.1-preview.1` **已发布**（非 draft）：6 资产 |
-| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers + 真实 Agent 对话 + 离线回退 ~1.3s + 会话回收 + 历史持久/迁移/管理 + UI 抛光（preview.51–.63）：模拟器端到端全绿；PSS 实测：冷启动 ~300MiB（ArkWeb 引擎基线 ~134MiB 结构性）、3 大文件 ~357MiB、5 轮对话 ~377MiB（原 150MiB 目标不可达，改按增量管理）；待办：真机签名（维护者）、平板三栏验证（实例已存在）、lc-host 抽取 |
+| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers + 真实 Agent 对话 + 离线回退 ~1.3s + 会话回收 + 历史持久/迁移/管理 + UI 抛光（preview.51–.63）：手机/平板模拟器端到端全绿（平板三栏 2880×1920 验证通过）；PSS 实测：冷启动 ~300MiB（ArkWeb 引擎基线 ~134MiB 结构性）、3 大文件 ~357MiB、5 轮对话 ~377MiB（原 150MiB 目标不可达，改按增量管理）；待办：真机签名（维护者）、2in1 形态（镜像未下载）、lc-host 抽取 |
 | P6 本地安全整改 | ✅ CSP frame-src/object-src；DB/MCP 输出不可信边界；审计范围写入 `docs/SECURITY-AUDIT.md` |
 | P6 A 类 arm64 | ✅ `v0.6.1-preview.3` tag 构建成功：aarch64 AppImage/deb、`lc-cli-arm64` 已发布 |
 | P6 A 类 更新器 | ✅ `update_check` + `latest.json` 生成器 + 回滚文档；无签名密钥时 `signed:false`，签名门禁未完全关闭 |

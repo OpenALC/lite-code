@@ -463,8 +463,11 @@ HDC='D:\ide\Huawei\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe'
   ArkWeb 引擎结构性成本，原「合计 < 150 MiB」目标在该平台不可达。
 - 结论：内存预算应按「引擎基线 ~300 MiB + 场景增量」管理；增量本身温和
   （3 个大文件 +57 MiB、5 轮对话 +20 MiB）。证据：`.tmp/ohos-perf/*/summary.txt`。
-- 平板：模拟器已有 `Relay_Tablet_API26`（2880×1920）实例可用；2in1 `-create`
-  支持但镜像未下载。三栏布局真机验证待补（因模型用量限制中断）。
+- 平板：**已验证**——`Relay_Tablet_API26`（2880×1920）冷启动安装产品 HAP，
+  三栏布局（文件树 | 预览 | Agent）渲染正确（`lc-tablet4.jpeg`）。
+  2in1 `-create` 支持但镜像未下载，未验证。
+- 注意：模拟器 filesDir 的 sample-workspace 仅在首启复制；换装不同
+  sample 的 HAP 需 uninstall 后重装（install -r 不重置数据）。
 
 ## 7. 风险与未知项
 
