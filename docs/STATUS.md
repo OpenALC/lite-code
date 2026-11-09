@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-10，main HEAD：preview.64 提交（见 `git log`）；版本 `0.6.1-preview.64`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-10，main HEAD：lc-host M2 提交（preview.64 之后，见 `git log`）；发布版本 `0.6.1-preview.64`，契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
@@ -65,7 +65,7 @@
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
 | P5 发布 | ✅ `v0.5.1-preview.1` **已发布**（非 draft）：6 资产 |
-| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers + 真实 Agent 对话 + 离线回退 ~1.3s + 会话回收 + 历史持久/迁移/管理 + UI 抛光（preview.51–.63）：手机/平板模拟器端到端全绿（平板三栏 2880×1920 验证通过）；PSS 实测：冷启动 ~300MiB（ArkWeb 引擎基线 ~134MiB 结构性）、3 大文件 ~357MiB、5 轮对话 ~377MiB（原 150MiB 目标不可达，改按增量管理）；待办：真机签名（维护者，walkthrough 已备 `scripts/ohos/signing.md`）、2in1 形态（镜像就绪，DevEco GUI 创建设备）、lc-host 抽取（设计已备 `docs/plans/lc-host-extraction.md`，限额重置后执行） |
+| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers + 真实 Agent 对话 + 离线回退 ~1.3s + 会话回收 + 历史持久/迁移/管理 + UI 抛光（preview.51–.63）：手机/平板模拟器端到端全绿（平板三栏 2880×1920 验证通过）；PSS 实测：冷启动 ~300MiB（ArkWeb 引擎基线 ~134MiB 结构性）、3 大文件 ~357MiB、5 轮对话 ~377MiB（原 150MiB 目标不可达，改按增量管理）；待办：真机签名（维护者，walkthrough 已备 `scripts/ohos/signing.md`）、2in1 形态（镜像就绪，DevEco GUI 创建设备）、lc-host 抽取 M3（TurnRunner+desktop，M1/M2 已完成） |
 | P6 本地安全整改 | ✅ CSP frame-src/object-src；DB/MCP 输出不可信边界；审计范围写入 `docs/SECURITY-AUDIT.md` |
 | P6 A 类 arm64 | ✅ `v0.6.1-preview.3` tag 构建成功：aarch64 AppImage/deb、`lc-cli-arm64` 已发布 |
 | P6 A 类 更新器 | ✅ `update_check` + `latest.json` 生成器 + 回滚文档；无签名密钥时 `signed:false`，签名门禁未完全关闭 |
@@ -331,6 +331,22 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - §4 审计豁免条件 1–3：维持满足（SECURITY-AUDIT.md §2/§5、cargo-deny/pnpm audit/
   lane 边界全绿、安全路径有测试）。
 - B 类 #1–4、#7 维持「等待维护者」，未触碰 RELEASE-GATES.md 状态列（按其 §6 要求）。
+
+## main：lc-host M2 会话编排骨架下沉
+
+- lc-host 新增 `sessions` 模块：`SessionHandle`（info/cancel/running/alive
+  原语 + model/thinking 元数据）、`SessionEntry<P>`（泛型宿主负载）、
+  `Sessions`（map + limit + ordinal，插入即回收，`begin_turn` 同锁查表+CAS）。
+  lc-ohos 本地 SessionHandle/reclaim/begin_turn/MAX_SESSIONS/next_session 全删，
+  `AgentLoop` 槽位以 `AgentSlot = Arc<Mutex<Option<AgentLoop>>>` 进 payload；
+  错误文案与锁序 1:1 保留，36 项测试不改语义全过。
+- 验证：lc-host 12 项（+9 新 Sessions 单测：回收序/running 保留/alive 抑制/
+  并发轮次拒绝/unknown not_found）；workspace 663 全绿；check-all 全量门禁通过
+  （fmt/clippy/test/web 431/lanes/deny）；HAP 27.35MiB（Rust 重编确认），
+  模拟器切片 H 子集 b/c/d/f 全过（工具流/三轮复用/取消 cancelled/40 会话
+  回收 ohos-5 已 not_found、ohos-41 ack），hilog 无 panic。
+- 发布：未推 tag——留 09:00 审查后发 preview.65（M2 随该版发布或单独 .65，
+  按审查结论定）。
 
 ## preview.64：lc-host M1 共享事件出口
 

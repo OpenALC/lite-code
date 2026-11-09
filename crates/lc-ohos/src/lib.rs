@@ -19,12 +19,11 @@
 //!   不存在返回 `not_found`、损坏 JSON 返回 `invalid_argument`；
 //! - 其余命令返回 `not_implemented`（契约没有独立的 `unsupported` 错误码）。
 
-use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -57,11 +56,6 @@ const STUB_DELTAS: u32 = 20;
 const STUB_DELAY: Duration = Duration::from_millis(25);
 const STUB_STOP_REASON: &str = "stub";
 const CANCELLED_STOP_REASON: &str = "cancelled";
-
-/// 会话表默认上限。超出后按创建顺序回收已终止会话；`running`（含已请求取消、
-/// worker 尚未退出的会话）绝不回收。单测/嵌入式可用
-/// [`Host::init_with_factory_and_limit`] 覆盖。
-const MAX_SESSIONS: usize = 32;
 
 /// 构建 `AgentLoop` 前的 TCP 预探上限。ureq 的连接超时是 5s；离线时先用
 /// 800ms（DNS 解析 + TCP 连接）判断 host:port 是否可达，避免首条消息停 5s
@@ -101,70 +95,19 @@ pub trait AgentFactory: Send + Sync {
     fn create(&self, request: &AgentBuildRequest<'_>) -> Result<AgentLoop, ErrorBody>;
 }
 
+/// 会话私有负载：`AgentLoop` 槽位（lc-host 不依赖 lc-core，由 lc-ohos 组合进
+/// `SessionEntry::payload`）。首次 `agent_send` 成功构建后常驻，保留多轮上下文。
+type AgentSlot = Arc<Mutex<Option<AgentLoop>>>;
+
 pub struct Host {
     root: PathBuf,
     root_display: String,
     providers_file: PathBuf,
     history_dir: PathBuf,
     factory: Arc<dyn AgentFactory>,
-    sessions: Mutex<HashMap<String, SessionHandle>>,
-    max_sessions: usize,
+    sessions: lc_host::sessions::Sessions<AgentSlot>,
     sink: Mutex<Option<EventSink>>,
     seq: lc_host::envelope::Seq,
-    next_session: AtomicU64,
-}
-
-#[derive(Clone)]
-struct SessionHandle {
-    info: Arc<Mutex<SessionInfo>>,
-    /// 首次 `agent_send` 成功构建后常驻，用于保留多轮上下文。
-    agent: Arc<Mutex<Option<AgentLoop>>>,
-    cancel: Arc<AtomicBool>,
-    running: Arc<AtomicBool>,
-    /// 从会话表回收时置 `false`；所有 clone 共享，worker 侧迟到事件据此变成 no-op。
-    alive: Arc<AtomicBool>,
-    /// 创建序号（来自 `next_session`），回收时按此从老到新。
-    created: u64,
-    model: Option<String>,
-    thinking: Option<String>,
-}
-
-impl SessionHandle {
-    fn new(
-        info: SessionInfo,
-        created: u64,
-        model: Option<String>,
-        thinking: Option<String>,
-    ) -> Self {
-        Self {
-            info: Arc::new(Mutex::new(info)),
-            agent: Arc::new(Mutex::new(None)),
-            cancel: Arc::new(AtomicBool::new(false)),
-            running: Arc::new(AtomicBool::new(false)),
-            alive: Arc::new(AtomicBool::new(true)),
-            created,
-            model,
-            thinking,
-        }
-    }
-
-    fn info_snapshot(&self) -> SessionInfo {
-        self.info
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    /// 只有 worker 完全退出（`running = false`）才可回收。取消中的 worker 在
-    /// 发完 `session_state(cancelled)`/`done(cancelled)` 前仍是 running，因此
-    /// 这里无需单独看 `cancel`；该标志在完成竞态下可能残留，不能作为依据。
-    fn is_reclaimable(&self) -> bool {
-        !self.running.load(Ordering::Acquire)
-    }
-
-    fn reclaim(&self) {
-        self.alive.store(false, Ordering::Release);
-    }
 }
 
 impl Host {
@@ -177,7 +120,7 @@ impl Host {
         config: HostConfig,
         factory: Arc<dyn AgentFactory>,
     ) -> Result<Host, ErrorBody> {
-        Self::init_with_factory_and_limit(config, factory, MAX_SESSIONS)
+        Self::init_with_factory_and_limit(config, factory, lc_host::sessions::DEFAULT_MAX_SESSIONS)
     }
 
     /// 注入工厂并指定会话上限；生产默认 [`MAX_SESSIONS`]。
@@ -207,18 +150,19 @@ impl Host {
         let history_dir = config.files_dir.join("history");
         fs::create_dir_all(&history_dir).map_err(|error| io_body(&history_dir, error))?;
         // 进程重启后从已落盘历史续接序号，避免新会话覆盖同名旧记录。
-        let next_session = history::max_session_ordinal(&history_dir);
+        let sessions = lc_host::sessions::Sessions::new(
+            max_sessions,
+            history::max_session_ordinal(&history_dir),
+        );
         Ok(Host {
             root_display: display_path(&root),
             root,
             providers_file: config.providers_file,
             history_dir,
             factory,
-            sessions: Mutex::new(HashMap::new()),
-            max_sessions: max_sessions.max(1),
+            sessions,
             sink: Mutex::new(None),
             seq: lc_host::envelope::Seq::default(),
-            next_session: AtomicU64::new(next_session),
         })
     }
 
@@ -287,7 +231,7 @@ impl Host {
     }
 
     fn create_session(&self, args: &Value) -> SessionInfo {
-        let number = self.next_session.fetch_add(1, Ordering::Relaxed) + 1;
+        let number = self.sessions.next_ordinal();
         let model = optional_string(args, "model");
         let thinking = optional_string(args, "thinking");
         let (context_k, compress_at_k) = self.model_budget(model.as_deref());
@@ -300,14 +244,15 @@ impl Host {
             compress_at_k,
             cancelled: false,
         };
-        {
-            let mut sessions = self.sessions_slot();
-            sessions.insert(
-                info.session_id.clone(),
-                SessionHandle::new(info.clone(), number, model, thinking),
-            );
-            reclaim_terminated_sessions(&mut sessions, self.max_sessions);
-        }
+        // SessionInfo 构造（mode 强转 Plan、模型预算）留在 lc-ohos；插入与
+        // 超上限回收在 lc-host `Sessions` 内同锁完成（签名不变迁移）。
+        self.sessions.insert(
+            info.session_id.clone(),
+            lc_host::sessions::SessionEntry::new(
+                lc_host::sessions::SessionHandle::new(info.clone(), number, model, thinking),
+                Arc::new(Mutex::new(None)),
+            ),
+        );
         info
     }
 
@@ -333,13 +278,10 @@ impl Host {
         let text = required_string(args, "text")?;
         // 取句柄与置 running 在同一把 sessions 锁内完成：拿到的句柄不可能在
         // 置位前被回收；置位后回收侧会因 running=true 跳过它。
-        let handle = self.begin_turn(&session_id)?;
-        handle.cancel.store(false, Ordering::Release);
+        let entry = self.sessions.begin_turn(&session_id)?;
+        entry.handle.cancel_token().store(false, Ordering::Release);
         {
-            let mut info = handle
-                .info
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut info = entry.handle.info_lock();
             info.turn = info.turn.saturating_add(1);
         }
         let sink = self.sink_slot().clone();
@@ -347,19 +289,20 @@ impl Host {
         let factory = Arc::clone(&self.factory);
         let root = self.root.clone();
         let providers_file = self.providers_file.clone();
-        let thread_handle = handle.clone();
+        let thread_entry = entry.clone();
         let thread_session = session_id.clone();
         let spawned = thread::Builder::new()
             .name(format!("agent-{session_id}"))
             .spawn(move || {
                 // 守卫覆盖 worker 的全部事件（含 panic 分支的 error + done）：
                 // running=false 即表示该会话不会再有事件推送，可安全回收。
-                let _running = RunningGuard(thread_handle.clone());
-                let emitter = TurnEmitter::new(thread_session, thread_handle.clone(), sink, seq);
+                let _running = RunningGuard(thread_entry.handle.clone());
+                let emitter =
+                    TurnEmitter::new(thread_session, thread_entry.handle.clone(), sink, seq);
                 let panic_emitter = emitter.clone();
                 let turn = AgentTurn {
                     text,
-                    handle: thread_handle,
+                    entry: thread_entry,
                     root,
                     providers_file,
                     factory,
@@ -373,7 +316,7 @@ impl Host {
                 }
             });
         if let Err(error) = spawned {
-            handle.running.store(false, Ordering::Release);
+            entry.handle.finish_running();
             return Err(ErrorBody::new(
                 ErrorCode::Internal,
                 format!("failed to start agent worker: {error}"),
@@ -384,12 +327,12 @@ impl Host {
 
     fn agent_cancel(&self, args: &Value) -> Result<(), ErrorBody> {
         let session_id = required_string(args, "session_id")?;
-        let handle = self.session(&session_id)?;
-        if handle.running.load(Ordering::Acquire) {
+        let entry = self.session(&session_id)?;
+        if entry.handle.is_running() {
             // 只置位共享令牌，不调用 `AgentLoop::cancel()`：后者会把 lc-core
             // `Session` 永久标记为已取消，同一会话无法继续。worker 在本轮结束
             // 后复位令牌，并补发 session_state(cancelled) + done(cancelled)。
-            handle.cancel.store(true, Ordering::Release);
+            entry.handle.cancel_token().store(true, Ordering::Release);
         }
         Ok(())
     }
@@ -467,26 +410,8 @@ impl Host {
         Ok("null".to_string())
     }
 
-    fn session(&self, id: &str) -> Result<SessionHandle, ErrorBody> {
-        self.sessions_slot()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| not_found_session(id))
-    }
-
-    /// 取句柄并原子置 `running`；与回收共用 sessions 锁，避免刚取到的句柄
-    /// 在被置位前就被回收（回收只挑 `running = false` 的会话）。
-    fn begin_turn(&self, id: &str) -> Result<SessionHandle, ErrorBody> {
-        let sessions = self.sessions_slot();
-        let handle = sessions
-            .get(id)
-            .cloned()
-            .ok_or_else(|| not_found_session(id))?;
-        handle
-            .running
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| invalid(format!("agent turn already running: {id}")))?;
-        Ok(handle)
+    fn session(&self, id: &str) -> Result<lc_host::sessions::SessionEntry<AgentSlot>, ErrorBody> {
+        self.sessions.get(id).ok_or_else(|| not_found_session(id))
     }
 
     fn resolve_path(&self, args: &Value) -> Result<PathBuf, ErrorBody> {
@@ -499,12 +424,6 @@ impl Host {
         })
     }
 
-    fn sessions_slot(&self) -> MutexGuard<'_, HashMap<String, SessionHandle>> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     fn sink_slot(&self) -> MutexGuard<'_, Option<EventSink>> {
         self.sink
             .lock()
@@ -514,26 +433,6 @@ impl Host {
 
 fn not_found_session(id: &str) -> ErrorBody {
     ErrorBody::new(ErrorCode::NotFound, format!("session not found: {id}"))
-}
-
-/// 超出上限时按创建序号从老到新回收已终止会话。running（含取消中的 worker）
-/// 的会话跳过；若全部在跑，会话表暂时超限，等后续创建再回收。
-fn reclaim_terminated_sessions(sessions: &mut HashMap<String, SessionHandle>, max_sessions: usize) {
-    if sessions.len() <= max_sessions {
-        return;
-    }
-    let mut candidates: Vec<(u64, String)> = sessions
-        .iter()
-        .filter(|(_, handle)| handle.is_reclaimable())
-        .map(|(id, handle)| (handle.created, id.clone()))
-        .collect();
-    candidates.sort_unstable_by_key(|(created, _)| *created);
-    let excess = sessions.len() - max_sessions;
-    for (_, id) in candidates.into_iter().take(excess) {
-        if let Some(handle) = sessions.remove(&id) {
-            handle.reclaim();
-        }
-    }
 }
 
 fn serialize_json<T: serde::Serialize>(value: &T) -> Result<String, ErrorBody> {
@@ -810,7 +709,7 @@ fn resolve_bounded(
 
 struct AgentTurn {
     text: String,
-    handle: SessionHandle,
+    entry: lc_host::sessions::SessionEntry<AgentSlot>,
     root: PathBuf,
     providers_file: PathBuf,
     factory: Arc<dyn AgentFactory>,
@@ -820,14 +719,14 @@ struct AgentTurn {
 fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
     let AgentTurn {
         text,
-        handle,
+        entry,
         root,
         providers_file,
         factory,
     } = turn;
 
-    let mut agent_slot = handle
-        .agent
+    let mut agent_slot = entry
+        .payload
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if agent_slot.is_none() {
@@ -835,10 +734,10 @@ fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
             session_id: &emitter.session_id,
             workspace_root: &root,
             providers_file: &providers_file,
-            model: handle.model.as_deref(),
-            thinking: handle.thinking.as_deref(),
-            max_turns: handle.info_snapshot().max_turns,
-            cancel: Arc::clone(&handle.cancel),
+            model: entry.handle.model(),
+            thinking: entry.handle.thinking(),
+            max_turns: entry.handle.info_snapshot().max_turns,
+            cancel: Arc::clone(entry.handle.cancel_token()),
         };
         match factory.create(&request) {
             Ok(agent) => {
@@ -846,7 +745,7 @@ fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
                 let compaction = emitter.clone();
                 *agent_slot = Some(
                     agent
-                        .with_cancel(Arc::clone(&handle.cancel))
+                        .with_cancel(Arc::clone(entry.handle.cancel_token()))
                         .with_tool_observer(Box::new(move |call_id, result| {
                             tools.tool_result(call_id, result)
                         }))
@@ -861,7 +760,7 @@ fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
                     error.message
                 );
                 drop(agent_slot);
-                run_stub_agent(&handle, emitter);
+                run_stub_agent(&entry.handle, emitter);
                 return;
             }
         }
@@ -884,7 +783,7 @@ fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
     let session_after = session_info(agent.session());
     drop(agent_slot);
 
-    if handle.cancel.swap(false, Ordering::AcqRel) {
+    if entry.handle.cancel_token().swap(false, Ordering::AcqRel) {
         emitter.cancelled();
         return;
     }
@@ -909,7 +808,7 @@ fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
             // 传输/解析失败且尚未产生任何可见输出：回退 stub，保证离线 demo 可用。
             if matches!(error, LoopError::Llm(_)) && !visible_output {
                 eprintln!("[ohos-agent] LLM transport failed, falling back to stub: {error}");
-                run_stub_agent(&handle, emitter);
+                run_stub_agent(&entry.handle, emitter);
                 return;
             }
             emitter.error(loop_error_body(&error));
@@ -938,11 +837,11 @@ fn loop_error_body(error: &LoopError) -> ErrorBody {
 
 /// 在 worker 闭包内持有，覆盖本轮全部事件（含 panic 收尾）；drop 后
 /// `running = false`，回收侧即可把该会话视为已终止。
-struct RunningGuard(SessionHandle);
+struct RunningGuard(lc_host::sessions::SessionHandle);
 
 impl Drop for RunningGuard {
     fn drop(&mut self) {
-        self.0.running.store(false, Ordering::Release);
+        self.0.finish_running();
     }
 }
 
@@ -950,7 +849,7 @@ impl Drop for RunningGuard {
 #[derive(Clone)]
 struct TurnEmitter {
     session_id: String,
-    handle: SessionHandle,
+    handle: lc_host::sessions::SessionHandle,
     sink: Option<EventSink>,
     seq: lc_host::envelope::Seq,
 }
@@ -958,7 +857,7 @@ struct TurnEmitter {
 impl TurnEmitter {
     fn new(
         session_id: String,
-        handle: SessionHandle,
+        handle: lc_host::sessions::SessionHandle,
         sink: Option<EventSink>,
         seq: lc_host::envelope::Seq,
     ) -> Self {
@@ -973,14 +872,14 @@ impl TurnEmitter {
     fn event(&self, event: CoreEvent) {
         // 会话已被回收：worker 可能仍持有句柄（例如 panic 后的收尾），所有
         // 后续推送都必须是 no-op，避免向已移除会话发事件。
-        if !self.handle.alive.load(Ordering::Acquire) {
+        if !self.handle.is_alive() {
             return;
         }
         lc_host::envelope::emit_envelope(&self.sink, &self.seq, event);
     }
 
     fn forward_llm(&self, event: &LlmEvent) {
-        if self.handle.cancel.load(Ordering::Acquire) {
+        if self.handle.cancel_token().load(Ordering::Acquire) {
             return;
         }
         if let Some(event) = llm_event(&self.session_id, event) {
@@ -989,7 +888,7 @@ impl TurnEmitter {
     }
 
     fn tool_result(&self, call_id: &str, result: &Result<ToolOutput, ToolError>) {
-        if self.handle.cancel.load(Ordering::Acquire) {
+        if self.handle.cancel_token().load(Ordering::Acquire) {
             return;
         }
         let (ok, text) = match result {
@@ -1005,7 +904,7 @@ impl TurnEmitter {
     }
 
     fn compacted(&self, record: &CompactionRecord) {
-        if self.handle.cancel.load(Ordering::Acquire) {
+        if self.handle.cancel_token().load(Ordering::Acquire) {
             return;
         }
         self.event(CoreEvent::AgentCompacted {
@@ -1019,24 +918,20 @@ impl TurnEmitter {
     }
 
     fn session_state(&self, mut info: SessionInfo) {
-        if !self.handle.alive.load(Ordering::Acquire) {
+        if !self.handle.is_alive() {
             return;
         }
         info.session_id = self.session_id.clone();
         info.mode = SessionMode::Plan;
         {
-            let mut stored = self
-                .handle
-                .info
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut stored = self.handle.info_lock();
             *stored = info.clone();
         }
         self.event(CoreEvent::AgentSessionState { session: info });
     }
 
     fn cancelled(&self) {
-        if !self.handle.alive.load(Ordering::Acquire) {
+        if !self.handle.is_alive() {
             return;
         }
         let mut info = self.handle.info_snapshot();
@@ -1044,11 +939,7 @@ impl TurnEmitter {
         info.mode = SessionMode::Plan;
         info.cancelled = true;
         {
-            let mut stored = self
-                .handle
-                .info
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut stored = self.handle.info_lock();
             *stored = info.clone();
         }
         self.event(CoreEvent::AgentSessionState { session: info });
@@ -1067,9 +958,9 @@ impl TurnEmitter {
     }
 }
 
-fn run_stub_agent(handle: &SessionHandle, emitter: &TurnEmitter) {
+fn run_stub_agent(handle: &lc_host::sessions::SessionHandle, emitter: &TurnEmitter) {
     for index in 0..STUB_DELTAS {
-        if handle.cancel.load(Ordering::Acquire) {
+        if handle.cancel_token().load(Ordering::Acquire) {
             finish_cancelled(handle, emitter);
             return;
         }
@@ -1080,7 +971,7 @@ fn run_stub_agent(handle: &SessionHandle, emitter: &TurnEmitter) {
         });
         thread::sleep(STUB_DELAY);
     }
-    if handle.cancel.load(Ordering::Acquire) {
+    if handle.cancel_token().load(Ordering::Acquire) {
         finish_cancelled(handle, emitter);
         return;
     }
@@ -1088,8 +979,8 @@ fn run_stub_agent(handle: &SessionHandle, emitter: &TurnEmitter) {
     emitter.done(STUB_STOP_REASON);
 }
 
-fn finish_cancelled(handle: &SessionHandle, emitter: &TurnEmitter) {
-    handle.cancel.store(false, Ordering::Release);
+fn finish_cancelled(handle: &lc_host::sessions::SessionHandle, emitter: &TurnEmitter) {
+    handle.cancel_token().store(false, Ordering::Release);
     emitter.cancelled();
 }
 
@@ -1148,6 +1039,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
     use lc_core::agent::{LlmStream, PolicyMode};
@@ -1169,7 +1061,7 @@ mod tests {
     }
 
     fn setup_with_factory(factory: Option<Arc<dyn AgentFactory>>) -> (Host, PathBuf) {
-        setup_with_limit(factory, MAX_SESSIONS)
+        setup_with_limit(factory, lc_host::sessions::DEFAULT_MAX_SESSIONS)
     }
 
     fn setup_with_limit(
@@ -2346,18 +2238,13 @@ mod tests {
         )
         .unwrap();
         wait_until(
-            || {
-                host.session(&running)
-                    .unwrap()
-                    .running
-                    .load(Ordering::Acquire)
-            },
+            || host.session(&running).unwrap().handle.is_running(),
             "session to start running",
         );
 
         // running(1) + LIMIT(3) = 4 > 3：最老的已终止会话被回收。
         let terminated: Vec<String> = (0..LIMIT).map(|_| create_session(&host)).collect();
-        assert_eq!(host.sessions_slot().len(), LIMIT);
+        assert_eq!(host.sessions.len(), LIMIT);
         assert!(
             host.session(&running).is_ok(),
             "running session must survive reclamation"
@@ -2376,7 +2263,7 @@ mod tests {
         );
         assert!(host.session(&terminated[2]).is_ok());
         assert!(host.session(&newest).is_ok());
-        assert_eq!(host.sessions_slot().len(), LIMIT);
+        assert_eq!(host.sessions.len(), LIMIT);
 
         // worker 结束后 running 会话才变成可回收，且因为最老而先被回收。
         release.store(true, Ordering::Release);
@@ -2386,13 +2273,7 @@ mod tests {
                 .any(|event| event["event"]["type"] == "agent:done")
         });
         wait_until(
-            || {
-                !host
-                    .session(&running)
-                    .unwrap()
-                    .running
-                    .load(Ordering::Acquire)
-            },
+            || !host.session(&running).unwrap().handle.is_running(),
             "running flag to clear",
         );
         create_session(&host);
@@ -2415,7 +2296,7 @@ mod tests {
         let late_sink = Arc::clone(&late);
         let emitter = TurnEmitter::new(
             first.clone(),
-            stale.clone(),
+            stale.handle.clone(),
             Some(Arc::new(move |json| {
                 late_sink
                     .lock()
@@ -2438,7 +2319,7 @@ mod tests {
         // 模拟持有旧句柄的 worker：会话回收后继续推送必须是 no-op。
         emitter.done("stub");
         emitter.error(ErrorBody::new(ErrorCode::Internal, "late"));
-        emitter.session_state(stale.info_snapshot());
+        emitter.session_state(stale.handle.info_snapshot());
         assert_eq!(
             late.lock().unwrap().len(),
             1,
