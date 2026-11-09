@@ -326,7 +326,8 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 ## preview.30：标签右键菜单与品牌标识
 
 - 标签右键菜单：关闭/关闭其他/关闭右侧/关闭已保存/复制路径/在资源管理器显示。
-- 批量关闭只关干净标签，dirty 保留；菜单 fixed 定位、点击外部或 Escape 关闭。
+- 批量关闭只关干净标签，dirty 保留；「关闭其他」后始终激活保留标签；
+  菜单 fixed 定位、点击外部或 Escape 关闭。
 - 新增 `services/clipboard.ts`，Agent 消息复制与复制路径共用 execCommand 实现。
 - 标题栏 `.brand-mark` 改用新 Logo，移除 Agent/亮色主题的灰色渐变。
 - 验证：Web 393（26 文件，tabs 49 项）、Rust 608；真机菜单 6 项、复制路径内容、
