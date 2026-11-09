@@ -445,6 +445,13 @@ watch(
   () => closeFind(),
 )
 
+watch(
+  () => findMatches.value.length,
+  length => {
+    if (findIndex.value >= length) findIndex.value = 0
+  },
+)
+
 function selectModeFromMenu(mode: SessionMode): void {
   closeMenus()
   selectMode(mode)
