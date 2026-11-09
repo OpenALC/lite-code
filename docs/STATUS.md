@@ -332,6 +332,16 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   lane 边界全绿、安全路径有测试）。
 - B 类 #1–4、#7 维持「等待维护者」，未触碰 RELEASE-GATES.md 状态列（按其 §6 要求）。
 
+## main(2)：lc-host M3a 事件出口统一（f8a4cce）
+
+- lc-host envelope 新增 `CoreEventSink` trait（CoreEvent 级，桌面形状）+
+  `envelope()` 构造 + `Seq::from_u64` 种子；桌面 `agent.rs`/`db.rs` 切换：
+  本地 trait 改重导出，`next_envelope`/`AtomicU64` seq 删除，统一 1 起
+  （桌面首信封 seq 0→1，web 不消费 envelope seq，已核实无影响）。
+- 验证：lc-host 15、lc-desktop 100、workspace 全绿；check-all 全量门禁
+  通过；桌面 dev 重编运行正常。lc-ohos 未动（additive only）。
+- 发布：未推 tag，同 M2 留 09:00 审查后。
+
 ## main：lc-host M2 会话编排骨架下沉
 
 - lc-host 新增 `sessions` 模块：`SessionHandle`（info/cancel/running/alive
