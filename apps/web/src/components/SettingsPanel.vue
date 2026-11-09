@@ -3,11 +3,17 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import {
+  AGENT_FONT_DEFAULT,
+  AGENT_FONT_MAX,
+  AGENT_FONT_MIN,
   FONT_SIZE_DEFAULT,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   TAB_SIZES,
   resetZoom,
+  setAgentDensity,
+  setAgentFontSize,
+  setAgentSendKey,
   setFontSize,
   setLocale,
   setTabSize,
@@ -30,6 +36,7 @@ onBeforeUnmount(unsub)
 
 const zoomLabel = computed(() => `${Math.round(prefs.value.zoom * 100)}%`)
 const fontSizeLabel = computed(() => `${prefs.value.fontSize} px`)
+const agentFontLabel = computed(() => `${prefs.value.agentFontSize} px`)
 
 function changeLocale(value: string): void {
   const next = value === 'en' ? 'en' : 'zh-CN'
@@ -189,6 +196,70 @@ function changeLocale(value: string): void {
       >
         {{ t('settings.manageProviders') }}
       </button>
+      <div class="row">
+        <span>{{ t('settings.agentSendKey') }}</span>
+        <div class="segmented compact">
+          <button
+            type="button"
+            :class="{ active: prefs.agentSendKey === 'enter' }"
+            @click="setAgentSendKey('enter')"
+          >
+            {{ t('settings.agentSendEnter') }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: prefs.agentSendKey === 'ctrl-enter' }"
+            @click="setAgentSendKey('ctrl-enter')"
+          >
+            {{ t('settings.agentSendCtrlEnter') }}
+          </button>
+        </div>
+      </div>
+      <div class="row">
+        <span>{{ t('settings.agentDensity') }}</span>
+        <div class="segmented">
+          <button
+            type="button"
+            :class="{ active: prefs.agentDensity === 'comfortable' }"
+            @click="setAgentDensity('comfortable')"
+          >
+            {{ t('settings.agentComfortable') }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: prefs.agentDensity === 'compact' }"
+            @click="setAgentDensity('compact')"
+          >
+            {{ t('settings.agentCompact') }}
+          </button>
+        </div>
+      </div>
+      <div class="row">
+        <span>{{ t('settings.agentFontSize') }}</span>
+        <div class="stepper">
+          <button
+            type="button"
+            :disabled="prefs.agentFontSize <= AGENT_FONT_MIN"
+            @click="setAgentFontSize(prefs.agentFontSize - 1)"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            :title="t('settings.resetAgentFontSize')"
+            @click="setAgentFontSize(AGENT_FONT_DEFAULT)"
+          >
+            {{ agentFontLabel }}
+          </button>
+          <button
+            type="button"
+            :disabled="prefs.agentFontSize >= AGENT_FONT_MAX"
+            @click="setAgentFontSize(prefs.agentFontSize + 1)"
+          >
+            +
+          </button>
+        </div>
+      </div>
       <div class="row">
         <span>{{ t('settings.db') }}</span>
         <span class="muted">SQLite · PostgreSQL · MySQL · SQL Server</span>

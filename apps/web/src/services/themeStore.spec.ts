@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  AGENT_DENSITY_DEFAULT,
+  AGENT_FONT_DEFAULT,
+  AGENT_FONT_MAX,
+  AGENT_FONT_MIN,
+  AGENT_SEND_KEY_DEFAULT,
   DEFAULT_PREFS,
   FONT_SIZE_DEFAULT,
   FONT_SIZE_MAX,
@@ -11,6 +16,9 @@ import {
   loadPrefs,
   normalizePrefs,
   savePrefs,
+  setAgentDensity,
+  setAgentFontSize,
+  setAgentSendKey,
   setFontSize,
   setTabSize,
   setWordWrap,
@@ -38,6 +46,9 @@ afterEach(() => {
   setFontSize(FONT_SIZE_DEFAULT)
   setTabSize(TAB_SIZE_DEFAULT)
   setWordWrap(WORD_WRAP_DEFAULT)
+  setAgentSendKey(AGENT_SEND_KEY_DEFAULT)
+  setAgentDensity(AGENT_DENSITY_DEFAULT)
+  setAgentFontSize(AGENT_FONT_DEFAULT)
 })
 
 describe('normalizePrefs', () => {
@@ -46,6 +57,9 @@ describe('normalizePrefs', () => {
     expect(DEFAULT_PREFS.fontSize).toBe(13)
     expect(DEFAULT_PREFS.tabSize).toBe(2)
     expect(DEFAULT_PREFS.wordWrap).toBe('off')
+    expect(DEFAULT_PREFS.agentSendKey).toBe('enter')
+    expect(DEFAULT_PREFS.agentDensity).toBe('comfortable')
+    expect(DEFAULT_PREFS.agentFontSize).toBe(14)
   })
 
   it('字号取整并 clamp 到 11–20，非法值回落 13', () => {
@@ -68,24 +82,48 @@ describe('normalizePrefs', () => {
       locale: 'en',
     })
   })
+
+  it('Agent 偏好：非法发送键/密度回落，字号 clamp 到 12–18', () => {
+    expect(normalizePrefs({ agentSendKey: 'ctrl-enter' }).agentSendKey).toBe('ctrl-enter')
+    expect(normalizePrefs({ agentSendKey: 'x' }).agentSendKey).toBe('enter')
+    expect(normalizePrefs({ agentDensity: 'compact' }).agentDensity).toBe('compact')
+    expect(normalizePrefs({ agentDensity: 'x' }).agentDensity).toBe('comfortable')
+    expect(normalizePrefs({ agentFontSize: 9 }).agentFontSize).toBe(AGENT_FONT_MIN)
+    expect(normalizePrefs({ agentFontSize: 99 }).agentFontSize).toBe(AGENT_FONT_MAX)
+    expect(normalizePrefs({ agentFontSize: Number.NaN }).agentFontSize).toBe(AGENT_FONT_DEFAULT)
+  })
 })
 
 describe('持久化', () => {
   it('savePrefs 写入固定 key，loadPrefs 读取并归一化', () => {
     const storage = fakeStorage()
     savePrefs(
-      { ...DEFAULT_PREFS, fontSize: 18, tabSize: 8, wordWrap: 'on' },
+      {
+        ...DEFAULT_PREFS,
+        fontSize: 18,
+        tabSize: 8,
+        wordWrap: 'on',
+        agentSendKey: 'ctrl-enter',
+        agentDensity: 'compact',
+        agentFontSize: 16,
+      },
       storage,
     )
     expect(JSON.parse(storage.data[PREFS_STORAGE_KEY])).toMatchObject({
       fontSize: 18,
       tabSize: 8,
       wordWrap: 'on',
+      agentSendKey: 'ctrl-enter',
+      agentDensity: 'compact',
+      agentFontSize: 16,
     })
     expect(loadPrefs(storage)).toMatchObject({
       fontSize: 18,
       tabSize: 8,
       wordWrap: 'on',
+      agentSendKey: 'ctrl-enter',
+      agentDensity: 'compact',
+      agentFontSize: 16,
     })
   })
 

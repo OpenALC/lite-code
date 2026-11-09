@@ -4,6 +4,8 @@ import type { Locale } from './i18n'
 export type ThemeMode = 'dark' | 'light'
 export type WordWrap = 'off' | 'on'
 export type TabSize = 2 | 4 | 8
+export type AgentSendKey = 'enter' | 'ctrl-enter'
+export type AgentDensity = 'comfortable' | 'compact'
 
 export const FONT_SIZE_MIN = 11
 export const FONT_SIZE_MAX = 20
@@ -11,6 +13,11 @@ export const FONT_SIZE_DEFAULT = 13
 export const TAB_SIZES: readonly TabSize[] = [2, 4, 8]
 export const TAB_SIZE_DEFAULT: TabSize = 2
 export const WORD_WRAP_DEFAULT: WordWrap = 'off'
+export const AGENT_FONT_MIN = 12
+export const AGENT_FONT_MAX = 18
+export const AGENT_FONT_DEFAULT = 14
+export const AGENT_SEND_KEY_DEFAULT: AgentSendKey = 'enter'
+export const AGENT_DENSITY_DEFAULT: AgentDensity = 'comfortable'
 
 export interface UiPrefs {
   theme: ThemeMode
@@ -19,6 +26,9 @@ export interface UiPrefs {
   fontSize: number
   tabSize: TabSize
   wordWrap: WordWrap
+  agentSendKey: AgentSendKey
+  agentDensity: AgentDensity
+  agentFontSize: number
 }
 
 type PrefsStorage = Pick<Storage, 'getItem' | 'setItem'>
@@ -32,6 +42,9 @@ export const DEFAULT_PREFS: UiPrefs = {
   fontSize: FONT_SIZE_DEFAULT,
   tabSize: TAB_SIZE_DEFAULT,
   wordWrap: WORD_WRAP_DEFAULT,
+  agentSendKey: AGENT_SEND_KEY_DEFAULT,
+  agentDensity: AGENT_DENSITY_DEFAULT,
+  agentFontSize: AGENT_FONT_DEFAULT,
 }
 
 /** 读取自 localStorage 的原始值可能是任意类型，逐项归一化。 */
@@ -50,6 +63,19 @@ function normalizeWordWrap(value: unknown): WordWrap {
   return value === 'on' ? 'on' : 'off'
 }
 
+function normalizeAgentSendKey(value: unknown): AgentSendKey {
+  return value === 'ctrl-enter' ? 'ctrl-enter' : 'enter'
+}
+
+function normalizeAgentDensity(value: unknown): AgentDensity {
+  return value === 'compact' ? 'compact' : 'comfortable'
+}
+
+function normalizeAgentFontSize(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return AGENT_FONT_DEFAULT
+  return Math.min(AGENT_FONT_MAX, Math.max(AGENT_FONT_MIN, Math.round(value)))
+}
+
 export function normalizePrefs(input: PrefsInput): UiPrefs {
   const theme = input.theme === 'light' ? 'light' : 'dark'
   const zoom = Number.isFinite(input.zoom)
@@ -63,6 +89,9 @@ export function normalizePrefs(input: PrefsInput): UiPrefs {
     fontSize: normalizeFontSize(input.fontSize),
     tabSize: normalizeTabSize(input.tabSize),
     wordWrap: normalizeWordWrap(input.wordWrap),
+    agentSendKey: normalizeAgentSendKey(input.agentSendKey),
+    agentDensity: normalizeAgentDensity(input.agentDensity),
+    agentFontSize: normalizeAgentFontSize(input.agentFontSize),
   }
 }
 
@@ -167,6 +196,24 @@ export function setTabSize(tabSize: TabSize): void {
 
 export function setWordWrap(wordWrap: WordWrap): void {
   current = normalizePrefs({ ...current, wordWrap })
+  savePrefs(current)
+  emit()
+}
+
+export function setAgentSendKey(agentSendKey: AgentSendKey): void {
+  current = normalizePrefs({ ...current, agentSendKey })
+  savePrefs(current)
+  emit()
+}
+
+export function setAgentDensity(agentDensity: AgentDensity): void {
+  current = normalizePrefs({ ...current, agentDensity })
+  savePrefs(current)
+  emit()
+}
+
+export function setAgentFontSize(agentFontSize: number): void {
+  current = normalizePrefs({ ...current, agentFontSize })
   savePrefs(current)
   emit()
 }

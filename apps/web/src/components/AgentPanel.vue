@@ -19,6 +19,7 @@ import {
 } from '../services/agentContext'
 import type { AgentSessionController, TurnStat } from '../services/agentSession'
 import { renderMarkdown } from '../services/markdown'
+import { subscribePrefs, uiPrefs } from '../services/themeStore'
 import { forkBeforeUserMessage } from '../services/forkSession'
 import {
   buildFileIndex,
@@ -65,6 +66,10 @@ interface ModelChoice {
 const state = ref(props.controller.getState())
 const unsubscribe = props.controller.subscribe(next => {
   state.value = next
+})
+const prefs = ref(uiPrefs())
+const unsubscribePrefs = subscribePrefs(next => {
+  prefs.value = next
 })
 
 const tauri = isTauri()
@@ -399,7 +404,9 @@ const composerHint = computed(() => {
   if (!tauri) return t('agent.browserDemo')
   if (streaming.value) return t('agent.queueHint')
   if (approvalPending.value) return t('agent.queueApprovalHint')
-  return t('agent.sendHint')
+  return prefs.value.agentSendKey === 'enter'
+    ? t('agent.sendHintEnter')
+    : t('agent.sendHintCtrlEnter')
 })
 const sendDisabled = computed(
   () =>
@@ -486,6 +493,7 @@ watch(
 )
 onBeforeUnmount(() => {
   unsubscribe()
+  unsubscribePrefs()
   window.removeEventListener('providers:changed', onProvidersChanged)
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', onWindowKeydown)
@@ -688,7 +696,13 @@ function chooseMention(file: string): void {
 }
 
 function onComposerKeydown(event: KeyboardEvent): void {
-  if (!mentionOpen.value) return
+  if (!mentionOpen.value) {
+    if (event.key === 'Enter' && prefs.value.agentSendKey === 'enter') {
+      event.preventDefault()
+      void submit()
+    }
+    return
+  }
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     if (mentionItems.value.length > 0) {
@@ -755,7 +769,11 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 </script>
 
 <template>
-  <div class="agent-body">
+  <div
+    class="agent-body"
+    :class="`density-${prefs.agentDensity}`"
+    :style="{ '--agent-font': `${prefs.agentFontSize}px` }"
+  >
     <header class="agent-head">
       <span class="agent-title">Agent</span>
       <span
@@ -1712,7 +1730,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 .msg-text {
   color: var(--fg);
-  font-size: 12.5px;
+  font-size: var(--agent-font, 12.5px);
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1727,7 +1745,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 .msg.assistant .msg-text {
-  font-size: 13px;
+  font-size: var(--agent-font, 13px);
 }
 
 .msg-text.markdown {
@@ -2356,7 +2374,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   border: 0;
   background: transparent;
   color: var(--fg);
-  font: 12.5px/1.6 var(--font-ui);
+  font: var(--agent-font, 12.5px)/1.6 var(--font-ui);
   resize: none;
   outline: none;
   overflow-y: auto;
@@ -2768,13 +2786,13 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 :global(.shell.agent-mode .msg-text){
-  font-size: 14px;
+  font-size: var(--agent-font, 14px);
 }
 
 :global(.shell.agent-mode .msg.user .msg-text){
   padding: 10px 12px;
   border-radius: 12px;
-  font-size: 14px;
+  font-size: var(--agent-font, 14px);
 }
 
 :global(.shell.agent-mode .tool-name){
@@ -2800,7 +2818,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 :global(.shell.agent-mode .composer textarea){
   min-height: 44px;
-  font-size: 14px;
+  font-size: var(--agent-font, 14px);
 }
 
 :global(.shell.agent-mode .empty) {
@@ -2824,5 +2842,36 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   max-width: 860px;
   margin-right: auto;
   margin-left: auto;
+}
+
+/* Agent 偏好：紧凑密度 */
+.agent-body.density-compact .stream {
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.agent-body.density-compact .msg-text {
+  line-height: 1.5;
+}
+
+.agent-body.density-compact .tool-head {
+  height: 28px;
+}
+
+.agent-body.density-compact .tool-body,
+.agent-body.density-compact .tool-arg {
+  font-size: calc(var(--agent-font, 12.5px) - 1.5px);
+}
+
+.agent-body.density-compact .composer {
+  padding: 6px 8px 6px;
+}
+
+.agent-body.density-compact .composer textarea {
+  min-height: 34px;
+}
+
+.agent-body.density-compact .agent-head {
+  height: 36px;
 }
 </style>
