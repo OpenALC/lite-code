@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.45 发布提交（见 `git log`）；版本 `0.6.1-preview.45`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.46 提交（见 `git log`）；版本 `0.6.1-preview.46`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.45` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.45` 发布中；`.46` 待打标签。
 
 ## 当前位置一览
 
@@ -322,6 +322,14 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 5. **UI**：活动栏「插件」页、启停/重载/打开目录、命令执行、Ctrl+P 命令；
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
+
+## preview.46：活动栏/工具栏图标 Kimi 化
+
+- 从 Kimi Code Desktop 资源包静态提取 91 个 `kimi-*` 图标（与线上 DOM 路径校验一致）。
+- 替换：文件树、任务、终端、文件、铅笔、加号、关闭、归档、箭头、chevron 等 11 个
+  为 24×24 填充路径；git/db/供应商/插件保留线性图标。
+- 验证：Web 408（28 文件）；真机活动栏截图正常。
+- 发布：`v0.6.1-preview.46` 待打标签（等 .45 release 完成后推送，避免 manifest 竞争）。
 
 ## preview.45：Kimi 风格设置页
 
