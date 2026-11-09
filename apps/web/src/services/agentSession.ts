@@ -196,6 +196,8 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
   let sending = false
   let turnUsage: AgentUsage = emptyUsage()
   let turnStartedAt = 0
+  /** 当前用户轮次序号（1 起）；重复的终态事件用它覆盖同一行。 */
+  let turnNumber = 0
   let historyPreamble: string | null = null
   let queueSeq = 0
 
@@ -210,28 +212,31 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     commit({ ...state, ...next })
   }
 
-  function resetTurn(): void {
+  /** 开始一条新的用户轮次；`completedTurns` 是该会话已完成的轮数。 */
+  function resetTurn(completedTurns: number): void {
     turnUsage = emptyUsage()
     turnStartedAt = Date.now()
+    turnNumber = completedTurns + 1
   }
 
-  function finalizeTurn(
-    stats: TurnStat[],
-    _turn: number,
-    stopReason: string,
-  ): TurnStat[] {
+  function finalizeTurn(stats: TurnStat[], stopReason: string): TurnStat[] {
     if (turnStartedAt === 0) return stats
     // 统计按“用户发送”计轮，而不是 AgentLoop 的 LLM 迭代次数。
-    const resolvedTurn = stats.length + 1
+    // 同一轮可能收到重复/迟到的 done/error（桥接重放、取消收尾等）：
+    // 按轮号覆盖而不是追加，保证一轮只占一行。
+    const turn = turnNumber > 0 ? turnNumber : stats.length + 1
     const stat: TurnStat = {
-      turn: resolvedTurn,
+      turn,
       input: turnUsage.input,
       output: turnUsage.output,
       cached: turnUsage.cached,
       durationMs: Math.max(0, Date.now() - turnStartedAt),
       stopReason,
     }
-    return [...stats, stat]
+    return [
+      ...stats.filter(item => item.turn !== turn),
+      stat,
+    ].sort((a, b) => a.turn - b.turn)
   }
 
   const offCore = deps.onCoreEvent(event => {
@@ -245,9 +250,9 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
         return
       }
       const agent = applyAgentEvent(current, event)
-      const turnStats = finalizeTurn(state.turnStats, agent.turn, 'error')
-      turnStartedAt = 0
-      turnUsage = emptyUsage()
+      const turnStats = finalizeTurn(state.turnStats, 'error')
+      // 不清空本轮累加器：worker 可能在 error 之后再补一条 done，
+      // 由它覆盖同一行，而不是当作下一轮。
       commit({
         ...state,
         agent,
@@ -288,9 +293,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
 
     let turnStats = state.turnStats
     if (event.type === 'agent:done') {
-      turnStats = finalizeTurn(turnStats, agent.turn, event.stop_reason)
-      turnStartedAt = 0
-      turnUsage = emptyUsage()
+      turnStats = finalizeTurn(turnStats, event.stop_reason)
     }
 
     if (event.type === 'agent:done' || event.type === 'agent:approval_required') {
@@ -316,6 +319,10 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     if (disposed || state.streaming) return false
     const agent = sanitizeHistoryAgent(session.agent)
     historyPreamble = buildHistoryPreamble(agent.messages)
+    // 历史视图没有在途轮次：让旧会话迟到的 done/usage 落空，避免叠加统计。
+    turnStartedAt = 0
+    turnUsage = emptyUsage()
+    turnNumber = 0
     commit({
       ...state,
       agent,
@@ -340,6 +347,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     historyPreamble = null
     turnStartedAt = 0
     turnUsage = emptyUsage()
+    turnNumber = 0
     commit({
       ...state,
       agent: null,
@@ -410,7 +418,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
           return
         }
         current = createAgentState(created.data.session)
-        resetTurn()
+        resetTurn(0)
         commit({
           ...state,
           agent: current,
@@ -421,7 +429,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
           turnStats: [],
         })
       } else if (!state.streaming) {
-        resetTurn()
+        resetTurn(state.turnStats.length)
         patch({ status: 'thinking', error: null })
       }
 
@@ -536,6 +544,9 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     if (!state.agent || state.archived) {
       // 首个会话尚未创建：只记下模式，首次发送时按该模式 sessionCreate。
       historyPreamble = null
+      turnStartedAt = 0
+      turnUsage = emptyUsage()
+      turnNumber = 0
       patch({
         mode,
         agent: state.archived ? null : state.agent,
@@ -559,6 +570,7 @@ export function createAgentSession(deps: AgentSessionDeps): AgentSessionControll
     historyPreamble = null
     turnStartedAt = 0
     turnUsage = emptyUsage()
+    turnNumber = 0
     patch({
       agent,
       mode: agent.mode,

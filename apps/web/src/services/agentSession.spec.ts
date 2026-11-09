@@ -43,6 +43,10 @@ function done(stopReason = 'end_turn', sessionId = 's1'): CoreEvent {
   return { type: 'agent:done', session_id: sessionId, stop_reason: stopReason }
 }
 
+function usage(input: number, output: number, cached = 0, sessionId = 's1'): CoreEvent {
+  return { type: 'agent:usage', session_id: sessionId, input, output, cached }
+}
+
 function approvalRequired(approvalId = 1, sessionId = 's1'): CoreEvent {
   return {
     type: 'agent:approval_required',
@@ -600,6 +604,109 @@ describe('活动状态与每轮 token', () => {
       stopReason: 'end_turn',
     })
     expect(stats[0]?.durationMs).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('每轮统计去重', () => {
+  it('一轮多条 usage、多次工具调用与重复 done 仍只占一行', async () => {
+    const h = harness()
+    await h.controller.send('read src/main.rs')
+
+    h.emit(usage(64, 18))
+    h.emit({ type: 'agent:tool_start', session_id: 's1', call_id: 'c1', name: 'read_file' })
+    h.emit({ type: 'agent:tool_result', session_id: 's1', call_id: 'c1', ok: true, text: 'a' })
+    h.emit({ type: 'agent:tool_start', session_id: 's1', call_id: 'c2', name: 'read_file' })
+    h.emit({ type: 'agent:tool_result', session_id: 's1', call_id: 'c2', ok: true, text: 'b' })
+    h.emit(usage(120, 40))
+    h.emit(done())
+    h.emit(done())
+
+    const stats = h.controller.getState().turnStats
+    expect(stats).toHaveLength(1)
+    expect(stats[0]).toMatchObject({ turn: 1, input: 184, output: 58 })
+  })
+
+  it('上一轮迟到的 done 不会把当前轮拆成两行', async () => {
+    const h = harness()
+    await h.controller.send('first')
+    h.emit(usage(100, 20))
+    h.emit(usage(50, 10))
+    h.emit(done())
+    expect(h.controller.getState().turnStats).toHaveLength(1)
+
+    await h.controller.send('second')
+    // 桥接重放/取消收尾可能把上一轮的终态再送一次。
+    h.emit(done())
+    h.emit(usage(7, 3))
+    h.emit(done())
+
+    const stats = h.controller.getState().turnStats
+    expect(stats.map(stat => stat.turn)).toEqual([1, 2])
+    expect(stats[0]).toMatchObject({ input: 150, output: 30 })
+    expect(stats[1]).toMatchObject({ input: 7, output: 3 })
+  })
+
+  it('error 与随后的 done 只保留一行', async () => {
+    const h = harness()
+    await h.controller.send('hi')
+    h.emit(usage(10, 2))
+    h.emit({ type: 'error', error: { code: 'internal', message: 'boom', detail: null } })
+    h.emit(done('error'))
+
+    const stats = h.controller.getState().turnStats
+    expect(stats).toHaveLength(1)
+    expect(stats[0]).toMatchObject({
+      turn: 1,
+      input: 10,
+      output: 2,
+      stopReason: 'error',
+    })
+  })
+
+  it('多轮对话每轮一行，轮号连续', async () => {
+    const h = harness()
+    await h.controller.send('one')
+    h.emit(usage(10, 5))
+    h.emit(done())
+    await h.controller.send('two')
+    h.emit(usage(20, 10))
+    h.emit(done())
+    await h.controller.send('three')
+    h.emit(usage(30, 15))
+    h.emit(done())
+
+    expect(h.controller.getState().turnStats.map(stat => stat.turn)).toEqual([1, 2, 3])
+    expect(h.controller.getState().turnStats.map(stat => stat.input)).toEqual([10, 20, 30])
+  })
+
+  it('载入历史后旧会话迟到的 done 不会追加统计行', async () => {
+    const h = harness()
+    await h.controller.send('old')
+    h.emit(usage(40, 10))
+    // 审批挂起时 streaming=false，历史载入是允许的；但本轮并未结束。
+    h.emit(approvalRequired())
+    const state = h.controller.getState()
+    expect(
+      h.controller.loadHistory({
+        id: 's1',
+        title: '旧会话',
+        savedAt: 1,
+        workspace: '',
+        mode: state.mode,
+        model: null,
+        thinking: null,
+        turnStats: [
+          { turn: 1, input: 40, output: 10, cached: 0, durationMs: 100, stopReason: 'end_turn' },
+        ],
+        agent: state.agent!,
+      }),
+    ).toBe(true)
+
+    h.emit(done())
+
+    const stats = h.controller.getState().turnStats
+    expect(stats).toHaveLength(1)
+    expect(stats[0]).toMatchObject({ turn: 1, input: 40, output: 10 })
   })
 })
 

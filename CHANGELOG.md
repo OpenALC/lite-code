@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.54] - 2026-11-09
+
+- Agent 用量统计修复：finalizeTurn 按轮号 upsert（重复/迟到 done/error 覆盖同一行），终态事件不提前清累计器，loadHistory 隔离在途轮次；新增 5 项去重单测（413 全绿），桌面 mock 与鸿蒙 CDP 验证一轮一行
+
 ## [0.6.1-preview.53] - 2026-11-09
 
 - 鸿蒙真实 Agent 对话：`agent_send` 接入 lc-core AgentLoop（plan 只读工具 + OpenAI Responses 流式 + 5s 连接超时），provider 三级密钥解析，失败回退 stub 并标注；`UreqSseTransport::with_connect_timeout`；mock-llm.mjs 开发验证；模拟器端到端：真实流式 + read_file 工具实读 + 断网 stub 回退
