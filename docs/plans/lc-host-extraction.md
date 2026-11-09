@@ -35,7 +35,9 @@ crates/lc-ohos
 
 ## 3. 迁移步骤（每步独立可发布）
 
-1. **M1 lc-host 骨架**：新建 crate，把 `EventSink` trait + `EventEnvelope` 工具 + `RunningGuard`/`cancel 令牌` 从 lc-ohos 移入（纯移动，不改语义）；desktop `agent.rs` 改为 `use lc_host::*`。门禁：两端测试不变。
+1. ~~**M1 lc-host 骨架**~~：**已完成（preview.64）**——lc-host `envelope` 模块
+   （EventSink/Seq/emit_envelope）落地，lc-ohos 已切换；桌面侧 EventSink
+   trait 与 ohos 的 fn-pointer 形状不同，统一推迟到 M3（随 TurnRunner 一起做）。
 2. **M2 SessionRegistry**：lc-ohos 的 session map/回收逻辑泛型化（limit 可配、running 保护、alive 迟到抑制）进 lc-host；desktop 的 `AgentSessions` 薄化为调用方（保留落盘与路由）。风险点：桌面会话持久化格式不变。
 3. **M3 TurnRunner**：抽 `TurnRunner::run_turn(factory, sink, cancel)`；lc-ohos worker 闭包与 desktop `spawn_worker` 主体改为装配 factory 后调 runner。审批：`ApprovalHook` trait——桌面注入队列实现，OHOS 注入「plan 直接放行 + NeedsApproval 时发 approval_required 后 done」。
 4. **M4 收尾**：`spawn_worker` 仅剩桌面装配参数；lc-ohos `RealAgentFactory`/stub/预探成为 factory 组合。删除两端死代码。
