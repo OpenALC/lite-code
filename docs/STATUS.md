@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.47` 发布中；`.48` 待打标签。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.48` 发布中；滚动清单 updater-manifest 已提升到 .47。
 
 ## 当前位置一览
 
@@ -328,13 +328,13 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - 新增全局 `styles/menu.css`，文件树/编辑器/标签栏右键菜单统一容器、行高、hover、分隔线；
   删除三处 scoped 重复定义。
 - 验证：Web 408（28 文件）；真机两处右键菜单截图一致。
-- 发布：`v0.6.1-preview.48` 待打标签（等 .47 release 完成后推送）。
+- 发布：`v0.6.1-preview.48` 发布中（tag 已推送）。
 
 ## preview.47：Agent composer 图标 Kimi 化
 
 - 停止按钮 → `kimi-stop`；审批/权限盾牌 → `kimi-shield-question`；模式 pill → `kimi-thinking` 灯泡。
 - 验证：Web 408（28 文件）；真机 Agent 模式 composer 截图正常。
-- 发布：`v0.6.1-preview.47` 发布中（tag 已推送）。
+- 发布：`v0.6.1-preview.47` **已发布**（10 资产）；滚动清单已提升到 .47。
 
 ## preview.46：活动栏/工具栏图标 Kimi 化
 
