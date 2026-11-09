@@ -558,6 +558,11 @@
     "manageProviders": "管理供应商",
     "db": "数据库",
     "projectOptIn": "项目 MCP 需显式启用",
+    "shortcuts": "快捷键",
+    "shortcutQuickOpen": "快速打开：文件、命令、工作区、历史会话",
+    "shortcutNextEditor": "下一个编辑器",
+    "shortcutPrevEditor": "上一个编辑器",
+    "shortcutSidebar": "显示/隐藏侧栏",
     "about": "关于",
     "version": "版本",
     "aboutHint": "轻量桌面 Agent 工作台；契约与核心在 Rust 侧。"

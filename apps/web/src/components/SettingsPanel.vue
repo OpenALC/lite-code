@@ -38,6 +38,19 @@ const zoomLabel = computed(() => `${Math.round(prefs.value.zoom * 100)}%`)
 const fontSizeLabel = computed(() => `${prefs.value.fontSize} px`)
 const agentFontLabel = computed(() => `${prefs.value.agentFontSize} px`)
 
+const shortcuts = computed(() => [
+  { keys: 'Ctrl+P', label: t('settings.shortcutQuickOpen') },
+  { keys: 'Ctrl+Shift+T', label: t('menu.reopenClosed') },
+  { keys: 'Ctrl+W', label: t('menu.closeTab') },
+  { keys: 'Ctrl+Tab', label: t('settings.shortcutNextEditor') },
+  { keys: 'Ctrl+Shift+Tab', label: t('settings.shortcutPrevEditor') },
+  { keys: 'Ctrl+B', label: t('settings.shortcutSidebar') },
+  { keys: 'Ctrl+J', label: t('menu.toggleBottom') },
+  { keys: 'Ctrl+,', label: t('activity.settings') },
+  { keys: 'Ctrl+Alt+T', label: t('menu.toggleTheme') },
+  { keys: 'Ctrl+= / - / 0', label: t('settings.zoom') },
+])
+
 function changeLocale(value: string): void {
   const next = value === 'en' ? 'en' : 'zh-CN'
   setLocale(next)
@@ -271,6 +284,18 @@ function changeLocale(value: string): void {
     </section>
 
     <section class="card">
+      <h3>{{ t('settings.shortcuts') }}</h3>
+      <div
+        v-for="item in shortcuts"
+        :key="item.keys"
+        class="row"
+      >
+        <span>{{ item.label }}</span>
+        <kbd>{{ item.keys }}</kbd>
+      </div>
+    </section>
+
+    <section class="card">
       <h3>{{ t('settings.about') }}</h3>
       <div class="row">
         <span>Lite Code</span>
@@ -346,6 +371,16 @@ code {
   font-size: 11px;
   line-height: 1.5;
   color: var(--fg-dim);
+}
+
+kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--bg);
+  color: var(--fg-dim);
+  font: 10.5px/1.6 var(--font-mono);
+  white-space: nowrap;
 }
 
 .muted {

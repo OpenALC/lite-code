@@ -558,6 +558,11 @@
     "manageProviders": "Manage providers",
     "db": "Database",
     "projectOptIn": "Project MCP requires opt-in",
+    "shortcuts": "Keyboard Shortcuts",
+    "shortcutQuickOpen": "Quick open: files, commands, workspaces, chats",
+    "shortcutNextEditor": "Next editor",
+    "shortcutPrevEditor": "Previous editor",
+    "shortcutSidebar": "Toggle sidebar",
     "about": "About",
     "version": "Version",
     "aboutHint": "Lightweight desktop agent workbench; core and contract live in Rust."
