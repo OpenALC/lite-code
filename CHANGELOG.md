@@ -117,6 +117,8 @@
 - Problems 面板支持按严重级筛选（全部/错误/警告）并显示各自数量
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
+- lc-host M2：会话编排骨架下沉共享 crate（`SessionHandle`/`SessionEntry<P>`/`Sessions`，鸿蒙删 194 行本地实现，36 项测试语义不变全过；lc-host +9 会话单测）
+- lc-host M3a：事件出口统一（`CoreEventSink`/`envelope`/`Seq::from_u64` 下沉，桌面 seq 统一 1 起；lc-core M3b（分支待发）：`completion_events` 完成事件组合共享）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
