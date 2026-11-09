@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.28 发布提交（见 `git log`）；版本 `0.6.1-preview.28`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.29 发布提交（见 `git log`）；版本 `0.6.1-preview.29`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27` 已发布；`preview.28` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28` 已发布；`preview.29` 发布中。
 
 ## 当前位置一览
 
@@ -72,14 +72,14 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27` 已发布；`preview.28` 发布中 |
+| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28` 已发布；`preview.29` 发布中 |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ preview.23/24/25/26/27 CI 全绿；preview.28 本地门禁全绿，推送后跟踪 CI |
+| main CI | ✅ preview.23/24/25/26/27/28 CI 全绿；preview.29 本地门禁全绿，推送后跟踪 CI |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
 | 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏、tmp 0600、备份脱敏 |
 | Agent 模型/思考 | ✅ 会话前选择模型与思考挡位，`session_create` 透传；无会话显示上下文预算与新会话按钮 |
@@ -323,6 +323,15 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
 
+## preview.29：应用 Logo 换新
+
+- 1254 原图 → 1024 母版，225px 圆角蒙版裁切，四角透明；`tauri icon` 重新生成全套
+  ICO/ICNS/PNG/Store/Android/iOS 资产。
+- Web 新增 `public/favicon.png` 与 `<link rel="icon">`；`scripts/dev/icon-source.png` 同步替换。
+- 验证：32/128/256/512 输出四角 alpha=0；重新链接后的 exe 提取图标为新蓝色 Logo；
+  favicon 经 dev server 返回 200。
+- 发布：`v0.6.1-preview.29` 发布中。
+
 ## preview.28：Ctrl+P 检索历史会话正文
 
 - `history_list` 为每个会话生成最多 4000 字符 `excerpt`（按消息顺序拼接 text，跳过空白）。
@@ -330,7 +339,8 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - Agent 侧栏会话过滤同步匹配正文与工作区路径。
 - 验证：Web 390（26 文件）、Rust 608（history 7 项，新增摘要拼接 1 项）；真机
   Ctrl+P 搜 `TSPL2`（仅出现在助手回复）命中两条 tangshan 会话。
-- 发布：`v0.6.1-preview.28` 发布中。
+- 发布：`v0.6.1-preview.28` **已发布**（非 draft，10 资产），SHA256SUMS 校验通过，
+  updater manifest 已更新到 `0.6.1-preview.28`。
 
 ## preview.27：编辑器快捷键与快捷键总览
 

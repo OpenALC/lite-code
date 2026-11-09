@@ -102,3 +102,4 @@
 - 设置页新增快捷键总览卡片（快速打开/重开/关闭/切换标签/侧栏/主题/缩放）
 - 编辑器状态栏接入真实 Git 状态：分支、更改数、ahead/behind，启动时自动刷新
 - Ctrl+P 与 Agent 侧栏支持检索历史会话消息正文：`history_list` 返回最多 4000 字符摘要，演示模式对齐
+- 应用 Logo 换新：圆角透明背景母版，重生成 Windows/macOS/Linux/Android/iOS 全套图标与 Web favicon
