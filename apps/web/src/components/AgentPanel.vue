@@ -197,6 +197,7 @@ const switching = ref(false)
 const expandedTools = ref<Set<string>>(new Set())
 const streamEl = ref<HTMLElement | null>(null)
 
+const followOutput = ref(true)
 const findOpen = ref(false)
 const findQuery = ref('')
 const findIndex = ref(0)
@@ -226,6 +227,19 @@ function cycleFind(direction: 1 | -1): void {
 function onFindInput(): void {
   findIndex.value = 0
   scrollToFind()
+}
+
+/** 距底部 48px 内视为跟随输出；用户上翻后不再强制滚到底。 */
+function onStreamScroll(): void {
+  const el = streamEl.value
+  if (!el) return
+  followOutput.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+}
+
+function scrollToBottom(): void {
+  followOutput.value = true
+  const el = streamEl.value
+  if (el) el.scrollTop = el.scrollHeight
 }
 
 function scrollToFind(): void {
@@ -442,7 +456,10 @@ function onWindowKeydown(event: KeyboardEvent): void {
 
 watch(
   () => agent.value?.sessionId,
-  () => closeFind(),
+  () => {
+    closeFind()
+    followOutput.value = true
+  },
 )
 
 watch(
@@ -519,6 +536,7 @@ const streamSignature = computed(() => {
 watch(
   streamSignature,
   () => {
+    if (!followOutput.value) return
     const el = streamEl.value
     if (el) el.scrollTop = el.scrollHeight
   },
@@ -658,6 +676,7 @@ async function confirmYolo(): Promise<void> {
 
 async function submit(): Promise<void> {
   if (sendDisabled.value) return
+  followOutput.value = true
   const files = [...attachments.value]
   await props.controller.send(undefined, files)
   if (!props.controller.getState().error) {
@@ -820,6 +839,7 @@ function removeAttachment(path: string): void {
 function newSession(): void {
   if (streaming.value || approvalPending.value) return
   if (props.controller.resetSession()) {
+    followOutput.value = true
     attachments.value = []
     attachmentError.value = ''
   }
@@ -1005,6 +1025,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     <div
       ref="streamEl"
       class="stream"
+      @scroll.passive="onStreamScroll"
     >
       <div
         v-if="!agent || (!streaming && messages.length === 0 && tools.length === 0 && approvals.length === 0)"
@@ -1328,6 +1349,19 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     </div>
 
     <div class="composer">
+      <button
+        v-if="!followOutput && messages.length > 0"
+        type="button"
+        class="scroll-bottom"
+        :title="t('agent.scrollToBottom')"
+        :aria-label="t('agent.scrollToBottom')"
+        @click="scrollToBottom"
+      >
+        <AppIcon
+          name="chevron-down"
+          :size="16"
+        />
+      </button>
       <div
         v-if="mentionOpen"
         class="mention-pop"
@@ -2486,6 +2520,27 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   padding: 9px 10px 8px;
   border-top: 1px solid var(--border);
   background: var(--panel);
+}
+
+.scroll-bottom {
+  position: absolute;
+  top: -40px;
+  right: 24px;
+  z-index: 4;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--fg-2);
+  box-shadow: var(--shadow-soft);
+}
+
+.scroll-bottom:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
 }
 
 .mention-pop {

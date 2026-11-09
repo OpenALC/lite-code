@@ -132,6 +132,7 @@
     "findPrev": "Previous match",
     "findNext": "Next match",
     "findClose": "Close find",
+    "scrollToBottom": "Scroll to bottom",
     "forkEdit": "Edit & fork",
     "forkRetry": "Retry in fork",
     "forkHint": "Start a new session before this message; the original stays",

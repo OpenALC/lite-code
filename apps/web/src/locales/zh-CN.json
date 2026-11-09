@@ -132,6 +132,7 @@
     "findPrev": "上一个匹配",
     "findNext": "下一个匹配",
     "findClose": "关闭查找",
+    "scrollToBottom": "回到底部",
     "forkEdit": "编辑并分叉",
     "forkRetry": "分叉重试",
     "forkHint": "从这条消息之前新建会话，原会话保留",
