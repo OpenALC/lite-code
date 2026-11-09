@@ -4,6 +4,7 @@ import { resolveEditorStrategy } from './largeFile'
 import {
   activateTab,
   activeTab,
+  adjacentTabId,
   clearClosedTabs,
   closeTab,
   INITIAL_TABS_STATE,
@@ -445,5 +446,27 @@ describe('重新打开已关闭的标签', () => {
     removeTabsUnder('D:/proj/src')
 
     expect(reopenClosedTab()).toBeNull()
+  })
+})
+
+describe('Ctrl+Tab 循环切换', () => {
+  it('正向/反向循环并跳过边界', () => {
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    openTab({ id: 'b.rs', title: 'b.rs' })
+    activateTab('a.rs')
+
+    expect(adjacentTabId(tabsStore.get(), 1)).toBe('b.rs')
+    expect(adjacentTabId(tabsStore.get(), -1)).toBe('sample')
+
+    activateTab('sample')
+    expect(adjacentTabId(tabsStore.get(), -1)).toBe('b.rs')
+  })
+
+  it('少于两个标签或激活项未知时返回 null（未知时回退首个）', () => {
+    expect(adjacentTabId(tabsStore.get(), 1)).toBeNull()
+
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    const state = tabsStore.get()
+    expect(adjacentTabId({ ...state, activeId: 'missing' }, 1)).toBe('sample')
   })
 })

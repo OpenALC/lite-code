@@ -99,6 +99,7 @@ function onClose(tabId: string): void {
       :key="tab.id"
       role="presentation"
       class="tab"
+      :data-tab-id="tab.id"
       :class="{
         active: tab.id === state.activeId,
         confirming: tab.id === confirmingId,

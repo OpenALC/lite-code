@@ -240,6 +240,15 @@ export function markSaved(id: string): boolean {
   return true
 }
 
+/** Ctrl+Tab / Ctrl+Shift+Tab 的目标标签；少于两个标签或激活项未知时返回 null。 */
+export function adjacentTabId(state: TabsState, direction: 1 | -1): string | null {
+  if (state.tabs.length < 2) return null
+  const index = state.tabs.findIndex(t => t.id === state.activeId)
+  if (index < 0) return state.tabs[0]?.id ?? null
+  const next = (index + direction + state.tabs.length) % state.tabs.length
+  return state.tabs[next]?.id ?? null
+}
+
 /** 当前激活标签；无激活标签时返回 null。 */
 export function activeTab(state: TabsState = tabsStore.get()): Tab | null {
   return state.tabs.find(t => t.id === state.activeId) ?? null

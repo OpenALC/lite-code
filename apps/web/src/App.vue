@@ -77,7 +77,15 @@ import { extensionsExecuteCommand, extensionsList } from './services/extensions'
 import { subscribeAgentContext } from './services/agentContext'
 import { setFileDiagnostics } from './services/lspDiagnostics'
 import { matchQuickNav } from './services/quickPalette'
-import { activateTab, closeTab, openTab, renameTab, reopenClosedTab, tabsStore } from './services/tabs'
+import {
+  activateTab,
+  adjacentTabId,
+  closeTab,
+  openTab,
+  renameTab,
+  reopenClosedTab,
+  tabsStore,
+} from './services/tabs'
 import {
   initUiPrefs,
   setLocale,
@@ -541,7 +549,7 @@ const menuItems = computed(() => ({
   file: [
     { label: t('menu.openWorkspace'), action: openWorkspaceDialog },
     { label: t('menu.save'), action: () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })) } },
-    { label: t('menu.closeTab'), action: () => { if (activeTabId.value) closeTab(activeTabId.value) } },
+    { label: t('menu.closeTab'), action: () => requestCloseTab(activeTabId.value) },
   ],
   edit: [
     { label: t('menu.undo'), action: () => document.execCommand('undo') },
@@ -649,6 +657,20 @@ function windowAction(action: 'minimize' | 'toggleMaximize' | 'close'): void {
   void internals?.invoke(command, { label: 'main' })
 }
 
+/** 通过标签栏自己的关闭按钮触发关闭，复用 dirty 二次确认状态。 */
+function requestCloseTab(id: string | null): void {
+  if (!id) return
+  const tab = [...document.querySelectorAll<HTMLElement>('.tabbar .tab')].find(
+    element => element.dataset.tabId === id,
+  )
+  tab?.querySelector<HTMLButtonElement>('.tab-close')?.click()
+}
+
+function cycleTabs(direction: 1 | -1): void {
+  const next = adjacentTabId(tabsState.value, direction)
+  if (next) activateTab(next)
+}
+
 // 快捷键
 function onKey(event: KeyboardEvent): void {
   const mod = event.ctrlKey || event.metaKey
@@ -664,6 +686,12 @@ function onKey(event: KeyboardEvent): void {
   } else if (mod && event.key === '0') {
     event.preventDefault()
     setZoom(1)
+  } else if (mod && event.key === 'Tab') {
+    event.preventDefault()
+    cycleTabs(event.shiftKey ? -1 : 1)
+  } else if (mod && event.key.toLowerCase() === 'w') {
+    event.preventDefault()
+    requestCloseTab(activeTabId.value)
   } else if (mod && event.shiftKey && event.key.toLowerCase() === 't') {
     event.preventDefault()
     reopenClosedTab()
