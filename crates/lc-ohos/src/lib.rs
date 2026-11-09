@@ -33,16 +33,18 @@ use lc_core::agent::{
 use lc_core::fs::{RealPathResolver, display_path, ensure_within_root, read_dir_level};
 use lc_core::llm::runtime::load_from_model;
 use lc_core::llm::{
-    AgentRuntime, LlmEvent, ModelConfig, OpenAiResponsesClient, ProviderConfig, ProviderError,
-    ProviderKind, ProvidersFile, RuntimeError, UreqSseTransport,
+    AgentRuntime, LlmEvent, OpenAiResponsesClient, ProviderError, ProviderKind, ProvidersFile,
+    ProvidersSaveInput, RuntimeError, UreqSseTransport, merge_and_validate, view_from_file,
 };
 use lc_proto::{
     CommandResult, CoreEvent, ErrorBody, ErrorCode, EventEnvelope, SessionInfo, SessionMode,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod ffi;
+
+/// 视图类型保留在 crate 根，避免破坏 lc-ohos 既有公开接口。
+pub use lc_core::llm::{ProviderView, ProvidersView};
 
 pub type EventSink = Arc<dyn Fn(String) + Send + Sync>;
 
@@ -395,6 +397,8 @@ impl Host {
             .ok_or_else(|| invalid("missing object argument `input`"))?;
         let input: ProvidersSaveInput = serde_json::from_value(input.clone())
             .map_err(|error| invalid(format!("invalid providers input: {error}")))?;
+        // 鸿蒙契约对空 models 的报错文案要求包含 `models`，与 lc-core
+        // `ProviderError::Empty` 的通用文案不同；保留这层薄适配以维持现有契约。
         if input.models.is_empty() {
             return Err(invalid("models must be a non-empty array"));
         }
@@ -474,184 +478,13 @@ fn reclaim_terminated_sessions(sessions: &mut HashMap<String, SessionHandle>, ma
     }
 }
 
-/// 与 `apps/desktop/src-tauri/src/providers.rs` 的 `ProviderView` 同形：
-/// `apiKey` 永不回传，只给 `hasApiKey` 与末四位提示。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderView {
-    pub id: String,
-    pub kind: ProviderKind,
-    pub label: String,
-    pub base_url: String,
-    pub enabled: bool,
-    pub api_key_ref: String,
-    pub has_api_key: bool,
-    pub api_key_hint: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvidersView {
-    pub providers: Vec<ProviderView>,
-    pub models: Vec<ModelConfig>,
-    pub default_model: Option<String>,
-    pub default_thinking: Option<String>,
-    pub subagent_model: Option<String>,
-    pub subagent_thinking: Option<String>,
-}
-
-impl From<ProvidersFile> for ProvidersView {
-    fn from(file: ProvidersFile) -> Self {
-        Self {
-            providers: file
-                .providers
-                .into_iter()
-                .map(|provider| {
-                    let key = provider
-                        .api_key
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|key| !key.is_empty());
-                    ProviderView {
-                        id: provider.id,
-                        kind: provider.kind,
-                        label: provider.label,
-                        base_url: provider.base_url,
-                        enabled: provider.enabled,
-                        api_key_ref: provider.api_key_ref,
-                        has_api_key: key.is_some(),
-                        api_key_hint: key.map(key_hint),
-                    }
-                })
-                .collect(),
-            models: file.models,
-            default_model: file.default_model,
-            default_thinking: file.default_thinking,
-            subagent_model: file.subagent_model,
-            subagent_thinking: file.subagent_thinking,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderInput {
-    id: String,
-    kind: ProviderKind,
-    label: String,
-    base_url: String,
-    #[serde(default = "default_true")]
-    enabled: bool,
-    /// 用户新输入的密钥；空/缺省表示保留旧值。
-    #[serde(default)]
-    api_key: Option<String>,
-    /// 旧配置的环境变量引用；缺省表示沿用旧值。
-    #[serde(default)]
-    api_key_ref: Option<String>,
-    #[serde(default)]
-    clear_api_key: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProvidersSaveInput {
-    providers: Vec<ProviderInput>,
-    models: Vec<ModelConfig>,
-    #[serde(default)]
-    default_model: Option<String>,
-    #[serde(default)]
-    default_thinking: Option<String>,
-    #[serde(default)]
-    subagent_model: Option<String>,
-    #[serde(default)]
-    subagent_thinking: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-/// 合并旧配置里的密钥/引用，再走 lc-core 校验（与桌面命令语义一致）。
-fn merge_and_validate(
-    existing: Option<ProvidersFile>,
-    input: ProvidersSaveInput,
-) -> Result<ProvidersFile, ProviderError> {
-    let mut old_providers: HashMap<String, ProviderConfig> = existing
-        .unwrap_or_default()
-        .providers
-        .into_iter()
-        .map(|provider| (provider.id.clone(), provider))
-        .collect();
-
-    let providers = input
-        .providers
-        .into_iter()
-        .map(|provider| {
-            let old = old_providers.remove(&provider.id);
-            let new_key = provider
-                .api_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .map(str::to_string);
-            let api_key = if provider.clear_api_key {
-                None
-            } else {
-                new_key.or_else(|| old.as_ref().and_then(|p| p.api_key.clone()))
-            };
-            let api_key_ref = if provider.clear_api_key {
-                String::new()
-            } else {
-                provider
-                    .api_key_ref
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|reference| !reference.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| old.map(|p| p.api_key_ref))
-                    .unwrap_or_default()
-            };
-            ProviderConfig {
-                id: provider.id,
-                kind: provider.kind,
-                label: provider.label,
-                base_url: provider.base_url,
-                api_key,
-                api_key_ref,
-                enabled: provider.enabled,
-            }
-        })
-        .collect();
-
-    let file = ProvidersFile {
-        providers,
-        models: input.models,
-        default_model: input.default_model,
-        default_thinking: input.default_thinking,
-        subagent_model: input.subagent_model,
-        subagent_thinking: input.subagent_thinking,
-    };
-    file.validate()?;
-    Ok(file)
-}
-
 fn serialize_view(file: ProvidersFile) -> Result<String, ErrorBody> {
-    serde_json::to_string(&ProvidersView::from(file)).map_err(|error| {
+    serde_json::to_string(&view_from_file(file)).map_err(|error| {
         ErrorBody::new(
             ErrorCode::Internal,
             format!("serialize providers view: {error}"),
         )
     })
-}
-
-/// 只暴露末四位；短密钥整体打码，避免把 4 位以内的密钥直接回显。
-fn key_hint(key: &str) -> String {
-    let chars: Vec<char> = key.chars().collect();
-    if chars.len() < 8 {
-        return "••••".into();
-    }
-    let tail: String = chars[chars.len() - 4..].iter().collect();
-    format!("••••{tail}")
 }
 
 fn provider_error(error: ProviderError) -> ErrorBody {

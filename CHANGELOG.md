@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.59] - 2026-11-10
+
+- providers 视图/合并逻辑下沉 lc-core（providers_view.rs）：桌面/鸿蒙删 355 行重复，lc-core 新增 6 项单测；薄适配层（错误码映射、空 models 前置校验）保留并注释
+
 ## [0.6.1-preview.58] - 2026-11-10
 
 - demo/index.html 与当前真实 UI 高保真同步（+2183/−1044，里程碑 UI demo 产出物）；CI web job 新增 build:ohos 与无-Monaco 断言

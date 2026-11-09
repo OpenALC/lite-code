@@ -1,85 +1,23 @@
 //! 供应商管理命令层：读取/保存 `~/.lite-code/providers.json`。
 //!
+//! 视图构造与保存合并语义在 lc-core `llm::providers_view`（桌面与鸿蒙宿主共用）；
+//! 本模块只负责路径解析、命令注册与错误码映射。
+//!
 //! 返回给前端的供应商永远脱敏（`hasApiKey` + 末四位提示），API Key 不回传；
 //! 保存时空白 Key 表示保留旧值，避免用户只改 Base URL 就把密钥清掉。
-//! 配置语义与校验在 lc-core `llm::provider`，这里只做 DTO 转换与合并。
 
-use std::collections::HashMap;
-
-use lc_core::llm::provider::ProviderError;
 use lc_core::llm::runtime::{RuntimeError, providers_path};
-use lc_core::llm::{ModelConfig, ProviderConfig, ProviderKind, ProvidersFile};
+use lc_core::llm::{
+    ProviderError, ProvidersFile, ProvidersSaveInput, ProvidersView, merge_and_validate,
+    view_from_file,
+};
 use lc_proto::{ErrorBody, ErrorCode};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderView {
-    pub id: String,
-    pub kind: ProviderKind,
-    pub label: String,
-    pub base_url: String,
-    pub enabled: bool,
-    pub api_key_ref: String,
-    pub has_api_key: bool,
-    /// 末四位提示（不返回完整密钥）；无本地密钥时为 None。
-    pub api_key_hint: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvidersView {
-    pub providers: Vec<ProviderView>,
-    pub models: Vec<ModelConfig>,
-    pub default_model: Option<String>,
-    pub default_thinking: Option<String>,
-    pub subagent_model: Option<String>,
-    pub subagent_thinking: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderInput {
-    pub id: String,
-    pub kind: ProviderKind,
-    pub label: String,
-    pub base_url: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// 用户新输入的密钥；空/缺省表示保留旧值。
-    #[serde(default)]
-    pub api_key: Option<String>,
-    /// 旧配置的环境变量引用；缺省表示沿用旧值。
-    #[serde(default)]
-    pub api_key_ref: Option<String>,
-    #[serde(default)]
-    pub clear_api_key: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvidersSaveInput {
-    pub providers: Vec<ProviderInput>,
-    pub models: Vec<ModelConfig>,
-    #[serde(default)]
-    pub default_model: Option<String>,
-    #[serde(default)]
-    pub default_thinking: Option<String>,
-    #[serde(default)]
-    pub subagent_model: Option<String>,
-    #[serde(default)]
-    pub subagent_thinking: Option<String>,
-}
 
 #[tauri::command]
 pub fn providers_load() -> Result<ProvidersView, ErrorBody> {
     let path = providers_path().map_err(runtime_error)?;
     let file = ProvidersFile::load_path(&path).map_err(provider_error)?;
-    Ok(to_view(file.unwrap_or_default()))
+    Ok(view_from_file(file.unwrap_or_default()))
 }
 
 #[tauri::command]
@@ -88,113 +26,7 @@ pub fn providers_save(input: ProvidersSaveInput) -> Result<ProvidersView, ErrorB
     let existing = ProvidersFile::load_path(&path).map_err(provider_error)?;
     let file = merge_and_validate(existing, input).map_err(provider_error)?;
     file.save_path(&path).map_err(provider_error)?;
-    Ok(to_view(file))
-}
-
-/// 合并旧配置里的密钥/引用，再走一次 lc-core 校验。纯函数，单测直接覆盖。
-pub(crate) fn merge_and_validate(
-    existing: Option<ProvidersFile>,
-    input: ProvidersSaveInput,
-) -> Result<ProvidersFile, ProviderError> {
-    let mut old_providers: HashMap<String, ProviderConfig> = existing
-        .unwrap_or_default()
-        .providers
-        .into_iter()
-        .map(|provider| (provider.id.clone(), provider))
-        .collect();
-
-    let providers = input
-        .providers
-        .into_iter()
-        .map(|provider| {
-            let old = old_providers.remove(&provider.id);
-            let new_key = provider
-                .api_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .map(str::to_string);
-            let api_key = if provider.clear_api_key {
-                None
-            } else {
-                new_key.or_else(|| old.as_ref().and_then(|p| p.api_key.clone()))
-            };
-            let api_key_ref = if provider.clear_api_key {
-                // 清除密钥时一并清掉环境变量引用，避免运行时继续回退到旧密钥。
-                String::new()
-            } else {
-                provider
-                    .api_key_ref
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|reference| !reference.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| old.map(|p| p.api_key_ref))
-                    .unwrap_or_default()
-            };
-            ProviderConfig {
-                id: provider.id,
-                kind: provider.kind,
-                label: provider.label,
-                base_url: provider.base_url,
-                api_key,
-                api_key_ref,
-                enabled: provider.enabled,
-            }
-        })
-        .collect();
-
-    let file = ProvidersFile {
-        providers,
-        models: input.models,
-        default_model: input.default_model,
-        default_thinking: input.default_thinking,
-        subagent_model: input.subagent_model,
-        subagent_thinking: input.subagent_thinking,
-    };
-    file.validate()?;
-    Ok(file)
-}
-
-fn to_view(file: ProvidersFile) -> ProvidersView {
-    ProvidersView {
-        providers: file
-            .providers
-            .into_iter()
-            .map(|provider| {
-                let key = provider
-                    .api_key
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|key| !key.is_empty());
-                ProviderView {
-                    id: provider.id,
-                    kind: provider.kind,
-                    label: provider.label,
-                    base_url: provider.base_url,
-                    enabled: provider.enabled,
-                    api_key_ref: provider.api_key_ref,
-                    has_api_key: key.is_some(),
-                    api_key_hint: key.map(key_hint),
-                }
-            })
-            .collect(),
-        models: file.models,
-        default_model: file.default_model,
-        default_thinking: file.default_thinking,
-        subagent_model: file.subagent_model,
-        subagent_thinking: file.subagent_thinking,
-    }
-}
-
-/// 只暴露末四位；短密钥整体打码，避免把 4 位以内的密钥直接回显。
-fn key_hint(key: &str) -> String {
-    let chars: Vec<char> = key.chars().collect();
-    if chars.len() < 8 {
-        return "••••".into();
-    }
-    let tail: String = chars[chars.len() - 4..].iter().collect();
-    format!("••••{tail}")
+    Ok(view_from_file(file))
 }
 
 fn provider_error(error: ProviderError) -> ErrorBody {
@@ -216,6 +48,7 @@ fn runtime_error(error: RuntimeError) -> ErrorBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lc_core::llm::{ModelConfig, ProviderConfig, ProviderInput, ProviderKind};
 
     fn model() -> ModelConfig {
         ModelConfig {
@@ -289,12 +122,11 @@ mod tests {
 
     #[test]
     fn view_never_exposes_full_key() {
-        let file = existing(Some("sk-123456789"));
-        let view = to_view(file);
+        let view = view_from_file(existing(Some("sk-123456789")));
         assert!(view.providers[0].has_api_key);
         assert_eq!(view.providers[0].api_key_hint.as_deref(), Some("••••6789"));
 
-        let short = to_view(existing(Some("abcde")));
+        let short = view_from_file(existing(Some("abcde")));
         assert_eq!(short.providers[0].api_key_hint.as_deref(), Some("••••"));
     }
 
@@ -306,5 +138,17 @@ mod tests {
             merge_and_validate(None, bad),
             Err(ProviderError::InvalidBudget(_))
         ));
+    }
+
+    #[test]
+    fn provider_errors_map_to_contract_codes() {
+        assert_eq!(
+            provider_error(ProviderError::Io("boom".into())).code,
+            ErrorCode::Io
+        );
+        assert_eq!(
+            provider_error(ProviderError::Empty).code,
+            ErrorCode::InvalidArgument
+        );
     }
 }

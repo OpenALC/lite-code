@@ -5,6 +5,7 @@ pub mod anthropic;
 pub mod client;
 pub mod openai;
 pub mod provider;
+pub mod providers_view;
 pub mod request;
 pub mod runtime;
 pub mod sse;
@@ -13,6 +14,10 @@ pub mod types;
 pub use anthropic::AnthropicDecoder;
 pub use client::{HttpSseTransport, OpenAiResponsesClient, UreqSseTransport};
 pub use provider::{ModelConfig, ProviderConfig, ProviderError, ProviderKind, ProvidersFile};
+pub use providers_view::{
+    ProviderInput, ProviderView, ProvidersSaveInput, ProvidersView, merge_and_validate,
+    view_from_file,
+};
 pub use request::{LlmInput, LlmRequest};
 pub use runtime::{
     AgentRuntime, RuntimeError, load_default, load_for_model, load_from, providers_path,
