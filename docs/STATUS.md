@@ -713,6 +713,14 @@ P6 出口要求包含无法在本会话/本机完成的项，需维护者或外�
 
 ## 本地验证命令（与 CI 等价）
 
+一条命令跑完全部（等价于下面逐条执行）：
+
+```bash
+bash scripts/check-all.sh
+```
+
+逐条等价命令：
+
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
