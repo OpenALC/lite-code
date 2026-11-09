@@ -451,6 +451,21 @@ HDC='D:\ide\Huawei\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe'
 
 ---
 
+## 8. PSS 实测记录（切片 P，2026-11-10，Relay_Phone_API26 模拟器）
+
+| 场景 | 应用 PSS | ArkWeb render PSS | 合计 |
+|---|---:|---:|---:|
+| 冷启动静置 30s | ~166 MiB | ~141 MiB | **~300 MiB** |
+| 打开 3 个 2 MiB 文件预览 | ~181 MiB | ~184 MiB | **~357 MiB** |
+| 5 轮对话后 | ~188 MiB | ~197 MiB | **~377 MiB** |
+
+- 根因：`libarkweb_engine.so` 单库在两进程合计 ~134 MiB PSS（各 ~70 MiB）——
+  ArkWeb 引擎结构性成本，原「合计 < 150 MiB」目标在该平台不可达。
+- 结论：内存预算应按「引擎基线 ~300 MiB + 场景增量」管理；增量本身温和
+  （3 个大文件 +57 MiB、5 轮对话 +20 MiB）。证据：`.tmp/ohos-perf/*/summary.txt`。
+- 平板：模拟器已有 `Relay_Tablet_API26`（2880×1920）实例可用；2in1 `-create`
+  支持但镜像未下载。三栏布局真机验证待补（因模型用量限制中断）。
+
 ## 7. 风险与未知项
 
 | # | 风险 | 影响 | 缓解 | 验证 |
