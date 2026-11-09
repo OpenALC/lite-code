@@ -79,13 +79,14 @@ crates/lc-ohos
      trait，删本地 `next_envelope`/`AtomicU64` seq。seq 起点：桌面现 0 起、
      ohos 1 起；统一走 `Seq`（1 起）后桌面首信封 seq 0→1——web 当前不消费
      envelope seq（已核实无丢序检测逻辑），单调性不变，风险低。
-   - **3b. 完成事件组合下沉**：lc-host 提供
-     `completion_events(info: SessionInfo, outcome: &LoopOutcome) -> Vec<CoreEvent>`
-     （桌面 `agent.rs` 已有同名私有 fn，原样下移）；lc-ohos 的 error 分支
-     组合不同（`loop_error_body` + session_state + done + stub 回退），仅共享
-     Ok 分支，error 路径留宿主。cancel 收尾形状两侧相同（swap 复位 →
-     cancelled state → done）但 info 来源不同（桌面从 `Session` 快照、ohos
-     从句柄写回），各留薄壳不合。
+   - **3b. 完成事件组合下沉（分支 `host/m3b-completion-events` 已实施，
+     待审查后合并）**：落点修订为 **lc-core `agent::events`**（而非 lc-host——
+     `completion_events` 依赖 `loop_outcome`/`session_info`，lc-host 不依赖
+     lc-core 是 M2 定下的边界）。桌面 `agent.rs` 私有 `completion_events`
+     删除、改调共享实现（含测试经 import 继续覆盖）；lc-core +1 项排序契约
+     单测（三终态均「session_state 在前、loop_outcome 事件在后，不补
+     agent:done」）。鸿蒙保持 emitter 内写回交织的实现，事件顺序以共享
+     函数为准。
    - **3c. 桌面 `AgentSessions` 表切 `Sessions<P>`（stretch，可选）**：桌面无
      回收语义（会话活到断开/退出），limit/ordinal 价值有限；若做则
      `limit = usize::MAX`、`P = desktop SessionHandle`，落盘/路由不动。
