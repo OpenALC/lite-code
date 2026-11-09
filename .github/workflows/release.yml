@@ -181,7 +181,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
-            pnpm tauri build --bundles appimage,deb
+            bash scripts/release/build-linux-bundles.sh
           else
             cargo build --release --locked
             echo "::notice::Tauri 壳未就绪，仅产出二进制"
@@ -237,7 +237,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
-            pnpm tauri build --bundles appimage,deb
+            bash scripts/release/build-linux-bundles.sh
           else
             cargo build --release --locked
             echo "::notice::Tauri 壳未就绪，仅产出二进制"
