@@ -10,6 +10,16 @@ if [ ! -f apps/desktop/src-tauri/tauri.conf.json ]; then
   exit 0
 fi
 
+# AppRun 官方下载端点偶发 504；仓库内备件直接预置到 Tauri 缓存。
+arch="$(uname -m)"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+seed="scripts/release/AppRun-$arch"
+if [ -f "$seed" ]; then
+  mkdir -p "$cache_dir"
+  cp "$seed" "$cache_dir/AppRun-$arch"
+  chmod 755 "$cache_dir/AppRun-$arch"
+fi
+
 pnpm tauri build --bundles deb
 
 built=0
