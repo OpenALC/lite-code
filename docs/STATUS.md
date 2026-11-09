@@ -359,8 +359,9 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - 验证：lc-host 15、lc-desktop 100、workspace 全绿；check-all 全量门禁
   通过；桌面 dev 重编运行正常。lc-ohos 未动（additive only）。M2 diff 已
   全量复审（原子序/锁序/错误文案逐 hunk 核对，修复 1 处遗留悬空 doc-link）；
-  M3a 桌面运行时 e2e 未重跑——变更面仅 seq 生成，证据=100 项单测+干净启动
-  （应用未注全局 Tauri 句柄，CDP 直驱成本高，留维护者验收时覆盖）。
+  M3a 桌面运行时 e2e 已补：经 `__TAURI_INTERNALS__` 挂 `core:event` 监听，
+  真实建会话+发消息（供应商周限额已尽，走到 error 事件）——捕获信封
+  seq 2,3 连续（1 基 Seq 生效，seq 1 为监听前应用 init 消耗）、形状不变。
 - 发布：未推 tag，同 M2 留 09:00 审查后。
 
 ## main：lc-host M2 会话编排骨架下沉
