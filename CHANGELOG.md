@@ -89,3 +89,4 @@
   助手消息复制（execCommand，避免 WebView2 剪贴板权限条）
 - Agent Git 侧栏：Agent 模式头部 Git 按钮打开 420px 变更栏，复用 GitPanel 的分支/暂存/提交/日志/Diff
 - 队列消息可点击载回 composer 编辑，原消息从队列移除
+- Agent `@` 文件引用：composer 输入 @ 按需索引工作区文件，方向键/回车选择，插入相对路径

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /* eslint-disable vue/no-v-html -- renderMarkdown 先转义全文，只插入固定标签 */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
@@ -19,6 +19,11 @@ import {
 } from '../services/agentContext'
 import type { AgentSessionController, TurnStat } from '../services/agentSession'
 import { renderMarkdown } from '../services/markdown'
+import {
+  buildFileIndex,
+  searchFiles,
+  type FileIndex,
+} from '../services/fileIndex'
 import {
   agentPickFiles,
   isTauri,
@@ -306,6 +311,7 @@ function toggleCtx(): void {
 function closeMenus(): void {
   openMenu.value = null
   ctxOpen.value = false
+  closeMention()
 }
 
 async function copyMessage(id: string, text: string): Promise<void> {
@@ -367,6 +373,21 @@ const queue = computed(() => state.value.queue)
 
 const attachments = ref<AgentAttachment[]>([])
 const attachmentError = ref('')
+const composerEl = ref<HTMLTextAreaElement | null>(null)
+
+const mentionOpen = ref(false)
+const mentionQuery = ref('')
+const mentionItems = ref<string[]>([])
+const mentionIndex = ref(0)
+const mentionLoading = ref(false)
+const mentionError = ref('')
+const mentionTruncated = ref(false)
+const MENTION_LIMIT = 8
+let mentionStart = 0
+let mentionEnd = 0
+let mentionToken = 0
+let mentionCache: FileIndex | null = null
+let mentionCacheRoot = ''
 
 const streamSignature = computed(() => {
   const current = agent.value
@@ -397,6 +418,15 @@ watch(
   () => state.value.archived,
   archived => {
     if (archived) syncSelection()
+  },
+)
+
+watch(
+  () => props.workspace,
+  () => {
+    mentionCache = null
+    mentionCacheRoot = ''
+    closeMention()
   },
 )
 
@@ -538,6 +568,109 @@ function editQueued(id: number): void {
 
 function clearQueue(): void {
   props.controller.clearQueue()
+}
+
+function closeMention(): void {
+  mentionToken++
+  mentionOpen.value = false
+  mentionQuery.value = ''
+  mentionItems.value = []
+  mentionError.value = ''
+  mentionIndex.value = 0
+}
+
+async function refreshMention(query: string): Promise<void> {
+  if (!props.workspace) {
+    mentionItems.value = []
+    mentionError.value = t('agent.mentionNoWorkspace')
+    mentionLoading.value = false
+    return
+  }
+  const token = ++mentionToken
+  if (!mentionCache || mentionCacheRoot !== props.workspace) {
+    mentionLoading.value = true
+    const cache = await buildFileIndex(props.workspace)
+    if (token !== mentionToken) return
+    mentionCache = cache
+    mentionCacheRoot = props.workspace
+    mentionLoading.value = false
+  }
+  if (token !== mentionToken) return
+  mentionError.value = ''
+  mentionTruncated.value = mentionCache?.truncated ?? false
+  mentionItems.value = mentionCache
+    ? searchFiles(mentionCache, query, MENTION_LIMIT)
+    : []
+  mentionIndex.value = 0
+}
+
+function onDraftInput(event: Event): void {
+  const el = event.target as HTMLTextAreaElement
+  const cursor = el.selectionStart ?? el.value.length
+  const before = el.value.slice(0, cursor)
+  const at = before.lastIndexOf('@')
+  if (at < 0) {
+    closeMention()
+    return
+  }
+  const previous = at > 0 ? before[at - 1]! : ''
+  if (previous && !/[\s([{"']/.test(previous)) {
+    closeMention()
+    return
+  }
+  const query = before.slice(at + 1)
+  if (/\s/.test(query)) {
+    closeMention()
+    return
+  }
+  mentionStart = at
+  mentionEnd = cursor
+  mentionQuery.value = query
+  mentionOpen.value = true
+  mentionIndex.value = 0
+  void refreshMention(query)
+}
+
+function chooseMention(file: string): void {
+  if (!mentionOpen.value) return
+  const current = composerEl.value?.value ?? state.value.draft
+  const insert = `@${file} `
+  props.controller.setDraft(
+    current.slice(0, mentionStart) + insert + current.slice(mentionEnd),
+  )
+  const position = mentionStart + insert.length
+  closeMention()
+  void nextTick(() => {
+    const el = composerEl.value
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(position, position)
+  })
+}
+
+function onComposerKeydown(event: KeyboardEvent): void {
+  if (!mentionOpen.value) return
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    if (mentionItems.value.length > 0) {
+      mentionIndex.value = (mentionIndex.value + 1) % mentionItems.value.length
+    }
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    if (mentionItems.value.length > 0) {
+      mentionIndex.value =
+        (mentionIndex.value - 1 + mentionItems.value.length) %
+        mentionItems.value.length
+    }
+  } else if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
+    if (mentionItems.value.length === 0) return
+    event.preventDefault()
+    const file = mentionItems.value[mentionIndex.value]
+    if (file) chooseMention(file)
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    closeMention()
+  }
 }
 
 async function pickFiles(): Promise<void> {
@@ -978,6 +1111,55 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     </div>
 
     <div class="composer">
+      <div
+        v-if="mentionOpen"
+        class="mention-pop"
+        @click.stop
+      >
+        <div class="mention-head">
+          {{ t('agent.mentionTitle') }}
+          <span v-if="mentionQuery">@{{ mentionQuery }}</span>
+        </div>
+        <p
+          v-if="mentionLoading"
+          class="mention-note"
+        >
+          {{ t('agent.mentionLoading') }}
+        </p>
+        <p
+          v-else-if="mentionError"
+          class="mention-note error"
+        >
+          {{ mentionError }}
+        </p>
+        <p
+          v-else-if="mentionItems.length === 0"
+          class="mention-note"
+        >
+          {{ t('agent.mentionEmpty') }}
+        </p>
+        <button
+          v-for="(file, index) in mentionItems"
+          :key="file"
+          type="button"
+          class="mention-item"
+          :class="{ active: index === mentionIndex }"
+          @mousedown.prevent.stop="chooseMention(file)"
+          @mouseenter="mentionIndex = index"
+        >
+          <AppIcon
+            name="file"
+            :size="12"
+          />
+          <span class="mention-path">{{ file }}</span>
+        </button>
+        <p
+          v-if="mentionTruncated"
+          class="mention-note"
+        >
+          {{ t('agent.mentionTruncated') }}
+        </p>
+      </div>
       <div class="comp-box">
         <div
           v-if="attachments.length > 0 || attachmentError"
@@ -1013,10 +1195,13 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           </p>
         </div>
         <textarea
+          ref="composerEl"
           v-model="draft"
           rows="1"
           spellcheck="false"
           :placeholder="t('agent.composerPlaceholder')"
+          @input="onDraftInput"
+          @keydown.exact="onComposerKeydown"
           @keydown.ctrl.enter.prevent="submit"
           @keydown.meta.enter.prevent="submit"
         />
@@ -1999,10 +2184,83 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 
 /* 输入区 */
 .composer {
+  position: relative;
   flex: none;
   padding: 9px 10px 8px;
   border-top: 1px solid var(--border);
   background: var(--panel);
+}
+
+.mention-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 30;
+  width: min(860px, calc(100% - 20px));
+  max-height: 280px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  box-shadow: var(--shadow);
+  overflow-y: auto;
+  transform: translateX(-50%);
+}
+
+.mention-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 6px;
+  color: var(--fg-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mention-head span {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  text-transform: none;
+}
+
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--r-xs, 4px);
+  color: var(--fg-dim);
+  font: 11.5px var(--font-mono);
+  text-align: left;
+}
+
+.mention-item:hover,
+.mention-item.active {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.mention-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-note {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+}
+
+.mention-note.error {
+  color: var(--red);
+}
+
+:global(.shell.agent-mode .mention-pop) {
+  width: min(860px, calc(100% - 48px));
 }
 
 .comp-box {

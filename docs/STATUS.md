@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.20 发布提交（见 `git log`）；版本 `0.6.1-preview.20`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.21 发布提交（见 `git log`）；版本 `0.6.1-preview.21`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19` 已发布；`preview.20` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20` 已发布；`preview.21` 发布中。
 
 ## 当前位置一览
 
@@ -72,14 +72,14 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19` 已发布；`preview.20` 发布中（Git rail） |
+| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20` 已发布；`preview.21` 发布中 |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ preview.19 发布与 CI 全绿；preview.20 本地门禁全绿，推送后跟踪 CI |
+| main CI | ✅ preview.20 发布与 CI 全绿；preview.21 本地门禁全绿，推送后跟踪 CI |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
 | 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏、tmp 0600、备份脱敏 |
 | Agent 模型/思考 | ✅ 会话前选择模型与思考挡位，`session_create` 透传；无会话显示上下文预算与新会话按钮 |
@@ -96,6 +96,7 @@
 | Agent 功能移植 | ✅ 运行中排队并自动续发、对话重命名/归档/恢复、上下文详情浮层、助手消息复制 |
 | Agent Git 侧栏 | ✅ 头部 Git 按钮打开 420px 变更栏（复用 GitPanel：暂存/提交/日志/Diff）；工作区切换刷新 |
 | 队列编辑 | ✅ 点击排队消息载回 composer（含附件）并从队列移除 |
+| @ 文件引用 | ✅ composer 输入 @ 按需索引工作区（≤2000/深度 6），跳过工具/构建目录；键盘选择插入相对路径 |
 
 ## 本轮完成
 
@@ -319,12 +320,20 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
 
+## preview.21：composer @ 文件引用
+
+- 输入 `@` 按需索引工作区（≤2000 文件/深度 6），跳过 node_modules/target/vendor 与 .claude 等目录。
+- 片段过滤、↑/↓、Enter 插入、Esc 关闭；插入 `@相对路径 `，由 Agent read_file 读取。
+- 修复 vue-i18n 把 `@` 当 linked message 的启动崩溃（`{'@'}` 字面量）。
+- 验证：Web 369（23 文件）、Rust 607；真机 @read 过滤与插入通过。
+
 ## preview.20：Agent Git 侧栏 + 队列编辑
 
 - Agent 头部 Git 按钮打开 420px 右侧变更栏，复用 GitPanel（分支/暂存/提交/日志/Diff）。
 - 切换工作区刷新 Git；非 Git 工作区显示可读错误，不影响对话。
 - 点击排队消息载回 composer（含附件）并移出队列。
 - 验证：Web 364、Rust 607；真机 Git rail 与队列编辑通过。
+- 发布：`v0.6.1-preview.20` **已发布**（10 资产，SHA256SUMS 校验通过，manifest 已更新）。
 
 ## preview.19：Kimi Agent 功能移植（核心不变）
 
@@ -444,5 +453,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 98 · lsp stdio 2 · web 364（22 文件）· 合计 **971**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、history 6）。
+lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 98 · lsp stdio 2 · web 369（23 文件）· 合计 **976**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、history 6）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
