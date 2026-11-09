@@ -24,6 +24,23 @@ function onActivate(tabId: string): void {
   activateTab(tabId)
 }
 
+/** 中键关闭标签，与 VS Code 一致；dirty 标签仍走二次确认。 */
+function onAuxClick(event: MouseEvent, tabId: string): void {
+  if (event.button !== 1) return
+  event.preventDefault()
+  onClose(tabId)
+}
+
+/** 标签溢出时把纵向滚轮转成横向滚动，不劫持可滚动区域以外的事件。 */
+function onWheel(event: WheelEvent): void {
+  const element = event.currentTarget as HTMLElement | null
+  if (!element || element.scrollWidth <= element.clientWidth) return
+  const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX
+  if (delta === 0) return
+  element.scrollLeft += delta
+  event.preventDefault()
+}
+
 function onDragStart(event: DragEvent, tabId: string): void {
   dragId.value = tabId
   if (event.dataTransfer) {
@@ -75,6 +92,7 @@ function onClose(tabId: string): void {
     class="tabbar"
     role="tablist"
     :aria-label="t('tabs.aria')"
+    @wheel="onWheel"
   >
     <div
       v-for="tab in state.tabs"
@@ -93,6 +111,7 @@ function onClose(tabId: string): void {
       @dragover.prevent="onDragOver($event, tab.id)"
       @drop.prevent="onDrop($event, tab.id)"
       @dragend="resetDrag"
+      @auxclick="onAuxClick($event, tab.id)"
     >
       <button
         role="tab"
@@ -134,11 +153,19 @@ function onClose(tabId: string): void {
   height: 34px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tabbar::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
   position: relative;
   display: flex;
+  flex: none;
   align-items: stretch;
   font-size: 12.5px;
   color: var(--fg-dim);
