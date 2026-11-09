@@ -57,9 +57,8 @@ fn config_from_json(raw: &str) -> Result<HostConfig, ErrorBody> {
 
 fn error_json(error: &ErrorBody) -> String {
     serde_json::to_string(error).unwrap_or_else(|_| {
-        format!(
-            "{{\"code\":\"internal\",\"message\":\"serialize ErrorBody failed\",\"detail\":null}}"
-        )
+        "{\"code\":\"internal\",\"message\":\"serialize ErrorBody failed\",\"detail\":null}"
+            .to_string()
     })
 }
 
