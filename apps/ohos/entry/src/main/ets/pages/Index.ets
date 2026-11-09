@@ -166,6 +166,14 @@ struct Index {
     // host while an async invoke or agent worker is still using it.
   }
 
+  onBackPress(): boolean {
+    if (!this.bridge.isSheetOpen()) {
+      return false;
+    }
+    this.bridge.closeSheet();
+    return true;
+  }
+
   /** Copies the rawfile sample workspace into filesDir on first launch. */
   private prepareHost(): string {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -324,7 +332,7 @@ struct Index {
           .javaScriptProxy({
             object: this.bridge,
             name: '__lcNative',
-            methodList: ['invoke'],
+            methodList: ['invoke', 'setSheetOpen'],
             controller: this.controller
           })
           .width('100%')
@@ -341,7 +349,7 @@ struct Index {
           .javaScriptProxy({
             object: this.bridge,
             name: '__lcNative',
-            methodList: ['invoke'],
+            methodList: ['invoke', 'setSheetOpen'],
             controller: this.controller
           })
           .onInterceptRequest((event: OnInterceptRequestEvent): WebResourceResponse => {

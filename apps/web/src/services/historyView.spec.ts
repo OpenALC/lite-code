@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { HistorySummary } from './bridge'
 import {
   SHOW_ARCHIVED_STORAGE_KEY,
+  archiveToggleView,
   historyInWorkspace,
   historyMatchesQuery,
   loadShowArchived,
@@ -79,6 +80,19 @@ describe('splitHistoryItems', () => {
 
   it('空列表返回两个空数组', () => {
     expect(splitHistoryItems([])).toEqual({ active: [], archived: [] })
+  })
+})
+
+describe('archiveToggleView', () => {
+  it('0 项时固定「显示已归档」且不显示计数，忽略展开状态', () => {
+    expect(archiveToggleView(false, 0)).toEqual({ label: 'show', count: null })
+    expect(archiveToggleView(true, 0)).toEqual({ label: 'show', count: null })
+    expect(archiveToggleView(true, -1)).toEqual({ label: 'show', count: null })
+  })
+
+  it('有计数时按展开状态切换文案并保留 N', () => {
+    expect(archiveToggleView(false, 2)).toEqual({ label: 'show', count: 2 })
+    expect(archiveToggleView(true, 2)).toEqual({ label: 'hide', count: 2 })
   })
 })
 

@@ -14,6 +14,7 @@ import {
   type HistorySummary,
 } from '../services/bridge'
 import {
+  archiveToggleView,
   historyMatchesQuery,
   loadShowArchived,
   saveShowArchived,
@@ -79,6 +80,9 @@ const scopedHistory = computed(() =>
 
 const items = computed(() => scopedHistory.value.active)
 const scopedArchived = computed(() => scopedHistory.value.archived)
+const archiveToggle = computed(() =>
+  archiveToggleView(showArchived.value, scopedArchived.value.length),
+)
 
 const archivedItems = computed(() =>
   allItems.value.filter(item => item.archived && matchesQuery(item)),
@@ -741,15 +745,18 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="session-archive-toggle"
-            :aria-expanded="showArchived"
+            :aria-expanded="archiveToggle.label === 'hide'"
             @click="toggleShowArchived"
           >
             <AppIcon
               name="archive"
               :size="15"
             />
-            <span>{{ showArchived ? t('agent.hideArchived') : t('agent.showArchived') }}</span>
-            <span class="session-archive-count">{{ scopedArchived.length }}</span>
+            <span>{{ archiveToggle.label === 'hide' ? t('agent.hideArchived') : t('agent.showArchived') }}</span>
+            <span
+              v-if="archiveToggle.count !== null"
+              class="session-archive-count"
+            >{{ archiveToggle.count }}</span>
           </button>
 
           <div

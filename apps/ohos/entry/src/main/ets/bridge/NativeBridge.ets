@@ -16,6 +16,7 @@ export class NativeBridge {
   private controller: webview.WebviewController | null = null;
   private sinkRegistered: boolean = false;
   private initialized: boolean = false;
+  private sheetOpen: boolean = false;
 
   attach(controller: webview.WebviewController): void {
     this.controller = controller;
@@ -40,6 +41,28 @@ export class NativeBridge {
     native.init(configJson);
     this.initialized = true;
     hilog.info(DOMAIN, TAG, 'native host initialized');
+  }
+
+  /** 页面开合供应商 sheet 时同步通知，系统返回键据此决定是否消费。 */
+  setSheetOpen(open: boolean): void {
+    this.sheetOpen = open;
+  }
+
+  isSheetOpen(): boolean {
+    return this.sheetOpen;
+  }
+
+  /** 系统返回键关闭 sheet；runJavaScript 异步执行，先复位避免连按重复消费。 */
+  closeSheet(): void {
+    this.sheetOpen = false;
+    const controller = this.controller;
+    if (controller === null) {
+      return;
+    }
+    controller.runJavaScript('window.__lcOhosCloseSheet && window.__lcOhosCloseSheet()')
+      .catch((error: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'close sheet from back failed: %{public}s', error.message);
+      });
   }
 
   invoke(cmd: string, argsJson: string): Promise<string> {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AgentPanel from '../components/AgentPanel.vue'
@@ -25,6 +25,7 @@ import {
   uiPrefs,
 } from '../services/themeStore'
 import ReadonlyCodeView from './ReadonlyCodeView.vue'
+import { consumeBackForSheet, nextFocusIndex, SHEET_FOCUSABLE_SELECTOR } from './sheet'
 
 type ShellView = 'files' | 'preview' | 'chat'
 
@@ -38,6 +39,8 @@ const treeRefresh = ref(0)
 const theme = ref(uiPrefs().theme)
 const active = ref<Tab | null>(activeTab(tabsStore.get()))
 const providersOpen = ref(false)
+const providersTrigger = ref<HTMLButtonElement | null>(null)
+const sheetEl = ref<HTMLElement | null>(null)
 
 const agentSession = createAgentSession({
   sessionCreate: (mode, model, thinking) => sessionCreate(mode, null, model, thinking),
@@ -78,6 +81,64 @@ function switchTheme(): void {
   toggleTheme()
 }
 
+/** 同步告诉 ArkTS 宿主 sheet 是否打开，系统返回键据此决定是否消费。 */
+function setNativeSheetOpen(open: boolean): void {
+  const native = window.__lcNative
+  if (!native || typeof native.setSheetOpen !== 'function') return
+  try {
+    native.setSheetOpen(open)
+  } catch {
+    // 旧宿主没有该方法时保持默认返回行为。
+  }
+}
+
+function closeSheet(): void {
+  if (!providersOpen.value) return
+  providersOpen.value = false
+}
+
+function closeSheetFromBack(): boolean {
+  return consumeBackForSheet(providersOpen.value, closeSheet)
+}
+
+function sheetFocusable(): HTMLElement[] {
+  const root = sheetEl.value
+  if (!root) return []
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(SHEET_FOCUSABLE_SELECTOR),
+  ).filter(element => element.getClientRects().length > 0)
+}
+
+function onSheetKeydown(event: KeyboardEvent): void {
+  if (!providersOpen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeSheet()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const focusable = sheetFocusable()
+  if (focusable.length === 0) {
+    event.preventDefault()
+    return
+  }
+  event.preventDefault()
+  const current = focusable.indexOf(document.activeElement as HTMLElement)
+  const next = nextFocusIndex(current, focusable.length, event.shiftKey)
+  focusable[next]?.focus()
+}
+
+watch(providersOpen, async open => {
+  setNativeSheetOpen(open)
+  if (open) {
+    await nextTick()
+    sheetFocusable()[0]?.focus()
+    return
+  }
+  providersTrigger.value?.focus()
+})
+
 onMounted(() => {
   initUiPrefs()
   unsubscribePrefs = subscribePrefs(next => {
@@ -85,6 +146,9 @@ onMounted(() => {
     locale.value = next.locale
   })
   void loadRoot()
+  window.addEventListener('keydown', onSheetKeydown)
+  window.__lcOhosCloseSheet = closeSheetFromBack
+  setNativeSheetOpen(false)
 })
 
 onBeforeUnmount(() => {
@@ -93,6 +157,11 @@ onBeforeUnmount(() => {
   unsubscribePrefs = null
   historyRecorder.dispose()
   agentSession.dispose()
+  window.removeEventListener('keydown', onSheetKeydown)
+  if (window.__lcOhosCloseSheet === closeSheetFromBack) {
+    delete window.__lcOhosCloseSheet
+  }
+  setNativeSheetOpen(false)
 })
 </script>
 
@@ -106,6 +175,7 @@ onBeforeUnmount(() => {
       >{{ projectName }}</span>
       <span class="spacer" />
       <button
+        ref="providersTrigger"
         type="button"
         class="ohos-icon"
         :title="t('providers.title')"
@@ -219,6 +289,7 @@ onBeforeUnmount(() => {
 
     <section
       v-if="providersOpen"
+      ref="sheetEl"
       class="ohos-sheet"
       role="dialog"
       aria-modal="true"
@@ -230,7 +301,7 @@ onBeforeUnmount(() => {
           class="ohos-icon"
           :title="t('titlebar.close')"
           :aria-label="t('titlebar.close')"
-          @click="providersOpen = false"
+          @click="closeSheet"
         >
           <AppIcon
             class="ohos-back"

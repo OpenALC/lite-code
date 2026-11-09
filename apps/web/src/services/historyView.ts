@@ -50,6 +50,23 @@ export function splitHistoryItems(
   return { active, archived }
 }
 
+export interface ArchiveToggleView {
+  label: 'show' | 'hide'
+  count: number | null
+}
+
+/**
+ * 归档开关的文案与计数：0 项时固定显示「显示已归档」且不渲染计数，
+ * 有归档时才在显示/隐藏之间切换并保留 N。
+ */
+export function archiveToggleView(
+  showArchived: boolean,
+  count: number,
+): ArchiveToggleView {
+  if (count <= 0) return { label: 'show', count: null }
+  return { label: showArchived ? 'hide' : 'show', count }
+}
+
 export function loadShowArchived(
   storage: HistoryStorage | null = defaultStorage(),
 ): boolean {

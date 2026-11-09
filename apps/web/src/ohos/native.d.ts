@@ -2,6 +2,8 @@
 // invoke 返回 lc-ohos 产出的 JSON 字符串；失败时 reject 一个 ErrorBody 形状。
 export interface LcNativeBridge {
   invoke(cmd: string, argsJson: string): Promise<string>
+  /** 供应商 sheet 开合状态；旧宿主未暴露该方法时按关闭处理。 */
+  setSheetOpen?(open: boolean): void
 }
 
 declare global {
@@ -12,6 +14,8 @@ declare global {
     __LC_OHOS__?: boolean
     /** lc-ohos 事件推送入口：参数为 EventEnvelope 的 JSON 字符串。 */
     __lcOhosEmit?: (envelopeJson: string) => void
+    /** ArkTS 系统返回键入口；sheet 打开时关闭并返回 true。 */
+    __lcOhosCloseSheet?: () => boolean
   }
 }
 
