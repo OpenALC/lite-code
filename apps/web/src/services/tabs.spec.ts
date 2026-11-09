@@ -4,6 +4,7 @@ import { resolveEditorStrategy } from './largeFile'
 import {
   activateTab,
   activeTab,
+  clearClosedTabs,
   closeTab,
   INITIAL_TABS_STATE,
   markSaved,
@@ -12,6 +13,7 @@ import {
   relocateTabs,
   removeTabsUnder,
   renameTab,
+  reopenClosedTab,
   setDirty,
   tabsStore,
   updateContent,
@@ -21,6 +23,7 @@ import {
 // 单例 store：每个用例前复位到初始状态（操作全部不可变，复位复用同一引用安全）
 beforeEach(() => {
   tabsStore.set(INITIAL_TABS_STATE)
+  clearClosedTabs()
 })
 
 describe('初始状态', () => {
@@ -401,5 +404,46 @@ describe('标签拖拽排序', () => {
 
     expect(moveTabTo('a.rs', 'b.rs', 'before')).toBe(false)
     expect(moveTabTo('b.rs', 'a.rs', 'after')).toBe(false)
+  })
+})
+
+describe('重新打开已关闭的标签', () => {
+  it('恢复内容、dirty 与激活状态', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'a' })
+    updateContent('a.rs', 'changed')
+
+    expect(closeTab('a.rs', { force: true }).kind).toBe('closed')
+    const restored = reopenClosedTab()
+
+    expect(restored).toMatchObject({ id: 'a.rs', title: 'a.rs', content: 'changed', dirty: true })
+    expect(tabsStore.get().activeId).toBe('a.rs')
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['sample', 'a.rs'])
+  })
+
+  it('按 LIFO 顺序恢复，栈空后返回 null', () => {
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    openTab({ id: 'b.rs', title: 'b.rs' })
+    closeTab('a.rs', { force: true })
+    closeTab('b.rs', { force: true })
+
+    expect(reopenClosedTab()?.id).toBe('b.rs')
+    expect(reopenClosedTab()?.id).toBe('a.rs')
+    expect(reopenClosedTab()).toBeNull()
+  })
+
+  it('已存在同 id 时只激活，不重复创建', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'old' })
+    closeTab('a.rs', { force: true })
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'new' })
+
+    expect(reopenClosedTab()?.content).toBe('new')
+    expect(tabsStore.get().tabs.filter(t => t.id === 'a.rs')).toHaveLength(1)
+  })
+
+  it('文件删除导致的关闭不进入重开栈', () => {
+    openTab({ id: 'D:/proj/src/a.rs', title: 'a.rs' })
+    removeTabsUnder('D:/proj/src')
+
+    expect(reopenClosedTab()).toBeNull()
   })
 })

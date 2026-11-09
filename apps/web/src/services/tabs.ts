@@ -36,6 +36,21 @@ export type CloseResult =
 export interface CloseOptions {
   /** 跳过 dirty 保护强制关闭：视图层向用户确认后的二次调用使用 */
   force?: boolean
+  /** 是否进入「重新打开」栈；文件已删除等场景传 false。默认 true。 */
+  recordClosed?: boolean
+}
+
+interface ClosedTab {
+  tab: Tab
+  index: number
+}
+
+const CLOSED_LIMIT = 10
+const closedTabs: ClosedTab[] = []
+
+/** 清空「重新打开」栈（测试复位用；生产由进程生命周期自然清理）。 */
+export function clearClosedTabs(): void {
+  closedTabs.length = 0
 }
 
 /** P0 样例缓冲区内容（与 main.rs 标签对应；不可保存，仅用于起壳展示）。 */
@@ -142,7 +157,7 @@ export function removeTabsUnder(path: string): number {
     .get()
     .tabs.filter(tab => tab.path !== null && isPathWithin(path, tab.path))
     .map(tab => tab.id)
-  for (const id of ids) closeTab(id, { force: true })
+  for (const id of ids) closeTab(id, { force: true, recordClosed: false })
   return ids.length
 }
 
@@ -251,6 +266,31 @@ export function closeTab(id: string, options: CloseOptions = {}): CloseResult {
     const left = index > 0 ? tabs[index - 1] : undefined
     activeId = (right ?? left)?.id ?? null
   }
+  if (options.recordClosed !== false) {
+    closedTabs.push({ tab: { ...tab }, index })
+    if (closedTabs.length > CLOSED_LIMIT) closedTabs.shift()
+  }
   tabsStore.set({ tabs, activeId })
   return { kind: 'closed' }
+}
+
+/**
+ * 重新打开最近关闭的标签（Ctrl+Shift+T）。
+ * 已存在同 id 时只激活；否则按关闭时的内容/dirty/策略原样恢复并追加到末尾。
+ */
+export function reopenClosedTab(): Tab | null {
+  while (closedTabs.length > 0) {
+    const { tab, index } = closedTabs.pop()!
+    const state = tabsStore.get()
+    const existing = state.tabs.find(t => t.id === tab.id)
+    if (existing) {
+      tabsStore.set({ ...state, activeId: existing.id })
+      return existing
+    }
+    const tabs = [...state.tabs]
+    tabs.splice(Math.min(index, tabs.length), 0, tab)
+    tabsStore.set({ tabs, activeId: tab.id })
+    return tab
+  }
+  return null
 }

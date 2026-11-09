@@ -466,6 +466,7 @@
     "openWorkspace": "打开工作区…",
     "save": "保存",
     "closeTab": "关闭标签",
+    "reopenClosed": "重新打开已关闭的编辑器",
     "undo": "撤销",
     "redo": "重做",
     "find": "查找",

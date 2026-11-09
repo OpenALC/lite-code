@@ -77,7 +77,7 @@ import { extensionsExecuteCommand, extensionsList } from './services/extensions'
 import { subscribeAgentContext } from './services/agentContext'
 import { setFileDiagnostics } from './services/lspDiagnostics'
 import { matchQuickNav } from './services/quickPalette'
-import { activateTab, closeTab, openTab, renameTab, tabsStore } from './services/tabs'
+import { activateTab, closeTab, openTab, renameTab, reopenClosedTab, tabsStore } from './services/tabs'
 import {
   initUiPrefs,
   setLocale,
@@ -395,6 +395,7 @@ async function refreshPluginCommands(): Promise<void> {
 const commands = computed<QuickItem[]>(() => [
   { id: 'cmd:workspace', label: t('menu.openWorkspace'), detail: 'Ctrl+O', action: openWorkspaceDialog },
   { id: 'cmd:settings', label: t('activity.settings'), detail: 'Ctrl+,', action: openSettings },
+  { id: 'cmd:reopen', label: t('menu.reopenClosed'), detail: 'Ctrl+Shift+T', action: () => { reopenClosedTab() } },
   { id: 'cmd:providers', label: t('activity.providers'), detail: '', action: openProviders },
   { id: 'cmd:extensions', label: t('activity.extensions'), detail: '', action: openExtensions },
   { id: 'cmd:git', label: t('activity.git'), detail: '', action: () => { rightTab.value = 'git'; rightVisible.value = true; void refreshGit() } },
@@ -663,6 +664,9 @@ function onKey(event: KeyboardEvent): void {
   } else if (mod && event.key === '0') {
     event.preventDefault()
     setZoom(1)
+  } else if (mod && event.shiftKey && event.key.toLowerCase() === 't') {
+    event.preventDefault()
+    reopenClosedTab()
   } else if (mod && event.altKey && event.key.toLowerCase() === 't') {
     event.preventDefault()
     toggleTheme()

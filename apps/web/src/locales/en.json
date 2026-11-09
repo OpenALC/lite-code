@@ -466,6 +466,7 @@
     "openWorkspace": "Open Workspace…",
     "save": "Save",
     "closeTab": "Close Tab",
+    "reopenClosed": "Reopen Closed Editor",
     "undo": "Undo",
     "redo": "Redo",
     "find": "Find",
