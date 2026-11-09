@@ -231,6 +231,11 @@
     "addAttachment": "Add file",
     "removeAttachment": "Remove attachment",
     "attachmentHint": "Pick UTF-8 text files; up to 256 KiB each and 10 files",
+    "dropHint": "Drop to attach text files",
+    "attachmentTooLarge": "{name} exceeds 256 KiB and was skipped",
+    "attachmentTotal": "Attachments exceed 1 MiB in total",
+    "attachmentBinary": "{name} is not UTF-8 text and was skipped",
+    "attachmentUnreadable": "Could not read {name}",
     "attachmentLimit": "At most {max} attachments",
     "contextHintUnknown": "Select a model to see the context budget",
     "tool": {

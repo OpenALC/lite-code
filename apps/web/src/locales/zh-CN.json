@@ -231,6 +231,11 @@
     "addAttachment": "添加文件",
     "removeAttachment": "移除附件",
     "attachmentHint": "选择 UTF-8 文本文件；单文件 ≤256 KiB，最多 10 个",
+    "dropHint": "松开以添加文本附件",
+    "attachmentTooLarge": "{name} 超过 256 KiB，已跳过",
+    "attachmentTotal": "附件总量超过 1 MiB",
+    "attachmentBinary": "{name} 不是 UTF-8 文本，已跳过",
+    "attachmentUnreadable": "无法读取 {name}",
     "attachmentLimit": "最多添加 {max} 个附件",
     "contextHintUnknown": "选择模型后显示上下文预算",
     "tool": {

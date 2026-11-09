@@ -112,3 +112,4 @@
 - VSC 与 Agent UI 主题统一：Logo 蓝 `#0A84FF`、相同卡片/圆角/间距，Monaco 光标与选区同步变蓝
 - Agent 跟随输出开关与「回到底部」浮层：上翻阅读时不再被流式输出强制拉回底部
 - 文件树键盘导航：roving tabindex、方向键移动/展开/折叠、Home/End 跳首尾
+- Agent composer 支持拖拽文本附件，限制与原生选择器一致（10 个 / 256 KiB / 1 MiB）

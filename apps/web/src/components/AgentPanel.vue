@@ -168,6 +168,8 @@ onMounted(() => {
   window.addEventListener('providers:changed', onProvidersChanged)
   window.addEventListener('click', closeMenus)
   window.addEventListener('keydown', onWindowKeydown)
+  window.addEventListener('dragover', preventFileDrop)
+  window.addEventListener('drop', preventFileDrop)
   for (const context of drainAgentContexts()) {
     appendCodeContext(context)
     consumeAgentContext(context)
@@ -581,6 +583,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('providers:changed', onProvidersChanged)
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', onWindowKeydown)
+  window.removeEventListener('dragover', preventFileDrop)
+  window.removeEventListener('drop', preventFileDrop)
   offAgentContext?.()
   offAgentContext = null
   if (flashTimer !== null) clearTimeout(flashTimer)
@@ -834,6 +838,78 @@ async function pickFiles(): Promise<void> {
 function removeAttachment(path: string): void {
   attachments.value = attachments.value.filter(file => file.path !== path)
   if (attachments.value.length === 0) attachmentError.value = ''
+}
+
+const MAX_ATTACHMENT_BYTES = 256 * 1024
+const MAX_ATTACHMENT_TOTAL_BYTES = 1024 * 1024
+const dropping = ref(false)
+
+function hasFiles(event: DragEvent): boolean {
+  return event.dataTransfer?.types.includes('Files') ?? false
+}
+
+function onComposerDragOver(event: DragEvent): void {
+  if (!hasFiles(event)) return
+  event.preventDefault()
+  dropping.value = true
+}
+
+function onComposerDragLeave(event: DragEvent): void {
+  const next = event.relatedTarget
+  const composer = event.currentTarget as HTMLElement | null
+  if (next instanceof Node && composer?.contains(next)) return
+  dropping.value = false
+}
+
+function onComposerDrop(event: DragEvent): void {
+  dropping.value = false
+  if (!hasFiles(event) || !tauri) return
+  const files = event.dataTransfer?.files
+  if (files && files.length > 0) void addDroppedFiles([...files])
+}
+
+async function addDroppedFiles(files: File[]): Promise<void> {
+  attachmentError.value = ''
+  const byPath = new Map(attachments.value.map(file => [file.path, file]))
+  let total = attachments.value.reduce((sum, file) => sum + file.bytes, 0)
+  for (const file of files) {
+    if (byPath.size >= MAX_ATTACHMENTS && !byPath.has(file.name)) {
+      attachmentError.value = t('agent.attachmentLimit', { max: MAX_ATTACHMENTS })
+      break
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      attachmentError.value = t('agent.attachmentTooLarge', { name: file.name })
+      continue
+    }
+    if (total + file.size > MAX_ATTACHMENT_TOTAL_BYTES) {
+      attachmentError.value = t('agent.attachmentTotal')
+      break
+    }
+    let text = ''
+    try {
+      text = await file.text()
+    } catch {
+      attachmentError.value = t('agent.attachmentUnreadable', { name: file.name })
+      continue
+    }
+    if (text.includes('\u0000')) {
+      attachmentError.value = t('agent.attachmentBinary', { name: file.name })
+      continue
+    }
+    byPath.set(file.name, {
+      name: file.name,
+      path: file.name,
+      text,
+      bytes: file.size,
+    })
+    total += file.size
+  }
+  attachments.value = [...byPath.values()]
+}
+
+/** 防止拖到 composer 之外时 WebView2 直接打开文件。 */
+function preventFileDrop(event: DragEvent): void {
+  if (hasFiles(event)) event.preventDefault()
 }
 
 function newSession(): void {
@@ -1348,7 +1424,23 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       </div>
     </div>
 
-    <div class="composer">
+    <div
+      class="composer"
+      @dragenter.prevent="onComposerDragOver($event)"
+      @dragover.prevent="onComposerDragOver($event)"
+      @dragleave="onComposerDragLeave($event)"
+      @drop.prevent="onComposerDrop($event)"
+    >
+      <div
+        v-if="dropping"
+        class="drop-overlay"
+      >
+        <AppIcon
+          name="paperclip"
+          :size="16"
+        />
+        <span>{{ t('agent.dropHint') }}</span>
+      </div>
       <button
         v-if="!followOutput && messages.length > 0"
         type="button"
@@ -2541,6 +2633,22 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 .scroll-bottom:hover {
   border-color: var(--accent-line);
   color: var(--accent);
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 4px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--accent-line);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  color: var(--accent);
+  font-size: 12px;
+  pointer-events: none;
 }
 
 .mention-pop {
