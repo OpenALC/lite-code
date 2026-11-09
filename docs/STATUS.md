@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28` 已发布；`preview.29` 发布中；`preview.30` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29` 已发布；`preview.30` 发布中。
 
 ## 当前位置一览
 
@@ -72,7 +72,7 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28` 已发布；`preview.29` 发布中；`preview.30` 发布中 |
+| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29` 已发布；`preview.30` 发布中 |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
@@ -341,7 +341,8 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - Web 新增 `public/favicon.png` 与 `<link rel="icon">`；`scripts/dev/icon-source.png` 同步替换。
 - 验证：32/128/256/512 输出四角 alpha=0；重新链接后的 exe 提取图标为新蓝色 Logo；
   favicon 经 dev server 返回 200。
-- 发布：`v0.6.1-preview.29` 发布中。
+- 发布：`v0.6.1-preview.29` **已发布**（非 draft，10 资产），SHA256SUMS 校验通过，
+  updater manifest 已更新到 `0.6.1-preview.29`。
 
 ## preview.28：Ctrl+P 检索历史会话正文
 
