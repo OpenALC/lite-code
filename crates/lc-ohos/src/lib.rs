@@ -375,8 +375,9 @@ impl Host {
         Ok(())
     }
 
-    /// 读取供应商配置。文件缺失或 JSON 损坏时返回空视图：首版壳没有供应商
-    /// 编辑入口，空视图让前端继续显示“请先配置供应商”，而不是整页报错。
+    /// 读取供应商配置。文件缺失或 JSON 损坏时返回空视图：壳内已有供应商
+    /// 编辑入口（ProvidersPanel 经 shim 调用本命令），空视图让前端显示
+    /// 「请先配置供应商」引导，而不是整页报错。
     fn providers_load(&self) -> Result<String, ErrorBody> {
         let file = match ProvidersFile::load_path(&self.providers_file) {
             Ok(Some(file)) => file,

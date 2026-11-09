@@ -190,8 +190,8 @@ struct Index {
   /**
    * Seeds the providers template on first launch. Files created by older builds
    * have no models, which leaves the AgentPanel composer disabled; rewrite those
-   * too (the shell still has no provider editor to produce a deliberate empty
-   * config).
+   * too (the in-app ProvidersPanel can produce a deliberate empty config, but a
+   * legacy empty file is never intentional).
    */
   private ensureProvidersFile(providersFile: string): void {
     let needsTemplate: boolean = !fs.accessSync(providersFile);

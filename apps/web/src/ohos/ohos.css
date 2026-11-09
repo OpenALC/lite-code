@@ -1,5 +1,6 @@
 /* 鸿蒙只读外壳：手机三视图切换；≥900px 左文件树 + 中预览 + 右对话。 */
 .ohos-shell {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -105,6 +106,45 @@
 
 .ohos-nav button.active {
   color: var(--accent);
+}
+
+/* ---- 供应商设置 sheet ---- */
+
+.ohos-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.ohos-sheet-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: env(safe-area-inset-top) 12px 0;
+  background: var(--titlebar);
+  border-bottom: 1px solid var(--border);
+}
+
+.ohos-back {
+  transform: rotate(180deg);
+}
+
+.ohos-sheet-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.ohos-sheet-body > * {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ---- 只读预览 ---- */

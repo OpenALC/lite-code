@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import AgentPanel from '../components/AgentPanel.vue'
 import AppIcon from '../components/AppIcon.vue'
 import FileTree from '../components/FileTree.vue'
+import ProvidersPanel from '../components/ProvidersPanel.vue'
 import { createAgentSession } from '../services/agentSession'
 import { createHistoryRecorder } from '../services/agentHistory'
 import {
@@ -36,6 +37,7 @@ const rootError = ref('')
 const treeRefresh = ref(0)
 const theme = ref(uiPrefs().theme)
 const active = ref<Tab | null>(activeTab(tabsStore.get()))
+const providersOpen = ref(false)
 
 const agentSession = createAgentSession({
   sessionCreate: (mode, model, thinking) => sessionCreate(mode, null, model, thinking),
@@ -103,6 +105,18 @@ onBeforeUnmount(() => {
         :title="root"
       >{{ projectName }}</span>
       <span class="spacer" />
+      <button
+        type="button"
+        class="ohos-icon"
+        :title="t('providers.title')"
+        :aria-label="t('providers.title')"
+        @click="providersOpen = true"
+      >
+        <AppIcon
+          name="providers"
+          :size="15"
+        />
+      </button>
       <button
         type="button"
         class="ohos-icon"
@@ -202,5 +216,32 @@ onBeforeUnmount(() => {
         <span>{{ t('agent.conversations') }}</span>
       </button>
     </nav>
+
+    <section
+      v-if="providersOpen"
+      class="ohos-sheet"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('providers.title')"
+    >
+      <header class="ohos-sheet-head">
+        <button
+          type="button"
+          class="ohos-icon"
+          :title="t('titlebar.close')"
+          :aria-label="t('titlebar.close')"
+          @click="providersOpen = false"
+        >
+          <AppIcon
+            class="ohos-back"
+            name="chevron"
+            :size="15"
+          />
+        </button>
+      </header>
+      <div class="ohos-sheet-body">
+        <ProvidersPanel />
+      </div>
+    </section>
   </div>
 </template>
