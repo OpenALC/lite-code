@@ -25,6 +25,17 @@
 
 - -
 
+### 验证（门禁记录，必填）
+
+- Web：`pnpm lint` / `pnpm typecheck` / `pnpm test`（N 项 / M 文件）/ `pnpm build`。
+- Rust：`cargo fmt` / `clippy` / `test`（K 项）结果；无变更时注明“沿用基线”。
+- 发布资产：数量与清单（Windows NSIS + lc-cli、Linux x64/arm64 AppImage/deb + lc-cli ×2、
+  `SHA256SUMS`、`latest.json`）；`SHA256SUMS` 必须提及。
+- 签名状态：`signed:true/false`（false 时注明“签名密钥未接入，A 类门禁未关闭”）。
+- 覆盖说明：`cargo-deny`、`pnpm audit --prod`、lane 边界检查由 CI verify 覆盖时引用 run 结论；
+  arm64 产物存在与否需写明。
+- 真机/端到端：实际机型或沙箱验证点。
+
 ### 已知问题
 
 | 问题 | 影响 | 规避方式 |
