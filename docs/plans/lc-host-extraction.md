@@ -59,7 +59,45 @@ crates/lc-ohos
      workspace 663；check-all 全量门禁通过；模拟器切片 H 子集 b/c/d/f 全过
      （40 会话回收：ohos-5 not_found、ohos-41 ack；取消 cancelled；hilog 无 panic）。
    - 明确不做：desktop `AgentSessions` 切换（M3 随 TurnRunner 一起）。
-3. **M3 TurnRunner**：抽 `TurnRunner::run_turn(factory, sink, cancel)`；lc-ohos worker 闭包与 desktop `spawn_worker` 主体改为装配 factory 后调 runner。审批：`ApprovalHook` trait——桌面注入队列实现，OHOS 注入「plan 直接放行 + NeedsApproval 时发 approval_required 后 done」。
+3. **M3 TurnRunner（切片修订，M2 后研读 desktop agent.rs 更新）**：
+
+   **修订说明**：原设想「统一 `run_turn(factory, sink, cancel)` + ApprovalHook」。
+   研读桌面 `agent.rs`（2166 行）后确认两侧 worker 骨架本质不同——桌面是**长驻
+   worker 线程 + 命令通道**（Send/ResolveApproval/Cancel 三命令循环，审批 resume
+   复用同一 AgentLoop，`busy` latch，task 状态联动，MCP 生命周期托管），鸿蒙是
+   **每轮 spawn 线程 + RunningGuard**（agent 槽位常驻 `SessionEntry`，plan 模式
+   只读工具天然无审批）。把桌面审批队列塞进单一 run_turn 会迫使
+   `spawn_worker`/`Worker::run` 重写，风险远超收益（违反 §5 护栏「M3 前不改
+   spawn_worker 签名之外的行为」）。M3 改为下沉真正重复的三块，worker 循环
+   留在宿主：
+
+   - **3a. EventSink trait 下沉 lc-host（envelope 模块）**：
+     `pub trait EventSink: Send + Sync { fn emit(&self, event: CoreEvent); }`
+     （CoreEvent 级，桌面形状）+ `EnvelopeSink` 适配器（内部 `Seq`，
+     `emit` → 契约 `EventEnvelope` JSON → ohos 的 fn-pointer sink 走既有
+     `emit_envelope`）。桌面 `AppEventSink`/`RecordingSink` 改实现 lc-host
+     trait，删本地 `next_envelope`/`AtomicU64` seq。seq 起点：桌面现 0 起、
+     ohos 1 起；统一走 `Seq`（1 起）后桌面首信封 seq 0→1——web 当前不消费
+     envelope seq（已核实无丢序检测逻辑），单调性不变，风险低。
+   - **3b. 完成事件组合下沉**：lc-host 提供
+     `completion_events(info: SessionInfo, outcome: &LoopOutcome) -> Vec<CoreEvent>`
+     （桌面 `agent.rs` 已有同名私有 fn，原样下移）；lc-ohos 的 error 分支
+     组合不同（`loop_error_body` + session_state + done + stub 回退），仅共享
+     Ok 分支，error 路径留宿主。cancel 收尾形状两侧相同（swap 复位 →
+     cancelled state → done）但 info 来源不同（桌面从 `Session` 快照、ohos
+     从句柄写回），各留薄壳不合。
+   - **3c. 桌面 `AgentSessions` 表切 `Sessions<P>`（stretch，可选）**：桌面无
+     回收语义（会话活到断开/退出），limit/ordinal 价值有限；若做则
+     `limit = usize::MAX`、`P = desktop SessionHandle`，落盘/路由不动。
+     优先级低，可并入 M4。
+   - **3d. ApprovalHook trait：不做**。plan 模式只读工具不会 NeedsApproval；
+     桌面审批 resume 绑定长驻 worker 命令循环，抽象后两端都用不上。第三
+     宿主出现再提取。
+
+   **M3 验收**：桌面 agent 单测全过（worker 审批/取消/busy 语义为安全网）；
+   两端信封形状不变（`isCoreEvent`/TS 零改动）；模拟器切片 H 子集 b/c/d/f
+   回归；web 431 + workspace 全绿 + check-all；lc-host 新增 cancel 中断/
+   seq 连续单测。
 4. **M4 收尾**：`spawn_worker` 仅剩桌面装配参数；lc-ohos `RealAgentFactory`/stub/预探成为 factory 组合。删除两端死代码。
 
 ## 4. 测试策略
