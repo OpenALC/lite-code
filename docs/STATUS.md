@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54/55/56/57/58/59` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .59；`preview.60` 发布中（鸿蒙历史原生持久化）。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54/55/56/57/58/59/60` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .60；切片 M（history rename/archive + localStorage 迁移）进行中。
 
 ## 当前位置一览
 
@@ -329,7 +329,7 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   shim 优先原生、回退 localStorage；lc-ohos 32 项单测。
 - 模拟器 e2e：force-stop 重启后历史仍在、localStorage 无 history key。
 - 待办：rename/archive 原生命令、localStorage 一次性迁移。
-- 发布：`v0.6.1-preview.60` 发布中（tag 已推送）。
+- 发布：`v0.6.1-preview.60` **已发布**（10 资产）；滚动清单已提升到 .60。
 
 ## preview.59：providers 逻辑下沉 lc-core
 
