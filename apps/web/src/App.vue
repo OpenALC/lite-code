@@ -184,6 +184,15 @@ const gitSession = createGitController({
   gitCommit,
   gitLog,
 })
+const gitState = ref(gitSession.getState())
+const unsubGit = gitSession.subscribe(state => {
+  gitState.value = state
+})
+const gitBranch = computed(() => gitState.value.status?.branch ?? null)
+const gitChanges = computed(() => gitState.value.status?.files.length ?? 0)
+const gitClean = computed(() => gitState.value.status?.clean ?? true)
+const gitAhead = computed(() => gitState.value.status?.ahead ?? 0)
+const gitBehind = computed(() => gitState.value.status?.behind ?? 0)
 
 // 布局尺寸仍复用原偏好；去掉 editor/agent 模式，改为 VS Code 式固定区域。
 const layout = ref(loadLayoutPrefs())
@@ -727,6 +736,7 @@ onMounted(() => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
       rememberWorkspace(res.data.root)
+      void refreshGit()
       void historyMigrateWorkspace(res.data.root).then(moved => {
         if (moved.ok && moved.data > 0) {
           window.dispatchEvent(new Event('history:changed'))
@@ -743,6 +753,7 @@ onBeforeUnmount(() => {
   unsubLsp()
   unsubAgentContext()
   unsubTabs()
+  unsubGit()
   historyRecorder.dispose()
   agentSession.dispose()
   taskSession.dispose()
@@ -1349,7 +1360,23 @@ onBeforeUnmount(() => {
       v-if="appMode === 'editor'"
       class="statusbar"
     >
-      <span class="status-item">⎇ {{ t('status.branch') }}</span>
+      <span
+        class="status-item"
+        :class="{ dim: !gitBranch }"
+        :title="gitBranch ?? t('status.noRepo')"
+      >⎇ {{ gitBranch ?? t('status.noRepo') }}</span>
+      <span
+        v-if="gitBranch"
+        class="status-item dim"
+      >{{ gitClean ? t('status.clean') : t('status.changes', { count: gitChanges }) }}</span>
+      <span
+        v-if="gitAhead > 0"
+        class="status-item dim"
+      >↑{{ gitAhead }}</span>
+      <span
+        v-if="gitBehind > 0"
+        class="status-item dim"
+      >↓{{ gitBehind }}</span>
       <span class="status-item dim">Node —</span>
       <span class="status-item dim">MCP 0</span>
       <TaskStatusBar

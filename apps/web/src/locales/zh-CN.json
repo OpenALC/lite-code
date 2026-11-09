@@ -456,6 +456,9 @@
   },
   "status": {
     "branch": "main",
+    "noRepo": "无仓库",
+    "clean": "工作区干净",
+    "changes": "{count} 个更改",
     "sessions": "0 个运行中会话"
   },
   "menu": {

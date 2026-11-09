@@ -456,6 +456,9 @@
   },
   "status": {
     "branch": "main",
+    "noRepo": "No repository",
+    "clean": "Clean",
+    "changes": "{count} changes",
     "sessions": "0 running sessions"
   },
   "menu": {
