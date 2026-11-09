@@ -294,7 +294,7 @@ export function closeOtherTabs(keepId: string): number {
   for (const id of ids) {
     if (closeTab(id).kind === 'closed') closed += 1
   }
-  if (closed > 0) activateTab(keepId)
+  activateTab(keepId)
   return closed
 }
 
