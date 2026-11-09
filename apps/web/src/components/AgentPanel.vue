@@ -20,6 +20,7 @@ import {
 import type { AgentSessionController, TurnStat } from '../services/agentSession'
 import { renderMarkdown } from '../services/markdown'
 import { subscribePrefs, uiPrefs } from '../services/themeStore'
+import { cycleFindIndex, findMessageMatches } from '../services/agentFind'
 import { copyText } from '../services/clipboard'
 import { forkBeforeUserMessage } from '../services/forkSession'
 import {
@@ -42,6 +43,8 @@ const props = defineProps<{
   railOpen?: boolean
   showPreviewToggle?: boolean
   previewOpen?: boolean
+  /** 全宽 Agent 模式：Ctrl+F 打开会话内查找而不是编辑器查找。 */
+  fullMode?: boolean
 }>()
 const emit = defineEmits<{
   'manage-providers': []
@@ -193,6 +196,47 @@ const pendingYolo = ref(false)
 const switching = ref(false)
 const expandedTools = ref<Set<string>>(new Set())
 const streamEl = ref<HTMLElement | null>(null)
+
+const findOpen = ref(false)
+const findQuery = ref('')
+const findIndex = ref(0)
+const findInput = ref<HTMLInputElement | null>(null)
+const findMatches = computed(() => findMessageMatches(messages.value, findQuery.value))
+const findCurrent = computed(() => findMatches.value[findIndex.value] ?? null)
+
+function openFind(): void {
+  findOpen.value = true
+  void nextTick(() => {
+    findInput.value?.focus()
+    findInput.value?.select()
+  })
+}
+
+function closeFind(): void {
+  findOpen.value = false
+  findQuery.value = ''
+  findIndex.value = 0
+}
+
+function cycleFind(direction: 1 | -1): void {
+  findIndex.value = cycleFindIndex(findIndex.value, findMatches.value.length, direction)
+  scrollToFind()
+}
+
+function onFindInput(): void {
+  findIndex.value = 0
+  scrollToFind()
+}
+
+function scrollToFind(): void {
+  void nextTick(() => {
+    const index = findCurrent.value
+    if (index === null) return
+    streamEl.value
+      ?.querySelector<HTMLElement>(`[data-message-index="${index}"]`)
+      ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
+}
 
 const usedTokens = computed(() => {
   // input + output 是下一次请求要带上的上下文；cached 是 input 子集，不重复计。
@@ -385,8 +429,21 @@ function retryFromAssistant(messageIndex: number): void {
 }
 
 function onWindowKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') closeMenus()
+  if (event.key === 'Escape') {
+    closeMenus()
+    if (findOpen.value) closeFind()
+    return
+  }
+  const mod = event.ctrlKey || event.metaKey
+  if (!mod || event.key.toLowerCase() !== 'f' || !props.fullMode) return
+  event.preventDefault()
+  openFind()
 }
+
+watch(
+  () => agent.value?.sessionId,
+  () => closeFind(),
+)
 
 function selectModeFromMenu(mode: SessionMode): void {
   closeMenus()
@@ -881,6 +938,64 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
     </div>
 
     <div
+      v-if="findOpen"
+      class="agent-find"
+    >
+      <input
+        ref="findInput"
+        v-model="findQuery"
+        type="text"
+        :placeholder="t('agent.findPlaceholder')"
+        @input="onFindInput"
+        @keydown.enter.exact.prevent="cycleFind(1)"
+        @keydown.shift.enter.prevent="cycleFind(-1)"
+        @keydown.esc.prevent="closeFind"
+      >
+      <span class="agent-find-count">
+        {{ findMatches.length ? `${findIndex + 1}/${findMatches.length}` : t('agent.findNone') }}
+      </span>
+      <button
+        type="button"
+        class="icon-btn"
+        :title="t('agent.findPrev')"
+        :aria-label="t('agent.findPrev')"
+        :disabled="findMatches.length === 0"
+        @click="cycleFind(-1)"
+      >
+        <AppIcon
+          name="chevron-down"
+          :size="13"
+          class="up"
+        />
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        :title="t('agent.findNext')"
+        :aria-label="t('agent.findNext')"
+        :disabled="findMatches.length === 0"
+        @click="cycleFind(1)"
+      >
+        <AppIcon
+          name="chevron-down"
+          :size="13"
+        />
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        :title="t('agent.findClose')"
+        :aria-label="t('agent.findClose')"
+        @click="closeFind"
+      >
+        <AppIcon
+          name="x"
+          :size="13"
+        />
+      </button>
+    </div>
+
+    <div
       ref="streamEl"
       class="stream"
     >
@@ -909,7 +1024,8 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
         v-for="(message, index) in messages"
         :key="message.id"
         class="msg"
-        :class="message.role"
+        :class="[message.role, { 'find-hit': findCurrent === index }]"
+        :data-message-index="index"
       >
         <details
           v-if="message.thinking"
@@ -1663,6 +1779,54 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
 }
 
 /* 消息流 */
+.agent-find {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.agent-find input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.agent-find input:focus {
+  border-color: var(--accent-line);
+}
+
+.agent-find-count {
+  min-width: 42px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.agent-find .icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.agent-find .up {
+  transform: rotate(180deg);
+}
+
+.msg.find-hit {
+  outline: 1px solid var(--accent-line);
+  outline-offset: 4px;
+  border-radius: var(--r-sm);
+}
+
 .stream {
   flex: 1;
   min-height: 0;

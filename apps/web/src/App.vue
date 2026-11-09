@@ -1329,6 +1329,7 @@ onBeforeUnmount(() => {
             <AgentPanel
               :controller="agentSession"
               :workspace="projectRoot"
+              full-mode
               show-rail-toggle
               show-preview-toggle
               :rail-open="agentRail === 'git'"
