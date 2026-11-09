@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AgentPanel from './components/AgentPanel.vue'
+import AgentPreview from './components/AgentPreview.vue'
 import AgentSessions from './components/AgentSessions.vue'
 import AppIcon from './components/AppIcon.vue'
 import Breadcrumbs from './components/EditorBreadcrumbs.vue'
@@ -112,9 +113,9 @@ const rightVisible = ref(true)
 const appMode = ref<AppMode>(
   localStorage.getItem(APP_MODE_KEY) === 'agent' ? 'agent' : 'editor',
 )
-const agentRail = ref<'git' | null>(null)
+const agentRail = ref<'git' | 'preview' | null>(null)
 
-function toggleAgentRail(rail: 'git'): void {
+function toggleAgentRail(rail: 'git' | 'preview'): void {
   agentRail.value = agentRail.value === rail ? null : rail
   if (agentRail.value === 'git') void refreshGit()
 }
@@ -1242,16 +1243,24 @@ onBeforeUnmount(() => {
               :controller="agentSession"
               :workspace="projectRoot"
               show-rail-toggle
+              show-preview-toggle
               :rail-open="agentRail === 'git'"
+              :preview-open="agentRail === 'preview'"
               @manage-providers="openProviders"
               @toggle-rail="toggleAgentRail('git')"
+              @toggle-preview="toggleAgentRail('preview')"
             />
             <aside
-              v-if="agentRail === 'git'"
+              v-if="agentRail"
               class="agent-rail"
             >
               <GitPanel
+                v-if="agentRail === 'git'"
                 :controller="gitSession"
+                @close="agentRail = null"
+              />
+              <AgentPreview
+                v-else
                 @close="agentRail = null"
               />
             </aside>

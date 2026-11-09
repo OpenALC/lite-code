@@ -166,5 +166,15 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 })
       <path d="M6 10v10h12V10" />
       <path d="M10 14h4" />
     </template>
+    <template v-else-if="name === 'preview'">
+      <rect
+        x="3"
+        y="4"
+        width="18"
+        height="13"
+        rx="2"
+      />
+      <path d="M8 21h8M12 17v4" />
+    </template>
   </svg>
 </template>

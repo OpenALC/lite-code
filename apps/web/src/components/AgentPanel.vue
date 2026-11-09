@@ -37,8 +37,14 @@ const props = defineProps<{
   workspace?: string
   showRailToggle?: boolean
   railOpen?: boolean
+  showPreviewToggle?: boolean
+  previewOpen?: boolean
 }>()
-const emit = defineEmits<{ 'manage-providers': []; 'toggle-rail': [] }>()
+const emit = defineEmits<{
+  'manage-providers': []
+  'toggle-rail': []
+  'toggle-preview': []
+}>()
 const { t, te } = useI18n()
 
 const MODES: SessionMode[] = ['plan', 'chat', 'auto', 'yolo']
@@ -749,6 +755,20 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
       >
         <AppIcon
           name="git"
+          :size="15"
+        />
+      </button>
+      <button
+        v-if="props.showPreviewToggle"
+        type="button"
+        class="icon-btn"
+        :class="{ active: props.previewOpen }"
+        :title="t('agent.previewTitle')"
+        :aria-label="t('agent.previewTitle')"
+        @click="emit('toggle-preview')"
+      >
+        <AppIcon
+          name="preview"
           :size="15"
         />
       </button>
