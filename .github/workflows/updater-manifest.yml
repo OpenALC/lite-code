@@ -6,6 +6,14 @@ name: updater manifest
 on:
   release:
     types: [published]
+  # release published 事件可能被 GITHUB_TOKEN 抑制不触发（.45/.46 发生过），
+  # 保留人工兜底入口：gh workflow run updater-manifest.yml -f tag=vX.Y.Z
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已发布的版本 tag（如 v0.6.1-preview.47）
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,7 +26,8 @@ jobs:
   promote:
     name: promote latest.json
     # 只处理 v* 版本 tag；滚动 release 的 tag 是 updater-manifest，不会命中。
-    if: startsWith(github.event.release.tag_name, 'v')
+    # workflow_dispatch 由 inputs.tag 指定；release 事件取 release.tag_name。
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v')
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -27,7 +36,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
           if ! gh release download "$TAG" --pattern latest.json --output latest.json --clobber; then
