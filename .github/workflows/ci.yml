@@ -190,6 +190,17 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test -- --run
       - run: pnpm build
+      # 鸿蒙 ohos 专用入口：纯 Vite 构建，无 SDK 依赖（阻断 Monaco 回流等回归）。
+      - run: pnpm --filter @lite-code/web build:ohos
+      - name: assert ohos bundle has no Monaco
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f apps/web/dist-ohos/ohos.html
+          if grep -ri monaco apps/web/dist-ohos/assets; then
+            echo "::error::dist-ohos 含 monaco，ohos 入口不得引入桌面编辑器"
+            exit 1
+          fi
       # 插件运行器是独立 Node 子项目，不依赖 pnpm workspace。
       - run: node sidecars/ext-host/build.mjs --check
       - run: node --test sidecars/ext-host/test/*.test.mjs
