@@ -574,6 +574,14 @@ C:/Git/usr/bin/bash.exe -c "export PATH=/usr/bin:$PATH; exec scripts/check-lanes
 cargo deny --locked check
 ```
 
+## 发布基础设施备注
+
+- Linux/Windows 打包依赖 GitHub `tauri-apps/binary-releases` 下载 AppRun/NSIS。
+  2026-11-09 该端点持续 504：AppRun 已内置 `scripts/release/AppRun-*` 并在打包脚本中预置到
+  Tauri 缓存；AppImage 单独重试 3 次并设置 `APPIMAGE_EXTRACT_AND_RUN=1`。
+- `v0.6.1-preview.34/35` 标签已重打到带修复的提交；NSIS 仍需该端点，待 GitHub 恢复后
+  对失败的 release run 执行 `gh run rerun --failed`，先 .34 后 .35。
+
 ## 环境备忘（本机特有，避免重新踩坑）
 
 - `world.run`/spawn 下 pnpm 必须写 **`pnpm.cmd`**（无扩展名 shim 是 ENOENT）
