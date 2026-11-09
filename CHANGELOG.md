@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.61] - 2026-11-10
+
+- 鸿蒙 history rename/archive 原生命令（titleLocked 合并保护）+ localStorage 一次性幂等迁移（共享 Promise、全成功才清理）；lc-ohos 36 项、web 417 项单测；模拟器迁移 e2e 通过
+
 ## [0.6.1-preview.60] - 2026-11-10
 
 - 鸿蒙会话历史原生持久化：lc-ohos history.rs（list/save/load/delete，0600，50 条驱逐，路径校验，序号续接），shim 优先原生回退 localStorage；lc-ohos 32 单测；模拟器 force-stop 重启历史仍在

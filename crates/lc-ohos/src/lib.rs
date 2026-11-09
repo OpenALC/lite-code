@@ -15,6 +15,8 @@
 //! - `history_list` / `history_save` / `history_load` / `history_delete` 把会话快照
 //!   持久化到 `<files_dir>/history/<id>.json`（0600、tmp/rename、上限 50 条），
 //!   形状与桌面 `history.rs` 及前端 `HistorySummary` 一致；
+//! - `history_rename` / `history_archive` 原地更新已有记录的标题/归档标记，
+//!   不存在返回 `not_found`、损坏 JSON 返回 `invalid_argument`；
 //! - 其余命令返回 `not_implemented`（契约没有独立的 `unsupported` 错误码）。
 
 use std::collections::HashMap;
@@ -272,6 +274,8 @@ impl Host {
             "history_load" => return self.history_load(&args),
             "history_save" => return self.history_save(&args),
             "history_delete" => return self.history_delete(&args),
+            "history_rename" => return self.history_rename(&args),
+            "history_archive" => return self.history_archive(&args),
             _ => return Err(unsupported(cmd)),
         };
         serde_json::to_string(&result).map_err(|error| {
@@ -445,6 +449,23 @@ impl Host {
     fn history_delete(&self, args: &Value) -> Result<String, ErrorBody> {
         let id = required_string(args, "id")?;
         history::delete(&self.history_dir, &id)?;
+        Ok("null".to_string())
+    }
+
+    fn history_rename(&self, args: &Value) -> Result<String, ErrorBody> {
+        let id = required_string(args, "id")?;
+        let title = required_string(args, "title")?;
+        history::rename(&self.history_dir, &id, &title)?;
+        Ok("null".to_string())
+    }
+
+    fn history_archive(&self, args: &Value) -> Result<String, ErrorBody> {
+        let id = required_string(args, "id")?;
+        let archived = args
+            .get("archived")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| invalid("missing boolean argument `archived`"))?;
+        history::archive(&self.history_dir, &id, archived)?;
         Ok("null".to_string())
     }
 
@@ -1131,7 +1152,7 @@ fn unsupported(cmd: &str) -> ErrorBody {
         format!("unsupported command on ohos shell: {cmd}"),
     )
     .with_detail(
-        "supported: workspace_root, fs_read_dir, fs_read_file, session_create, agent_send, agent_cancel, providers_load, providers_save, history_list, history_save, history_load, history_delete",
+        "supported: workspace_root, fs_read_dir, fs_read_file, session_create, agent_send, agent_cancel, providers_load, providers_save, history_list, history_save, history_load, history_delete, history_rename, history_archive",
     )
 }
 
@@ -2521,6 +2542,55 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(loaded["title"], "修复登录");
+
+        assert_eq!(
+            host.dispatch(
+                "history_rename",
+                &json!({"id": "ohos-1", "title": "重命名后的会话"}).to_string(),
+            )
+            .unwrap(),
+            "null"
+        );
+        let renamed = parse(
+            &host
+                .dispatch("history_load", &json!({"id": "ohos-1"}).to_string())
+                .unwrap(),
+        );
+        assert_eq!(renamed["title"], "重命名后的会话");
+        assert_eq!(renamed["titleLocked"], true);
+
+        assert_eq!(
+            host.dispatch(
+                "history_archive",
+                &json!({"id": "ohos-1", "archived": true}).to_string(),
+            )
+            .unwrap(),
+            "null"
+        );
+        let archived = parse(&host.dispatch("history_list", "{}").unwrap());
+        assert_eq!(archived[0]["title"], "重命名后的会话");
+        assert_eq!(archived[0]["archived"], true);
+
+        // 损坏文件与不存在的 id 走不同错误码。
+        fs::write(host.history_dir.join("broken.json"), "{not json").unwrap();
+        assert_eq!(
+            host.dispatch(
+                "history_rename",
+                &json!({"id": "broken", "title": "标题"}).to_string(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            host.dispatch(
+                "history_archive",
+                &json!({"id": "missing", "archived": true}).to_string(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
 
         assert_eq!(
             host.dispatch("history_delete", &json!({"id": "ohos-1"}).to_string())

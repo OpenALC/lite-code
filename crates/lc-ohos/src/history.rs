@@ -20,6 +20,8 @@ const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 /// 原生历史保留条数；超出后按 `savedAt` 淘汰最老的记录。
 pub(crate) const MAX_ENTRIES: usize = 50;
 const EXCERPT_LIMIT: usize = 4000;
+/// 与桌面 `history_rename` 一致：空白标题与超长标题都算无效输入。
+const MAX_TITLE_CHARS: usize = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +45,13 @@ fn invalid(message: impl Into<String>) -> ErrorBody {
 
 fn io_error(message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(ErrorCode::Io, message)
+}
+
+fn not_found(id: &str) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::NotFound,
+        format!("history entry not found: {id}"),
+    )
 }
 
 fn excerpt_of(agent: &Value) -> String {
@@ -165,15 +174,42 @@ pub(crate) fn load(dir: &Path, id: &str) -> Result<Value, ErrorBody> {
     let path = path_for(dir, id)?;
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ErrorBody::new(
-                ErrorCode::NotFound,
-                format!("history entry not found: {id}"),
-            ));
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(not_found(id)),
         Err(error) => return Err(io_error(format!("读取历史失败：{error}"))),
     };
     serde_json::from_str(&text).map_err(|error| invalid(format!("历史 JSON 无效：{error}")))
+}
+
+/// 新一轮保存会带回头条消息生成的标题；保留用户重命名/归档的元数据，
+/// 与桌面 `history.rs` 的 `merge_metadata` 一致。
+fn merge_metadata(path: &Path, payload: &mut Value) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(existing) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    let Some(old) = existing.as_object() else {
+        return;
+    };
+    let Some(new) = payload.as_object_mut() else {
+        return;
+    };
+    if !new.contains_key("archived")
+        && let Some(archived) = old.get("archived")
+    {
+        new.insert("archived".into(), archived.clone());
+    }
+    if old
+        .get("titleLocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if let Some(title) = old.get("title") {
+            new.insert("title".into(), title.clone());
+        }
+        new.insert("titleLocked".into(), Value::Bool(true));
+    }
 }
 
 fn write_atomic(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), ErrorBody> {
@@ -232,8 +268,10 @@ pub(crate) fn save(dir: &Path, id: &str, payload: &Value) -> Result<(), ErrorBod
         return Err(invalid("历史数据必须是 JSON 对象"));
     }
     let path = path_for(dir, id)?;
-    let bytes =
-        serde_json::to_vec(payload).map_err(|error| invalid(format!("序列化历史失败：{error}")))?;
+    let mut payload = payload.clone();
+    merge_metadata(&path, &mut payload);
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|error| invalid(format!("序列化历史失败：{error}")))?;
     if bytes.len() > MAX_PAYLOAD_BYTES {
         return Err(invalid(format!(
             "历史数据超过 {} MiB",
@@ -252,6 +290,50 @@ pub(crate) fn delete(dir: &Path, id: &str) -> Result<(), ErrorBody> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(format!("删除历史失败：{error}"))),
     }
+}
+
+/// 读取已有记录并原地改写；不存在映射为 `not_found`，损坏/非对象 JSON
+/// 映射为 `invalid_argument`，与桌面命令的错误语义一致。
+fn mutate(
+    dir: &Path,
+    id: &str,
+    change: impl FnOnce(&mut serde_json::Map<String, Value>),
+) -> Result<(), ErrorBody> {
+    let path = path_for(dir, id)?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(not_found(id)),
+        Err(error) => return Err(io_error(format!("读取历史失败：{error}"))),
+    };
+    let mut payload = serde_json::from_str::<Value>(&text)
+        .map_err(|error| invalid(format!("历史 JSON 无效：{error}")))?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| invalid("历史数据不是 JSON 对象"))?;
+    change(object);
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|error| invalid(format!("序列化历史失败：{error}")))?;
+    write_atomic(dir, &path, &bytes)
+}
+
+/// 用户重命名后锁定标题：后续 `history_save` 会保留该标题，直到再次重命名。
+pub(crate) fn rename(dir: &Path, id: &str, title: &str) -> Result<(), ErrorBody> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > MAX_TITLE_CHARS {
+        return Err(invalid(format!(
+            "历史标题不能为空且不超过 {MAX_TITLE_CHARS} 字"
+        )));
+    }
+    mutate(dir, id, |object| {
+        object.insert("title".into(), Value::String(title.into()));
+        object.insert("titleLocked".into(), Value::Bool(true));
+    })
+}
+
+pub(crate) fn archive(dir: &Path, id: &str, archived: bool) -> Result<(), ErrorBody> {
+    mutate(dir, id, |object| {
+        object.insert("archived".into(), Value::Bool(archived));
+    })
 }
 
 /// 已落盘历史里最大的 `ohos-<n>` 会话序号。进程重启后 `next_session`
@@ -367,6 +449,100 @@ mod tests {
         delete(&dir, "ohos-9").unwrap();
         let error = load(&dir, "ohos-9").unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_and_archive_roundtrip() {
+        let dir = temp_dir("rename-archive");
+        save(&dir, "ohos-1", &payload("旧标题", 10)).unwrap();
+
+        rename(&dir, "ohos-1", "  新标题  ").unwrap();
+        let loaded = load(&dir, "ohos-1").unwrap();
+        assert_eq!(loaded["title"], "新标题");
+        assert_eq!(loaded["titleLocked"], true);
+        assert_eq!(list(&dir).unwrap()[0].title, "新标题");
+
+        archive(&dir, "ohos-1", true).unwrap();
+        assert_eq!(load(&dir, "ohos-1").unwrap()["archived"], true);
+        assert!(list(&dir).unwrap()[0].archived);
+
+        // 后续轮次保存会带回自动标题；已锁定标题和归档状态必须保留。
+        save(&dir, "ohos-1", &payload("自动生成的标题", 11)).unwrap();
+        let loaded = load(&dir, "ohos-1").unwrap();
+        assert_eq!(loaded["title"], "新标题");
+        assert_eq!(loaded["titleLocked"], true);
+        assert_eq!(loaded["archived"], true);
+        assert_eq!(loaded["savedAt"], 11);
+
+        archive(&dir, "ohos-1", false).unwrap();
+        assert_eq!(load(&dir, "ohos-1").unwrap()["archived"], false);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_and_archive_missing_entry_is_not_found() {
+        let dir = temp_dir("rename-missing");
+        assert_eq!(
+            rename(&dir, "ohos-9", "标题").unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            archive(&dir, "ohos-9", true).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_and_archive_corrupt_entry_is_invalid_argument() {
+        let dir = temp_dir("rename-corrupt");
+        fs::write(dir.join("ohos-1.json"), "{not json").unwrap();
+        assert_eq!(
+            rename(&dir, "ohos-1", "标题").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            archive(&dir, "ohos-1", true).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+
+        fs::write(dir.join("ohos-2.json"), "[]").unwrap();
+        assert_eq!(
+            rename(&dir, "ohos-2", "标题").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            archive(&dir, "ohos-2", true).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_validates_title_and_id() {
+        let dir = temp_dir("rename-title");
+        save(&dir, "ohos-1", &payload("旧标题", 1)).unwrap();
+        assert_eq!(
+            rename(&dir, "ohos-1", "   ").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            rename(&dir, "ohos-1", &"长".repeat(MAX_TITLE_CHARS + 1))
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            rename(&dir, "../escape", "标题").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            archive(&dir, "../escape", true).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        // 无效输入不得改动已落盘记录。
+        assert_eq!(load(&dir, "ohos-1").unwrap()["title"], "旧标题");
         let _ = fs::remove_dir_all(&dir);
     }
 

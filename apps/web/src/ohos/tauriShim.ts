@@ -25,6 +25,8 @@ const FORWARDED = new Set([
   'history_save',
   'history_load',
   'history_delete',
+  'history_rename',
+  'history_archive',
 ])
 
 /** 原生宿主实现的 history 命令；其余 history_* 仍走 localStorage。 */
@@ -33,6 +35,8 @@ const NATIVE_HISTORY = new Set([
   'history_save',
   'history_load',
   'history_delete',
+  'history_rename',
+  'history_archive',
 ])
 
 interface ErrorBodyLike {
@@ -149,6 +153,112 @@ function writeHistory(store: Record<string, unknown>): void {
   }
 }
 
+// ==== localStorage → 原生历史的一次性迁移 ====
+//
+// 旧版 shim 把历史存在 `lite-code.ohos.history`。原生宿主可用后逐条
+// `history_save`，全部成功才删除 key；任一条失败（含旧宿主 not_implemented）
+// 都保留原数据，下次 history_* 调用重试。重复迁移按 id 覆盖，不会产生重复记录。
+
+let localHistoryMigrated = false
+let localHistoryMigration: Promise<void> | null = null
+
+function migrationLog(message: string): void {
+  console.info(`[ohos-history] ${message}`)
+}
+
+function errorText(error: unknown): string {
+  const body = asErrorBody(error)
+  return `${body.code}: ${body.message}`
+}
+
+function historyStorage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+async function migrateLocalHistory(native: LcNativeBridge): Promise<void> {
+  const storage = historyStorage()
+  if (!storage) {
+    migrationLog('localStorage 不可用，跳过迁移')
+    return
+  }
+  let raw: string | null
+  try {
+    raw = storage.getItem(HISTORY_KEY)
+  } catch (error) {
+    migrationLog(`读取 localStorage 失败（${errorText(error)}），下次重试`)
+    return
+  }
+  if (raw === null) {
+    localHistoryMigrated = true
+    return
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw) as unknown
+  } catch (error) {
+    migrationLog(`localStorage 历史 JSON 无法解析（${String(error)}），保留原数据待下次重试`)
+    return
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    migrationLog('localStorage 历史不是对象，保留原数据待下次重试')
+    return
+  }
+
+  const entries = Object.entries(parsed as Record<string, unknown>)
+  if (entries.length === 0) {
+    try {
+      storage.removeItem(HISTORY_KEY)
+    } catch (error) {
+      migrationLog(`清理空历史 key 失败（${errorText(error)}），下次重试`)
+      return
+    }
+    localHistoryMigrated = true
+    migrationLog('localStorage 历史为空，已清理占位 key')
+    return
+  }
+
+  migrationLog(`检测到 ${entries.length} 条 localStorage 历史，开始迁移到原生存储`)
+  for (const [id, payload] of entries) {
+    try {
+      await native.invoke('history_save', JSON.stringify({ id, payload }))
+    } catch (error) {
+      migrationLog(`迁移 ${id} 失败（${errorText(error)}），保留 localStorage 待下次重试`)
+      return
+    }
+  }
+
+  try {
+    storage.removeItem(HISTORY_KEY)
+  } catch (error) {
+    migrationLog(
+      `迁移完成但清理 localStorage 失败（${errorText(error)}），下次重试将按 id 覆盖`,
+    )
+    return
+  }
+  localHistoryMigrated = true
+  migrationLog(`已迁移 ${entries.length} 条历史并清除 ${HISTORY_KEY}`)
+}
+
+/** 并发调用共享同一个迁移 Promise；失败后置空，下一次命令重试。 */
+function ensureLocalHistoryMigrated(native: LcNativeBridge): Promise<void> {
+  if (localHistoryMigrated) return Promise.resolve()
+  if (!localHistoryMigration) {
+    localHistoryMigration = migrateLocalHistory(native)
+      .catch(error => {
+        migrationLog(`迁移异常（${errorText(error)}），保留 localStorage 待下次重试`)
+      })
+      .finally(() => {
+        localHistoryMigration = null
+      })
+  }
+  return localHistoryMigration
+}
+
 function excerptOf(agent: Record<string, unknown>): string {
   const messages = Array.isArray(agent.messages) ? agent.messages : []
   const parts: string[] = []
@@ -201,6 +311,9 @@ function historyLocalInvoke(cmd: string, args: Record<string, unknown>): unknown
       delete store[String(args.id ?? '')]
       writeHistory(store)
       return null
+    // 仅桌面 App.vue 启动时会调用；鸿蒙路径（OhosApp → AgentPanel →
+    // AgentSessions）没有调用点，因此这里保持 localStorage 实现，不新增原生命令，
+    // 也不把该 key 纳入一次性迁移的清理范围。
     case 'history_migrate_workspace': {
       const workspace = String(args.workspace ?? '')
       let moved = 0
@@ -217,7 +330,11 @@ function historyLocalInvoke(cmd: string, args: Record<string, unknown>): unknown
     case 'history_rename': {
       const value = store[String(args.id ?? '')]
       if (!value || typeof value !== 'object') throw errorBody('not_found', '会话不存在')
-      ;(value as Record<string, unknown>).title = String(args.title ?? '')
+      const title = String(args.title ?? '').trim()
+      if (!title || Array.from(title).length > 120) {
+        throw errorBody('invalid_argument', '会话标题不能为空且不超过 120 字')
+      }
+      ;(value as Record<string, unknown>).title = title
       writeHistory(store)
       return null
     }
@@ -239,13 +356,17 @@ async function historyInvoke<T>(
   args: Record<string, unknown>,
 ): Promise<T> {
   const native: LcNativeBridge | undefined = window.__lcNative
-  if (NATIVE_HISTORY.has(cmd) && native && typeof native.invoke === 'function') {
-    try {
-      const raw = await native.invoke(cmd, JSON.stringify(args))
-      return JSON.parse(raw) as T
-    } catch (error) {
-      const body = asErrorBody(error)
-      if (body.code !== 'not_implemented') throw body
+  if (native && typeof native.invoke === 'function') {
+    // 先完成旧 localStorage 数据的导入，首次 history_list 才能看到迁移结果。
+    await ensureLocalHistoryMigrated(native)
+    if (NATIVE_HISTORY.has(cmd)) {
+      try {
+        const raw = await native.invoke(cmd, JSON.stringify(args))
+        return JSON.parse(raw) as T
+      } catch (error) {
+        const body = asErrorBody(error)
+        if (body.code !== 'not_implemented') throw body
+      }
     }
   }
   return historyLocalInvoke(cmd, args) as T
@@ -269,6 +390,8 @@ async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promi
   if (!native || typeof native.invoke !== 'function') {
     throw errorBody('internal', 'window.__lcNative 不可用：NativeBridge 未注入')
   }
+  // 不阻塞普通命令；历史命令会 await 同一个迁移 Promise。
+  void ensureLocalHistoryMigrated(native)
   try {
     const raw = await native.invoke(command, JSON.stringify(args))
     return JSON.parse(raw) as T
@@ -283,6 +406,7 @@ const target = window as unknown as {
   __TAURI_INTERNALS__?: unknown
   __TAURI_EVENT_PLUGIN_INTERNALS__?: unknown
   __LC_OHOS__?: boolean
+  __lcNative?: LcNativeBridge
   __lcOhosEmit?: (envelopeJson: string) => void
 }
 
@@ -290,3 +414,8 @@ target.__LC_OHOS__ = true
 target.__TAURI_INTERNALS__ = { invoke, transformCallback }
 target.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: removeListener }
 target.__lcOhosEmit = emitEnvelope
+
+// ArkTS 在页面脚本执行前注入 proxy；启动即迁移，不等用户第一次打开历史面板。
+if (target.__lcNative && typeof target.__lcNative.invoke === 'function') {
+  void ensureLocalHistoryMigrated(target.__lcNative)
+}
