@@ -39,6 +39,18 @@ crates/lc-ohos
    （EventSink/Seq/emit_envelope）落地，lc-ohos 已切换；桌面侧 EventSink
    trait 与 ohos 的 fn-pointer 形状不同，统一推迟到 M3（随 TurnRunner 一起做）。
 2. **M2 SessionRegistry**：lc-ohos 的 session map/回收逻辑泛型化（limit 可配、running 保护、alive 迟到抑制）进 lc-host；desktop 的 `AgentSessions` 薄化为调用方（保留落盘与路由）。风险点：桌面会话持久化格式不变。
+
+   **M2 实施要点（preview.64 后补充）**：
+   - 移动单元（lc-ohos → lc-host，签名不变）：`SessionHandle`（info/cancel/running/alive
+     四原语 + `info_snapshot`）、`sessions map` 与 `reclaim_terminated_sessions`、
+     `begin_turn`（锁内查表 + CAS running）、`next_session` 序号、`MAX_SESSIONS`。
+   - lc-host 新类型命名：`Sessions`（map + limit + ordinal）；`SessionHandle` 保持
+     原名；`is_reclaimable = !running`（cancel 残留语义已在注释中固化，勿引入）。
+   - 留在 lc-ohos 的部分：`TurnEmitter`（依赖 SessionInfo 写回与 Plan 模式强约束）、
+     `RunningGuard`、`create_session` 的 SessionInfo 构造（mode 强转 Plan）。
+   - 验收：lc-ohos 36 项测试不改语义全过 + 新增 lc-host Sessions 单测
+     （回收序/running 保留/alive 抑制）；模拟器跑切片 H 子集 b/c/d/f。
+   - 明确不做：desktop `AgentSessions` 切换（M3 随 TurnRunner 一起，避免两次回归）。
 3. **M3 TurnRunner**：抽 `TurnRunner::run_turn(factory, sink, cancel)`；lc-ohos worker 闭包与 desktop `spawn_worker` 主体改为装配 factory 后调 runner。审批：`ApprovalHook` trait——桌面注入队列实现，OHOS 注入「plan 直接放行 + NeedsApproval 时发 approval_required 后 done」。
 4. **M4 收尾**：`spawn_worker` 仅剩桌面装配参数；lc-ohos `RealAgentFactory`/stub/预探成为 factory 组合。删除两端死代码。
 
