@@ -328,8 +328,9 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - Ctrl+W 关闭当前编辑器，复用标签栏 dirty 二次确认；文件菜单关闭标签同步修复。
 - Ctrl+Tab / Ctrl+Shift+Tab 正向/反向循环切换，少于两个标签无操作。
 - 设置页新增「快捷键」卡片：10 组键位，随语言包切换。
+- 状态栏接入 Git：分支/更改数/ahead-behind，启动与切换工作区自动刷新；无仓库显示「无仓库」。
 - 验证：Web 390（26 文件，tabs 新增 2 项）、Rust 607；真机循环切换、关闭/重开、
-  快捷键卡片渲染通过。
+  快捷键卡片、状态栏 `main/4 个更改/↑3` 通过。
 - 发布：`v0.6.1-preview.27` 发布中。
 
 ## preview.26：标签交互与代码块复制
