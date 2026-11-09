@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.41 发布提交（见 `git log`）；版本 `0.6.1-preview.41`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.42 发布提交（见 `git log`）；版本 `0.6.1-preview.42`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39` 已发布；`preview.40` 发布中；`preview.41` 发布中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39` 已发布；`preview.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.41` 发布中；`preview.42` 发布中。
 
 ## 当前位置一览
 
@@ -72,14 +72,14 @@
 | P6 审计修复 | ✅ Critical：MCP 项目配置默认不执行、SQL 无 WHERE 绕过、批量工具审批绕过；High：VCS 写保护、取消、记忆路径、发布校验、DB 审批按连接隔离、子进程密钥清理 |
 | P6 审计 Medium | ✅ CREATE TRIGGER DML 检查、LIMIT 识别、bridge 流式取样、不可信边界转义、task key 稳定化、写文件审批内容摘要 |
 | P6 依赖审计 | ✅ `dompurify` override 3.4.17；`pnpm audit --prod` 无已知漏洞 |
-| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39` 已发布；`preview.40` 发布中；`preview.41` 发布中 |
+| P6 发布 | ✅ `preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39` 已发布；`.40` 跳过（内容并入 .41）；`.41` 发布中；`.42` 发布中 |
 | UI 重构 | ✅ VS Code 式活动栏/侧栏/编辑器/右侧功能栏；自定义标题栏、亮暗主题、缩放、设置页、快速打开、原生文件夹选择、打开编辑器列表、文件树拖拽与右键、编辑器中文右键 |
 | 工作区搜索 | ✅ `fs_search`（字面量/正则/大小写、gitignore、2MiB/二进制跳过、500 行上限；异步不阻塞 UI）+ 搜索侧栏 + 命中跳转 |
 | 设置页 | ✅ 编辑器区独立页签：主题/语言/缩放/字号/Tab/换行，实时应用并持久化；版本号由 Vite 注入 |
 | DB 驱动 | ✅ PostgreSQL（pg）/ MySQL（mysql2）/ SQL Server（mssql）打入 2.3MiB 单文件 bundle；SQLite 保留 |
 | P6 其余 | ⏳ B 类（soak、第三方审计、签名、Win11 验收）由维护者关闭；更新器 `signed:false` |
 | Runtime 设置页 | ✅ Ready/NeedManual、候选失败原因、手动路径、便携版下载 |
-| main CI | ✅ preview.23–40 CI 全绿；preview.41 本地门禁全绿，推送后跟踪 CI |
+| main CI | ✅ preview.23–41 CI 全绿；preview.42 本地门禁全绿，推送后跟踪 CI |
 | UI 收尾 | ✅ `81526e3`：截断文案按实际条数展示、快速打开 Tab 失焦关闭；已并入 preview.8 |
 | 供应商管理 | ✅ 左侧活动栏「供应商」页签：Base URL/API Key/模型列表/默认与 Subagent 模型；密钥脱敏、tmp 0600、备份脱敏 |
 | Agent 模型/思考 | ✅ 会话前选择模型与思考挡位，`session_create` 透传；无会话显示上下文预算与新会话按钮 |
@@ -323,20 +323,27 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
 
+## preview.42：文件树 type-ahead
+
+- 文件树聚焦后直接输入字母/数字，600ms 内累积前缀，跳到下一个匹配项并循环。
+- 大小写不敏感、前缀匹配；空格与修饰键不参与；切换工作区/刷新/卸载清空缓冲。
+- 验证：Web 405（28 文件）、Rust 608；真机 `.claude` 输入 `app` 跳到 `tangshan/app`。
+- 发布：`v0.6.1-preview.42` 发布中。
+
 ## preview.41：面包屑导航
 
 - 路径段点击弹固定菜单：目录列出自身内容，文件列出父目录；目录下钻、文件打开/激活标签。
 - 点击外部/Escape/滚动/缩放关闭；最多显示末 5 段，悬停显示完整路径。
 - 验证：Web 405（28 文件）、Rust 608；真机 lite-code 面包屑弹出 dist 内容、
   下钻 assets 列出产物、Escape 关闭，随后切回 tangshan。
-- 发布：`v0.6.1-preview.41` 发布中。
+- 发布：`v0.6.1-preview.41` 发布中（.40 内容并入本版）。
 
 ## preview.40：Problems 严重级筛选
 
 - 问题面板新增「全部/错误/警告」筛选与数量；列表按筛选展示，页签/状态栏仍为总数。
 - 无匹配时显示「当前筛选没有问题」；新增 `filterProblems` 纯函数与 1 项测试。
 - 验证：Web 405（28 文件）、Rust 608；真机 4 条诊断显示 4/2/1，列表 4→2→1→4 通过。
-- 发布：`v0.6.1-preview.40` 发布中。
+- 发布：跳过。linuxdeploy 连续失败，内容并入 `v0.6.1-preview.41`。
 
 ## preview.39：Ctrl+P 空查询入口
 

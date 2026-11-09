@@ -90,6 +90,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', closeMenu)
   window.removeEventListener('scroll', closeMenu, true)
+  resetTypeahead()
 })
 
 watch(
@@ -103,6 +104,7 @@ watch(
     fileError.value = null
     focusedPath.value = null
     rowEls.clear()
+    resetTypeahead()
     void loadRoot()
   },
 )
@@ -120,6 +122,7 @@ watch(
     fileError.value = null
     focusedPath.value = null
     rowEls.clear()
+    resetTypeahead()
     state.value = createTreeState(props.root, !isTauri())
     void loadRoot()
   },
@@ -141,6 +144,14 @@ async function loadLayer(path: string): Promise<void> {
 
 const focusedPath = ref<string | null>(null)
 const rowEls = new Map<string, HTMLButtonElement>()
+let typeahead = ''
+let typeaheadTimer: ReturnType<typeof setTimeout> | null = null
+
+function resetTypeahead(): void {
+  typeahead = ''
+  if (typeaheadTimer !== null) clearTimeout(typeaheadTimer)
+  typeaheadTimer = null
+}
 
 function setRowEl(path: string, el: unknown): void {
   if (el instanceof HTMLButtonElement) rowEls.set(path, el)
@@ -161,6 +172,26 @@ function onRowKeydown(event: KeyboardEvent, row: (typeof rows.value)[number]): v
   if (row.kind !== 'entry') return
   const list = entryRows()
   const index = list.findIndex(item => item.entry.path === row.entry.path)
+  if (
+    event.key.length === 1 &&
+    event.key !== ' ' &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    typeahead += event.key.toLocaleLowerCase()
+    if (typeaheadTimer !== null) clearTimeout(typeaheadTimer)
+    typeaheadTimer = setTimeout(resetTypeahead, 600)
+    for (let offset = 1; offset <= list.length; offset += 1) {
+      const candidate = list[(index + offset) % list.length]
+      if (candidate?.entry.name.toLocaleLowerCase().startsWith(typeahead)) {
+        focusRow(candidate.entry.path)
+        break
+      }
+    }
+    return
+  }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
     const next = list[index + (event.key === 'ArrowDown' ? 1 : -1)]
