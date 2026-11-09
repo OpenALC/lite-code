@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.58] - 2026-11-10
+
+- demo/index.html 与当前真实 UI 高保真同步（+2183/−1044，里程碑 UI demo 产出物）；CI web job 新增 build:ohos 与无-Monaco 断言
+
 ## [0.6.1-preview.57] - 2026-11-09
 
 - 鸿蒙供应商编辑入口：复用桌面 ProvidersPanel（经 tauriShim 白名单打通 providers_load/save），OhosApp 顶栏按钮 + 全屏 sheet；模拟器端到端：改 Base URL/contextK → 保存 → 重启持久 → providers:changed 刷新对话页 0/120k
