@@ -563,10 +563,30 @@ const quickResults = computed<QuickItem[]>(() => {
       ...recentTabs,
       ...fallbackTabs.filter(tab => !seenFiles.has(tab.id)),
     ]
-      .slice(0, 6)
+      .slice(0, 4)
       .map(quickTabItem)
-    const cmds = recentCommandItems().slice(0, 4)
-    return [...files, ...cmds].slice(0, 10)
+    const workspaceItems: QuickItem[] = workspaces.value.slice(0, 2).map(item => ({
+      id: `ws:${item.root}`,
+      label: item.name,
+      detail: item.root,
+      action: async () => {
+        if (await activateWorkspace(item.root)) setAppMode('agent')
+      },
+    }))
+    const chatItems: QuickItem[] = quickChats.value
+      .filter(item => !item.archived)
+      .slice(0, 2)
+      .map(item => {
+        const workspace = workspaces.value.find(entry => samePath(entry.root, item.workspace))
+        return {
+          id: `chat:${item.id}`,
+          label: item.title,
+          detail: `${(workspace?.name ?? item.workspace) || t('agent.noSession')} · ${t('agent.history')}`,
+          action: () => openQuickChat(item),
+        }
+      })
+    const cmds = recentCommandItems().slice(0, 2)
+    return [...workspaceItems, ...chatItems, ...files, ...cmds].slice(0, 10)
   }
 
   const nav = matchQuickNav(quickChats.value, workspaces.value, queryText, 4)
