@@ -4,6 +4,7 @@ import type { LspDiagnostic } from './bridge'
 import {
   clearDiagnostics,
   diagnosticsFor,
+  flattenDiagnostics,
   setFileDiagnostics,
   subscribeDiagnostics,
 } from './lspDiagnostics'
@@ -40,6 +41,30 @@ describe('lspDiagnostics', () => {
     expect(diagnosticsFor('a.ts').map(item => item.message).sort()).toEqual(['a', 'b'])
     setFileDiagnostics('a.ts', 'server-a', [])
     expect(diagnosticsFor('a.ts').map(item => item.message)).toEqual(['b'])
+  })
+
+  it('flattens problems by path/line and keeps server info', () => {
+    const second = { ...diagnostic('later'), line: 4 }
+    setFileDiagnostics('b.ts', 'lsp', [diagnostic('b1')])
+    setFileDiagnostics('a.ts', 'server-a', [{ ...diagnostic('a2'), line: 9 }, diagnostic('a1')])
+    setFileDiagnostics('a.ts', 'server-b', [second])
+
+    const items = flattenDiagnostics({
+      'a.ts': { 'server-a': [{ ...diagnostic('a2'), line: 9 }, diagnostic('a1')], 'server-b': [second] },
+      'b.ts': { lsp: [diagnostic('b1')] },
+    })
+
+    expect(items.map(item => `${item.path}:${item.diagnostic.line}:${item.diagnostic.message}`)).toEqual([
+      'a.ts:1:a1',
+      'a.ts:4:later',
+      'a.ts:9:a2',
+      'b.ts:1:b1',
+    ])
+    expect(items.find(item => item.diagnostic.message === 'later')?.serverId).toBe('server-b')
+  })
+
+  it('flattening empty state returns []', () => {
+    expect(flattenDiagnostics({})).toEqual([])
   })
 
   it('subscribers receive aggregated state and stop after unsubscribe', () => {

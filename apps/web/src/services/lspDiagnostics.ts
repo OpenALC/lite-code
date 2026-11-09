@@ -29,6 +29,30 @@ export function diagnosticsFor(path: string | null | undefined): LspDiagnostic[]
   return Object.values(store.get()[path] ?? {}).flat()
 }
 
+export interface ProblemItem {
+  path: string
+  serverId: string
+  diagnostic: LspDiagnostic
+}
+
+/** 把按文件/服务器聚合的诊断摊平成问题面板列表，按路径、行、列排序。 */
+export function flattenDiagnostics(state: DiagnosticsByPath): ProblemItem[] {
+  const items: ProblemItem[] = []
+  for (const [path, servers] of Object.entries(state)) {
+    for (const [serverId, diagnostics] of Object.entries(servers)) {
+      for (const diagnostic of diagnostics) {
+        items.push({ path, serverId, diagnostic })
+      }
+    }
+  }
+  return items.sort(
+    (a, b) =>
+      a.path.localeCompare(b.path) ||
+      a.diagnostic.line - b.diagnostic.line ||
+      a.diagnostic.column - b.diagnostic.column,
+  )
+}
+
 export function clearDiagnostics(): void {
   store.set({})
 }

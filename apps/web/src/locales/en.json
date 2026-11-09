@@ -464,6 +464,7 @@
     "terminal": "Terminal",
     "output": "Output",
     "problems": "Problems",
+    "noProblems": "No problems detected",
     "collapse": "Collapse bottom panel",
     "show": "Show bottom panel"
   },

@@ -464,6 +464,7 @@
     "terminal": "终端",
     "output": "输出",
     "problems": "问题",
+    "noProblems": "没有发现问题",
     "collapse": "折叠底部面板",
     "show": "显示底部面板"
   },

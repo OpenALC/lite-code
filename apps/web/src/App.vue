@@ -56,6 +56,7 @@ import {
   onLspDiagnostics,
   openWorkspace,
   pickWorkspace,
+  readFile,
   resolveApproval,
   sessionCreate,
   taskApply,
@@ -75,7 +76,14 @@ import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { createTaskController } from './services/taskStore'
 import { extensionsExecuteCommand, extensionsList } from './services/extensions'
 import { subscribeAgentContext } from './services/agentContext'
-import { setFileDiagnostics } from './services/lspDiagnostics'
+import { requestReveal } from './services/editorReveal'
+import { resolveEditorStrategy } from './services/largeFile'
+import {
+  flattenDiagnostics,
+  setFileDiagnostics,
+  subscribeDiagnostics,
+  type DiagnosticsByPath,
+} from './services/lspDiagnostics'
 import { matchQuickNav } from './services/quickPalette'
 import {
   loadQuickRecent,
@@ -209,6 +217,13 @@ const sidebarWidth = computed(() => layout.value.sidebarWidth)
 const rightWidth = computed(() => layout.value.agentWidth)
 const bottomHeight = computed(() => layout.value.bottomHeight)
 const bottomVisible = ref(!layout.value.bottomCollapsed)
+type BottomTab = 'terminal' | 'output' | 'problems'
+const bottomTab = ref<BottomTab>('terminal')
+const diagnosticsByPath = ref<DiagnosticsByPath>({})
+const unsubscribeDiagnostics = subscribeDiagnostics(state => {
+  diagnosticsByPath.value = state
+})
+const problemItems = computed(() => flattenDiagnostics(diagnosticsByPath.value))
 
 type ResizeTarget = 'sidebar' | 'right' | 'bottom'
 function startResize(target: ResizeTarget, event: PointerEvent): void {
@@ -367,6 +382,40 @@ function activateEditor(id: string): void {
   const tab = tabsStore.get().tabs.find(item => item.id === id)
   if (tab?.path) rememberQuickFile(id)
   sidebarView.value = 'explorer'
+}
+
+async function openProblem(path: string, line: number, column: number): Promise<void> {
+  const existing = tabsStore.get().tabs.find(tab => tab.path === path)
+  if (existing) {
+    activateTab(existing.id)
+    requestReveal(existing.id, line, column)
+    return
+  }
+  const res = await readFile(projectRoot.value, path)
+  if (!res.ok) return
+  openTab({
+    id: path,
+    title: path.replace(/\\/g, '/').split('/').pop() ?? path,
+    path,
+    content: res.data.text,
+    strategy: resolveEditorStrategy(res.data.text.length),
+  })
+  requestReveal(path, line, column)
+}
+
+function problemPath(path: string): string {
+  const root = projectRoot.value.replace(/\\/g, '/').replace(/\/$/, '')
+  const normalized = path.replace(/\\/g, '/')
+  return root && normalized.startsWith(`${root}/`)
+    ? normalized.slice(root.length + 1)
+    : normalized
+}
+
+function severityClass(severity: number): string {
+  if (severity === 1) return 'error'
+  if (severity === 2) return 'warning'
+  if (severity === 3) return 'info'
+  return 'hint'
 }
 
 // 顶部快速打开 / 命令面板
@@ -815,6 +864,7 @@ onBeforeUnmount(() => {
   unsubAgentContext()
   unsubTabs()
   unsubGit()
+  unsubscribeDiagnostics()
   historyRecorder.dispose()
   agentSession.dispose()
   taskSession.dispose()
@@ -1252,9 +1302,34 @@ onBeforeUnmount(() => {
           :style="{ height: `${bottomHeight}px` }"
         >
           <div class="bottom-tabs">
-            <span class="bottom-tab active">{{ t('bottom.terminal') }}</span>
-            <span class="bottom-tab">{{ t('bottom.output') }}</span>
-            <span class="bottom-tab">{{ t('bottom.problems') }}</span>
+            <button
+              type="button"
+              class="bottom-tab"
+              :class="{ active: bottomTab === 'terminal' }"
+              @click="bottomTab = 'terminal'"
+            >
+              {{ t('bottom.terminal') }}
+            </button>
+            <button
+              type="button"
+              class="bottom-tab"
+              :class="{ active: bottomTab === 'output' }"
+              @click="bottomTab = 'output'"
+            >
+              {{ t('bottom.output') }}
+            </button>
+            <button
+              type="button"
+              class="bottom-tab"
+              :class="{ active: bottomTab === 'problems' }"
+              @click="bottomTab = 'problems'"
+            >
+              {{ t('bottom.problems') }}
+              <span
+                v-if="problemItems.length > 0"
+                class="bottom-count"
+              >{{ problemItems.length }}</span>
+            </button>
             <button
               type="button"
               class="icon-btn bottom-close"
@@ -1263,7 +1338,37 @@ onBeforeUnmount(() => {
               ×
             </button>
           </div>
-          <div class="bottom-body">
+          <div
+            v-if="bottomTab === 'problems'"
+            class="problems"
+          >
+            <div
+              v-if="problemItems.length === 0"
+              class="problems-empty"
+            >
+              {{ t('bottom.noProblems') }}
+            </div>
+            <button
+              v-for="(item, index) in problemItems"
+              :key="`${item.path}-${item.serverId}-${item.diagnostic.line}-${item.diagnostic.column}-${index}`"
+              type="button"
+              class="problem-row"
+              @click="openProblem(item.path, item.diagnostic.line, item.diagnostic.column)"
+            >
+              <span
+                class="problem-sev"
+                :class="severityClass(item.diagnostic.severity)"
+              />
+              <span class="problem-msg">{{ item.diagnostic.message }}</span>
+              <span class="problem-path">
+                {{ problemPath(item.path) }}:{{ item.diagnostic.line }}:{{ item.diagnostic.column }}
+              </span>
+            </button>
+          </div>
+          <div
+            v-else
+            class="bottom-body"
+          >
             —
           </div>
         </section>
@@ -1445,6 +1550,15 @@ onBeforeUnmount(() => {
         :controller="taskSession"
         @reveal="selectRight('workbench')"
       />
+      <button
+        v-if="problemItems.length > 0"
+        type="button"
+        class="status-item"
+        :title="t('bottom.problems')"
+        @click="bottomTab = 'problems'; bottomVisible = true"
+      >
+        ⚠ {{ problemItems.length }}
+      </button>
       <span class="status-space" />
       <div class="zoom-control">
         <button
@@ -2194,11 +2308,98 @@ onBeforeUnmount(() => {
 }
 
 .bottom-tab {
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--fg-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.bottom-tab:hover {
+  color: var(--fg);
 }
 
 .bottom-tab.active {
   color: var(--accent);
+}
+
+.bottom-count {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.problems {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.problems-empty {
+  padding: 8px 12px;
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.problem-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 12px;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font-size: 12px;
+  text-align: left;
+}
+
+.problem-row:hover {
+  background: var(--panel-3);
+}
+
+.problem-sev {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.problem-sev.error {
+  background: var(--red);
+}
+
+.problem-sev.warning {
+  background: var(--yellow);
+}
+
+.problem-sev.info {
+  background: var(--accent);
+}
+
+.problem-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.problem-path {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bottom-close {
