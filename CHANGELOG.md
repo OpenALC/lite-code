@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.56] - 2026-11-09
+
+- 鸿蒙会话回收（上限 32、running 绝不回收、alive 标记让迟到事件 no-op）与 DNS 解析 800ms 预算化（分离线程 + recv_timeout，慢 DNS 直接回退 stub）；lc-ohos 23 项单测，workspace 631 全绿，HAP 27.15MiB
+
 ## [0.6.1-preview.55] - 2026-11-09
 
 - 鸿蒙离线回退提速：provider baseUrl 800ms TCP 预探（`probe_target`/`unreachable_target`），不可达直接 stub 回退，~5.5s → ~1.3s；lc-ohos 19 项单测（含耗时断言），本机黑盒 2.92s → 1.33s

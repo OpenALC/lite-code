@@ -3,11 +3,12 @@
 //! 首版命令面（docs/plans/ohos-shell.md §5.4）：
 //! - `workspace_root` / `fs_read_dir` / `fs_read_file` 复用 lc-core 的路径校验与按层读取；
 //! - `session_create` 强制 `plan` 模式（只读 + 对话），记录模型/思考挡位；
+//!   会话表默认上限 32，超出后按创建顺序回收已终止会话（running 的绝不回收）；
 //! - `agent_send` 首次发送时按 `providers_file` 构造 lc-core `AgentLoop`：plan 策略
 //!   + `read_file`/`glob`/`grep` 只读工具，事件逐条映射成契约 `EventEnvelope`；
-//!     构造前先用 800ms TCP 预探 provider 的 host:port，不通直接回退 stub，
-//!     不再等 ureq 的 5s 连接超时；provider 缺失或流传输失败时回退到 20 个
-//!     `[stub]` delta（`done.stop_reason = "stub"`）；
+//!     构造前先用 800ms 预算预探 provider 的 host:port（DNS 解析与 TCP 连接共用），
+//!     不通直接回退 stub，不再等 ureq 的 5s 连接超时；provider 缺失或流传输失败时
+//!     回退到 20 个 `[stub]` delta（`done.stop_reason = "stub"`）；
 //! - `agent_cancel` 置位 `AgentLoop` 共享的取消令牌；
 //! - `providers_load` / `providers_save` 读写 `HostConfig.providers_file`，形状与桌面
 //!   `providers.rs` 的 `ProvidersView` 一致（密钥只回传 `hasApiKey`/末四位提示）；
@@ -15,10 +16,11 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -49,8 +51,14 @@ const STUB_DELAY: Duration = Duration::from_millis(25);
 const STUB_STOP_REASON: &str = "stub";
 const CANCELLED_STOP_REASON: &str = "cancelled";
 
+/// 会话表默认上限。超出后按创建顺序回收已终止会话；`running`（含已请求取消、
+/// worker 尚未退出的会话）绝不回收。单测/嵌入式可用
+/// [`Host::init_with_factory_and_limit`] 覆盖。
+const MAX_SESSIONS: usize = 32;
+
 /// 构建 `AgentLoop` 前的 TCP 预探上限。ureq 的连接超时是 5s；离线时先用
-/// 800ms 判断 host:port 是否可达，避免首条消息停 5s 才回退 stub。
+/// 800ms（DNS 解析 + TCP 连接）判断 host:port 是否可达，避免首条消息停 5s
+/// 才回退 stub。
 const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 
 const DEFAULT_INSTRUCTIONS: &str =
@@ -92,6 +100,7 @@ pub struct Host {
     providers_file: PathBuf,
     factory: Arc<dyn AgentFactory>,
     sessions: Mutex<HashMap<String, SessionHandle>>,
+    max_sessions: usize,
     sink: Mutex<Option<EventSink>>,
     seq: Arc<AtomicU64>,
     next_session: AtomicU64,
@@ -104,17 +113,28 @@ struct SessionHandle {
     agent: Arc<Mutex<Option<AgentLoop>>>,
     cancel: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
+    /// 从会话表回收时置 `false`；所有 clone 共享，worker 侧迟到事件据此变成 no-op。
+    alive: Arc<AtomicBool>,
+    /// 创建序号（来自 `next_session`），回收时按此从老到新。
+    created: u64,
     model: Option<String>,
     thinking: Option<String>,
 }
 
 impl SessionHandle {
-    fn new(info: SessionInfo, model: Option<String>, thinking: Option<String>) -> Self {
+    fn new(
+        info: SessionInfo,
+        created: u64,
+        model: Option<String>,
+        thinking: Option<String>,
+    ) -> Self {
         Self {
             info: Arc::new(Mutex::new(info)),
             agent: Arc::new(Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
+            alive: Arc::new(AtomicBool::new(true)),
+            created,
             model,
             thinking,
         }
@@ -125,6 +145,17 @@ impl SessionHandle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// 只有 worker 完全退出（`running = false`）才可回收。取消中的 worker 在
+    /// 发完 `session_state(cancelled)`/`done(cancelled)` 前仍是 running，因此
+    /// 这里无需单独看 `cancel`；该标志在完成竞态下可能残留，不能作为依据。
+    fn is_reclaimable(&self) -> bool {
+        !self.running.load(Ordering::Acquire)
+    }
+
+    fn reclaim(&self) {
+        self.alive.store(false, Ordering::Release);
     }
 }
 
@@ -137,6 +168,15 @@ impl Host {
     pub fn init_with_factory(
         config: HostConfig,
         factory: Arc<dyn AgentFactory>,
+    ) -> Result<Host, ErrorBody> {
+        Self::init_with_factory_and_limit(config, factory, MAX_SESSIONS)
+    }
+
+    /// 注入工厂并指定会话上限；生产默认 [`MAX_SESSIONS`]。
+    pub fn init_with_factory_and_limit(
+        config: HostConfig,
+        factory: Arc<dyn AgentFactory>,
+        max_sessions: usize,
     ) -> Result<Host, ErrorBody> {
         let root = ensure_within_root(
             &config.workspace_root,
@@ -162,6 +202,7 @@ impl Host {
             providers_file: config.providers_file,
             factory,
             sessions: Mutex::new(HashMap::new()),
+            max_sessions: max_sessions.max(1),
             sink: Mutex::new(None),
             seq: Arc::new(AtomicU64::new(0)),
             next_session: AtomicU64::new(0),
@@ -240,10 +281,14 @@ impl Host {
             compress_at_k,
             cancelled: false,
         };
-        self.sessions_slot().insert(
-            info.session_id.clone(),
-            SessionHandle::new(info.clone(), model, thinking),
-        );
+        {
+            let mut sessions = self.sessions_slot();
+            sessions.insert(
+                info.session_id.clone(),
+                SessionHandle::new(info.clone(), number, model, thinking),
+            );
+            reclaim_terminated_sessions(&mut sessions, self.max_sessions);
+        }
         info
     }
 
@@ -267,14 +312,9 @@ impl Host {
     fn agent_send(&self, args: &Value) -> Result<(), ErrorBody> {
         let session_id = required_string(args, "session_id")?;
         let text = required_string(args, "text")?;
-        let handle = self.session(&session_id)?;
-        if handle
-            .running
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(invalid(format!("agent turn already running: {session_id}")));
-        }
+        // 取句柄与置 running 在同一把 sessions 锁内完成：拿到的句柄不可能在
+        // 置位前被回收；置位后回收侧会因 running=true 跳过它。
+        let handle = self.begin_turn(&session_id)?;
         handle.cancel.store(false, Ordering::Release);
         {
             let mut info = handle
@@ -293,6 +333,9 @@ impl Host {
         let spawned = thread::Builder::new()
             .name(format!("agent-{session_id}"))
             .spawn(move || {
+                // 守卫覆盖 worker 的全部事件（含 panic 分支的 error + done）：
+                // running=false 即表示该会话不会再有事件推送，可安全回收。
+                let _running = RunningGuard(thread_handle.clone());
                 let emitter = TurnEmitter::new(thread_session, thread_handle.clone(), sink, seq);
                 let panic_emitter = emitter.clone();
                 let turn = AgentTurn {
@@ -365,7 +408,22 @@ impl Host {
         self.sessions_slot()
             .get(id)
             .cloned()
-            .ok_or_else(|| ErrorBody::new(ErrorCode::NotFound, format!("session not found: {id}")))
+            .ok_or_else(|| not_found_session(id))
+    }
+
+    /// 取句柄并原子置 `running`；与回收共用 sessions 锁，避免刚取到的句柄
+    /// 在被置位前就被回收（回收只挑 `running = false` 的会话）。
+    fn begin_turn(&self, id: &str) -> Result<SessionHandle, ErrorBody> {
+        let sessions = self.sessions_slot();
+        let handle = sessions
+            .get(id)
+            .cloned()
+            .ok_or_else(|| not_found_session(id))?;
+        handle
+            .running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| invalid(format!("agent turn already running: {id}")))?;
+        Ok(handle)
     }
 
     fn resolve_path(&self, args: &Value) -> Result<PathBuf, ErrorBody> {
@@ -388,6 +446,30 @@ impl Host {
         self.sink
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+fn not_found_session(id: &str) -> ErrorBody {
+    ErrorBody::new(ErrorCode::NotFound, format!("session not found: {id}"))
+}
+
+/// 超出上限时按创建序号从老到新回收已终止会话。running（含取消中的 worker）
+/// 的会话跳过；若全部在跑，会话表暂时超限，等后续创建再回收。
+fn reclaim_terminated_sessions(sessions: &mut HashMap<String, SessionHandle>, max_sessions: usize) {
+    if sessions.len() <= max_sessions {
+        return;
+    }
+    let mut candidates: Vec<(u64, String)> = sessions
+        .iter()
+        .filter(|(_, handle)| handle.is_reclaimable())
+        .map(|(id, handle)| (handle.created, id.clone()))
+        .collect();
+    candidates.sort_unstable_by_key(|(created, _)| *created);
+    let excess = sessions.len() - max_sessions;
+    for (_, id) in candidates.into_iter().take(excess) {
+        if let Some(handle) = sessions.remove(&id) {
+            handle.reclaim();
+        }
     }
 }
 
@@ -769,17 +851,18 @@ fn probe_target(base_url: &str) -> Option<(String, u16)> {
 }
 
 /// 在 `PROBE_TIMEOUT` 内做一次 TCP 预探（https 也只到 TCP 层，不验 TLS）。
-/// 返回 `Some((host, port))` 表示不可达；DNS 解析失败或 URL 无法解析时按可达
-/// 处理，保持既有错误/回退语义。
+/// 返回 `Some((host, port))` 表示不可达；URL 无法解析时返回 `None`，把错误
+/// 留给真正的 HTTP 传输。DNS 解析也受同一预算约束：解析超时/失败按不可达
+/// 处理，直接回退 stub，避免 resolver 把首条消息拖过 800ms。
 fn unreachable_target(base_url: &str) -> Option<(String, u16)> {
     let (host, port) = probe_target(base_url)?;
-    let Ok(addrs) = (host.as_str(), port).to_socket_addrs() else {
-        return None;
-    };
     let deadline = Instant::now() + PROBE_TIMEOUT;
-    let mut attempted = false;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let Some(addrs) = resolve_bounded(&host, port, remaining, resolve_host) else {
+        eprintln!("[ohos-agent] cannot resolve {host}:{port} within probe budget");
+        return Some((host, port));
+    };
     for addr in addrs {
-        attempted = true;
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             break;
         };
@@ -790,7 +873,42 @@ fn unreachable_target(base_url: &str) -> Option<(String, u16)> {
             return None;
         }
     }
-    attempted.then_some((host, port))
+    Some((host, port))
+}
+
+fn resolve_host(host: String, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    let addrs = (host.as_str(), port).to_socket_addrs()?;
+    Ok(addrs.collect())
+}
+
+/// 在 `timeout` 内解析 `host:port`。IP 字面量直接构造地址，不创建线程；
+/// 域名解析放到单个分离线程，调用方用 channel 超时等待。解析线程即使卡住
+/// 也只会持有自己的 host 字符串，不影响宿主状态；OHOS 上与其他 worker 同样
+/// 走 std thread。
+fn resolve_bounded(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    resolve: impl FnOnce(String, u16) -> std::io::Result<Vec<SocketAddr>> + Send + 'static,
+) -> Option<Vec<SocketAddr>> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Some(vec![SocketAddr::new(ip, port)]);
+    }
+    let (sender, receiver) = mpsc::channel();
+    let name = host.to_owned();
+    let spawned = thread::Builder::new()
+        .name("lc-ohos-dns".into())
+        .spawn(move || {
+            // 接收端超时后已丢弃；发送失败无需处理。
+            let _ = sender.send(resolve(name, port));
+        });
+    if spawned.is_err() {
+        return None;
+    }
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(addrs)) => Some(addrs),
+        Ok(Err(_)) | Err(_) => None,
+    }
 }
 
 struct AgentTurn {
@@ -803,7 +921,6 @@ struct AgentTurn {
 
 /// 单轮执行：惰性构建/复用 `AgentLoop`，接收 LLM 事件并在失败时回退 stub。
 fn run_agent_turn(emitter: &TurnEmitter, turn: AgentTurn) {
-    let _running = RunningGuard(turn.handle.clone());
     let AgentTurn {
         text,
         handle,
@@ -922,6 +1039,8 @@ fn loop_error_body(error: &LoopError) -> ErrorBody {
     }
 }
 
+/// 在 worker 闭包内持有，覆盖本轮全部事件（含 panic 收尾）；drop 后
+/// `running = false`，回收侧即可把该会话视为已终止。
 struct RunningGuard(SessionHandle);
 
 impl Drop for RunningGuard {
@@ -930,7 +1049,7 @@ impl Drop for RunningGuard {
     }
 }
 
-/// 事件出口：注入会话 id、统一 seq，并在取消后抑制迟到事件。
+/// 事件出口：注入会话 id、统一 seq，并在取消或会话被回收后抑制迟到事件。
 #[derive(Clone)]
 struct TurnEmitter {
     session_id: String,
@@ -955,6 +1074,11 @@ impl TurnEmitter {
     }
 
     fn event(&self, event: CoreEvent) {
+        // 会话已被回收：worker 可能仍持有句柄（例如 panic 后的收尾），所有
+        // 后续推送都必须是 no-op，避免向已移除会话发事件。
+        if !self.handle.alive.load(Ordering::Acquire) {
+            return;
+        }
         emit(&self.sink, &self.seq, event);
     }
 
@@ -998,6 +1122,9 @@ impl TurnEmitter {
     }
 
     fn session_state(&self, mut info: SessionInfo) {
+        if !self.handle.alive.load(Ordering::Acquire) {
+            return;
+        }
         info.session_id = self.session_id.clone();
         info.mode = SessionMode::Plan;
         {
@@ -1012,6 +1139,9 @@ impl TurnEmitter {
     }
 
     fn cancelled(&self) {
+        if !self.handle.alive.load(Ordering::Acquire) {
+            return;
+        }
         let mut info = self.handle.info_snapshot();
         info.session_id = self.session_id.clone();
         info.mode = SessionMode::Plan;
@@ -1153,6 +1283,13 @@ mod tests {
     }
 
     fn setup_with_factory(factory: Option<Arc<dyn AgentFactory>>) -> (Host, PathBuf) {
+        setup_with_limit(factory, MAX_SESSIONS)
+    }
+
+    fn setup_with_limit(
+        factory: Option<Arc<dyn AgentFactory>>,
+        max_sessions: usize,
+    ) -> (Host, PathBuf) {
         let base = temp_base();
         let root = base.join("workspace");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -1163,11 +1300,8 @@ mod tests {
             workspace_root: root,
             providers_file: base.join("files/providers.json"),
         };
-        let host = match factory {
-            Some(factory) => Host::init_with_factory(config, factory),
-            None => Host::init(config),
-        }
-        .unwrap();
+        let factory = factory.unwrap_or_else(|| Arc::new(RealAgentFactory));
+        let host = Host::init_with_factory_and_limit(config, factory, max_sessions).unwrap();
         (host, base)
     }
 
@@ -2252,5 +2386,219 @@ mod tests {
         assert_eq!(done["event"]["stop_reason"], "error");
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    fn wait_until(mut predicate: impl FnMut() -> bool, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !predicate() {
+            assert!(Instant::now() < deadline, "timeout waiting for {what}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// 阻塞到测试显式放行；用于让会话在整个回收断言期间保持 running。
+    struct GateLlm {
+        release: Arc<AtomicBool>,
+    }
+
+    impl LlmStream for GateLlm {
+        fn stream(
+            &self,
+            _request: &LlmRequest,
+            sink: &mut dyn FnMut(LlmEvent),
+        ) -> Result<(), LlmError> {
+            while !self.release.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(5));
+            }
+            sink(LlmEvent::TextDelta {
+                index: 0,
+                text: "released".into(),
+            });
+            sink(LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            });
+            Ok(())
+        }
+    }
+
+    struct GateFactory {
+        release: Arc<AtomicBool>,
+    }
+
+    impl AgentFactory for GateFactory {
+        fn create(&self, request: &AgentBuildRequest<'_>) -> Result<AgentLoop, ErrorBody> {
+            Ok(AgentLoop::new(
+                Session::new(request.session_id, PolicyMode::Plan)
+                    .with_max_turns(request.max_turns)
+                    .with_context(100, 80),
+                Box::new(GateLlm {
+                    release: Arc::clone(&self.release),
+                }),
+                Box::new(LocalToolExecutor::new(request.workspace_root)),
+                read_only_registry(),
+                request.workspace_root,
+                "fake-model",
+            )
+            .with_tools(read_only_registry().llm_tools()))
+        }
+    }
+
+    #[test]
+    fn session_reclaim_evicts_oldest_terminated_and_keeps_running() {
+        const LIMIT: usize = 3;
+        let release = Arc::new(AtomicBool::new(false));
+        let factory = Arc::new(GateFactory {
+            release: Arc::clone(&release),
+        });
+        let (host, base) = setup_with_limit(Some(factory), LIMIT);
+        let events = collect_events(&host);
+
+        let running = create_session_with_model(&host, Some("fake-model"));
+        host.dispatch(
+            "agent_send",
+            &json!({"session_id": running, "text": "hold"}).to_string(),
+        )
+        .unwrap();
+        wait_until(
+            || {
+                host.session(&running)
+                    .unwrap()
+                    .running
+                    .load(Ordering::Acquire)
+            },
+            "session to start running",
+        );
+
+        // running(1) + LIMIT(3) = 4 > 3：最老的已终止会话被回收。
+        let terminated: Vec<String> = (0..LIMIT).map(|_| create_session(&host)).collect();
+        assert_eq!(host.sessions_slot().len(), LIMIT);
+        assert!(
+            host.session(&running).is_ok(),
+            "running session must survive reclamation"
+        );
+        assert!(
+            host.session(&terminated[0]).is_err(),
+            "oldest terminated session must be reclaimed"
+        );
+        assert!(host.session(&terminated[1]).is_ok());
+
+        // 后续创建继续按创建顺序回收。
+        let newest = create_session(&host);
+        assert!(
+            host.session(&terminated[1]).is_err(),
+            "reclamation follows creation order"
+        );
+        assert!(host.session(&terminated[2]).is_ok());
+        assert!(host.session(&newest).is_ok());
+        assert_eq!(host.sessions_slot().len(), LIMIT);
+
+        // worker 结束后 running 会话才变成可回收，且因为最老而先被回收。
+        release.store(true, Ordering::Release);
+        wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:done")
+        });
+        wait_until(
+            || {
+                !host
+                    .session(&running)
+                    .unwrap()
+                    .running
+                    .load(Ordering::Acquire)
+            },
+            "running flag to clear",
+        );
+        create_session(&host);
+        assert!(
+            host.session(&running).is_err(),
+            "finished session becomes reclaimable"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reclaimed_session_ignores_late_worker_events() {
+        const LIMIT: usize = 1;
+        let (host, base) = setup_with_limit(None, LIMIT);
+        let first = create_session(&host);
+        let stale = host.session(&first).unwrap();
+
+        let late = Arc::new(Mutex::new(Vec::new()));
+        let late_sink = Arc::clone(&late);
+        let emitter = TurnEmitter::new(
+            first.clone(),
+            stale.clone(),
+            Some(Arc::new(move |json| {
+                late_sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(serde_json::from_str::<Value>(&json).unwrap());
+            })),
+            Arc::clone(&host.seq),
+        );
+        emitter.done("stub");
+        assert_eq!(
+            late.lock().unwrap().len(),
+            1,
+            "emitter must work before reclamation"
+        );
+
+        let second = create_session(&host);
+        assert!(host.session(&first).is_err());
+        assert!(host.session(&second).is_ok());
+
+        // 模拟持有旧句柄的 worker：会话回收后继续推送必须是 no-op。
+        emitter.done("stub");
+        emitter.error(ErrorBody::new(ErrorCode::Internal, "late"));
+        emitter.session_state(stale.info_snapshot());
+        assert_eq!(
+            late.lock().unwrap().len(),
+            1,
+            "events for a reclaimed session must be dropped"
+        );
+
+        let error = host
+            .dispatch(
+                "agent_send",
+                &json!({"session_id": first, "text": "late"}).to_string(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn slow_dns_resolution_is_bounded_by_probe_budget() {
+        let started = Instant::now();
+        let resolved = resolve_bounded("slow.invalid", 80, Duration::from_millis(100), |_, _| {
+            thread::sleep(Duration::from_secs(2));
+            Ok(vec![SocketAddr::from(([127, 0, 0, 1], 80))])
+        });
+        assert!(resolved.is_none(), "timed-out resolution must be None");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "DNS resolution must honor the probe budget, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn ip_literals_bypass_the_resolver_thread() {
+        let started = Instant::now();
+        let resolved = resolve_bounded("127.0.0.1", 8080, Duration::from_millis(50), |_, _| {
+            thread::sleep(Duration::from_secs(2));
+            Ok(Vec::new())
+        });
+        assert_eq!(
+            resolved,
+            Some(vec![SocketAddr::from(([127, 0, 0, 1], 8080))])
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "IP literal must skip DNS"
+        );
     }
 }

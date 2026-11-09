@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.55 提交（见 `git log`）；版本 `0.6.1-preview.55`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.56 提交（见 `git log`）；版本 `0.6.1-preview.56`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.55` 发布中；滚动清单 updater-manifest 已提升到 .54。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49/50/51/52/53/54/55` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.56` 发布中；滚动清单 updater-manifest 已提升到 .55。
 
 ## 当前位置一览
 
@@ -65,7 +65,7 @@
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
 | P5 发布 | ✅ `v0.5.1-preview.1` **已发布**（非 draft）：6 资产 |
-| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers + 真实 Agent 对话 + 离线回退提速（preview.51–.55）：模拟器端到端全套通过；离线回退 ~5.5s → ~1.3s（800ms TCP 预探，19 项单测）；待办：DNS 预算化、供应商编辑 UI、真机签名 |
+| P6 鸿蒙 | ✅ 外壳 MVP + NAPI 真实 core + providers + 真实 Agent 对话 + 离线回退提速 + 会话回收（preview.51–.56）：模拟器端到端全套通过；会话表上限 32（running 绝不回收）、DNS 800ms 预算化；待办：模拟器回归切片G、供应商编辑 UI、真机签名 |
 | P6 本地安全整改 | ✅ CSP frame-src/object-src；DB/MCP 输出不可信边界；审计范围写入 `docs/SECURITY-AUDIT.md` |
 | P6 A 类 arm64 | ✅ `v0.6.1-preview.3` tag 构建成功：aarch64 AppImage/deb、`lc-cli-arm64` 已发布 |
 | P6 A 类 更新器 | ✅ `update_check` + `latest.json` 生成器 + 回滚文档；无签名密钥时 `signed:false`，签名门禁未完全关闭 |
@@ -323,13 +323,23 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
 
+## preview.56：鸿蒙会话回收与 DNS 预算
+
+- 会话表上限 32（按创建序回收已终止、running 绝不回收、alive 标记使迟到事件
+  no-op）；agent_send 锁内 begin_turn。
+- DNS 解析 800ms 预算化（IP 字面量零线程；域名分离线程 + recv_timeout），
+  慢 DNS 直接回退 stub。
+- lc-ohos 23 项单测；check-all 全套 + HAP 27.15MiB 通过。
+- 待办：模拟器回归、供应商编辑 UI、真机签名。
+- 发布：`v0.6.1-preview.56` 发布中。
+
 ## preview.55：鸿蒙离线回退提速
 
 - provider baseUrl 800ms TCP 预探（probe_target/unreachable_target），不可达直接
   stub：~5.5s → ~1.3s；lc-ohos 19 项单测（含耗时断言）。
 - 验证：check-all 全套通过（627 cargo / 413 web / lanes / deny）；本机黑盒 2.92s → 1.33s。
 - 待办：DNS 解析预算化、供应商编辑 UI、真机签名。
-- 发布：`v0.6.1-preview.55` 发布中。
+- 发布：`v0.6.1-preview.55` **已发布**（10 资产）；滚动清单已提升到 .55。
 
 ## preview.54：Agent 用量统计修复
 
