@@ -78,6 +78,13 @@ import { subscribeAgentContext } from './services/agentContext'
 import { setFileDiagnostics } from './services/lspDiagnostics'
 import { matchQuickNav } from './services/quickPalette'
 import {
+  loadQuickRecent,
+  rememberRecent,
+  saveQuickRecent,
+  sortByRecent,
+  type QuickRecent,
+} from './services/quickRecent'
+import {
   activateTab,
   adjacentTabId,
   closeTab,
@@ -85,6 +92,7 @@ import {
   renameTab,
   reopenClosedTab,
   tabsStore,
+  type Tab,
 } from './services/tabs'
 import {
   initUiPrefs,
@@ -356,6 +364,8 @@ const activeTabId = computed(() => tabsState.value.activeId)
 
 function activateEditor(id: string): void {
   activateTab(id)
+  const tab = tabsStore.get().tabs.find(item => item.id === id)
+  if (tab?.path) rememberQuickFile(id)
   sidebarView.value = 'explorer'
 }
 
@@ -366,6 +376,17 @@ const quickInput = ref<HTMLInputElement | null>(null)
 const quickOpen = ref(false)
 const quickIndex = ref(0)
 const quickChats = ref<HistorySummary[]>([])
+const quickRecent = ref<QuickRecent>(loadQuickRecent())
+
+function rememberQuickFile(id: string): void {
+  quickRecent.value = rememberRecent(quickRecent.value, 'files', id)
+  saveQuickRecent(quickRecent.value)
+}
+
+function rememberQuickCommand(id: string): void {
+  quickRecent.value = rememberRecent(quickRecent.value, 'commands', id)
+  saveQuickRecent(quickRecent.value)
+}
 
 interface QuickItem {
   id: string
@@ -428,10 +449,47 @@ const commands = computed<QuickItem[]>(() => [
   })),
 ])
 
+function quickTabItem(tab: Tab): QuickItem {
+  return {
+    id: `tab:${tab.id}`,
+    label: tab.title,
+    detail: tab.path ?? '',
+    action: () => activateEditor(tab.id),
+  }
+}
+
 const quickResults = computed<QuickItem[]>(() => {
-  const query = quickQuery.value.trim().toLowerCase()
-  if (!query) return []
-  const nav = matchQuickNav(quickChats.value, workspaces.value, quickQuery.value, 4)
+  const queryText = quickQuery.value.trim()
+  const query = queryText.toLowerCase()
+  const tabs = openTabs.value
+
+  if (!query) {
+    const recentTabs = quickRecent.value.files.flatMap(id => {
+      const tab = tabs.find(item => item.id === id)
+      return tab?.path ? [tab] : []
+    })
+    const fallbackTabs = tabs.filter(tab => tab.path !== null)
+    const seenFiles = new Set(recentTabs.map(tab => tab.id))
+    const files = [
+      ...recentTabs,
+      ...fallbackTabs.filter(tab => !seenFiles.has(tab.id)),
+    ]
+      .slice(0, 6)
+      .map(quickTabItem)
+    const byId = new Map(commands.value.map(item => [item.id, item]))
+    const recentCommands = quickRecent.value.commands.flatMap(id => {
+      const item = byId.get(id)
+      return item ? [item] : []
+    })
+    const seenCommands = new Set(recentCommands.map(item => item.id))
+    const cmds = [
+      ...recentCommands,
+      ...commands.value.filter(item => !seenCommands.has(item.id)),
+    ].slice(0, 4)
+    return [...files, ...cmds].slice(0, 10)
+  }
+
+  const nav = matchQuickNav(quickChats.value, workspaces.value, queryText, 4)
   const workspaceItems: QuickItem[] = nav.workspaces.map(item => ({
     id: `ws:${item.root}`,
     label: item.name,
@@ -449,16 +507,16 @@ const quickResults = computed<QuickItem[]>(() => {
       action: () => openQuickChat(item),
     }
   })
-  const files: QuickItem[] = openTabs.value
-    .filter(tab => `${tab.title} ${tab.path ?? ''}`.toLowerCase().includes(query))
-    .map(tab => ({
-      id: `tab:${tab.id}`,
-      label: tab.title,
-      detail: tab.path ?? '',
-      action: () => activateEditor(tab.id),
-    }))
-  const cmds = commands.value.filter(cmd => cmd.label.toLowerCase().includes(query))
-  const queryText = quickQuery.value.trim()
+  const files = sortByRecent(
+    tabs
+      .filter(tab => `${tab.title} ${tab.path ?? ''}`.toLowerCase().includes(query))
+      .map(quickTabItem),
+    quickRecent.value.files.map(id => `tab:${id}`),
+  )
+  const cmds = sortByRecent(
+    commands.value.filter(cmd => cmd.label.toLowerCase().includes(query)),
+    quickRecent.value.commands,
+  )
   const searchInFiles: QuickItem = {
     id: 'cmd:searchFiles',
     label: t('search.searchInFiles', { query: queryText }),
@@ -489,6 +547,9 @@ function runQuick(item: QuickItem | undefined): void {
   quickOpen.value = false
   quickQuery.value = ''
   quickInput.value?.blur()
+  if (item.id.startsWith('cmd:') || item.id.startsWith('ext:')) {
+    rememberQuickCommand(item.id)
+  }
   void item.action()
 }
 
@@ -873,7 +934,7 @@ onBeforeUnmount(() => {
           @input="quickOpen = true"
         >
         <div
-          v-if="quickOpen && quickQuery && quickResults.length"
+          v-if="quickOpen && quickResults.length"
           class="quick-pop"
         >
           <button
