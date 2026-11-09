@@ -7,7 +7,7 @@
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.46` 发布中；`.47` 待打标签。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.47` 发布中。
 
 ## 当前位置一览
 
@@ -327,7 +327,7 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 
 - 停止按钮 → `kimi-stop`；审批/权限盾牌 → `kimi-shield-question`；模式 pill → `kimi-thinking` 灯泡。
 - 验证：Web 408（28 文件）；真机 Agent 模式 composer 截图正常。
-- 发布：`v0.6.1-preview.47` 待打标签（等 .46 release 完成后推送）。
+- 发布：`v0.6.1-preview.47` 发布中（tag 已推送）。
 
 ## preview.46：活动栏/工具栏图标 Kimi 化
 
@@ -335,7 +335,7 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - 替换：文件树、任务、终端、文件、铅笔、加号、关闭、归档、箭头、chevron 等 11 个
   为 24×24 填充路径；git/db/供应商/插件保留线性图标。
 - 验证：Web 408（28 文件）；真机活动栏截图正常。
-- 发布：`v0.6.1-preview.46` 发布中（tag 已推送）。
+- 发布：`v0.6.1-preview.46` **已发布**（10 资产）。
 
 ## preview.45：Kimi 风格设置页
 
