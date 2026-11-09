@@ -14,6 +14,7 @@ interface PersistedTab {
   content: string
   savedContent: string
   tier: LargeFileTier
+  pinned?: boolean
 }
 
 interface PersistedTabs {
@@ -42,6 +43,7 @@ export function serializeTabs(state: TabsState): string {
       content: tab.content,
       savedContent: tab.savedContent,
       tier: tab.strategy.tier,
+      pinned: tab.pinned,
     })),
   }
   return JSON.stringify(payload)
@@ -78,6 +80,7 @@ export function parseTabs(raw: string | null): TabsState | null {
       savedContent,
       strategy: strategyForTier(tier),
       dirty: t.content !== savedContent,
+      pinned: t.pinned === true,
     })
   }
 

@@ -17,6 +17,8 @@
     "close": "关闭标签页",
     "closeConfirm": "有未保存更改：再次点击确认关闭",
     "menu": {
+      "pin": "固定标签",
+      "unpin": "取消固定",
       "close": "关闭",
       "closeOthers": "关闭其他",
       "closeRight": "关闭右侧",

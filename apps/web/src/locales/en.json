@@ -17,6 +17,8 @@
     "close": "Close tab",
     "closeConfirm": "Unsaved changes — click again to confirm close",
     "menu": {
+      "pin": "Pin Tab",
+      "unpin": "Unpin Tab",
       "close": "Close",
       "closeOthers": "Close Others",
       "closeRight": "Close to the Right",

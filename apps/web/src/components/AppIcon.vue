@@ -119,6 +119,9 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 })
     <template v-else-if="name === 'arrow-up'">
       <path d="M12 19V5M5 12l7-7 7 7" />
     </template>
+    <template v-else-if="name === 'pin'">
+      <path d="M9 3h6l-1 5 4 4v2h-5v7l-1 1-1-1v-7H6v-2l4-4z" />
+    </template>
     <template v-else-if="name === 'paperclip'">
       <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7" />
     </template>

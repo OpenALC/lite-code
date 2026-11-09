@@ -20,6 +20,8 @@ export interface Tab {
   /** 大文件分级策略（ARCHITECTURE.md §5.1）：能力裁剪与只读 */
   strategy: EditorFileStrategy
   dirty: boolean
+  /** 固定标签排在最左，且不被「关闭其他/关闭已保存」批量关闭。 */
+  pinned: boolean
 }
 
 export interface TabsState {
@@ -76,6 +78,7 @@ export const INITIAL_TABS_STATE: TabsState = {
       savedContent: SAMPLE_CONTENT,
       strategy: resolveEditorStrategy(0),
       dirty: false,
+      pinned: false,
     },
   ],
   activeId: 'sample',
@@ -91,6 +94,8 @@ export interface OpenTabInput {
   content?: string
   /** 缺省按完整能力（样例/未知大小） */
   strategy?: EditorFileStrategy
+  /** 新标签是否固定；已存在标签只激活，不改变固定状态。 */
+  pinned?: boolean
 }
 
 /** 打开标签：已存在同 id 时不重复创建，只激活（保留原内容、策略与 dirty 状态）。 */
@@ -111,6 +116,7 @@ export function openTab(tab: OpenTabInput): void {
         savedContent: tab.content ?? '',
         strategy: tab.strategy ?? resolveEditorStrategy(0),
         dirty: false,
+        pinned: tab.pinned === true,
       },
     ],
     activeId: tab.id,
@@ -187,6 +193,19 @@ export function activateTab(id: string): boolean {
   if (!state.tabs.some(t => t.id === id)) return false
   if (state.activeId === id) return true
   tabsStore.set({ ...state, activeId: id })
+  return true
+}
+
+/** 固定/取消固定：固定标签移到固定组末尾，取消固定移到未固定组末尾。 */
+export function togglePinned(id: string): boolean {
+  const state = tabsStore.get()
+  const tab = state.tabs.find(t => t.id === id)
+  if (!tab) return false
+  const rest = state.tabs.filter(t => t.id !== id)
+  const pinned = !tab.pinned
+  const index = pinned ? rest.filter(t => t.pinned).length : rest.length
+  rest.splice(index, 0, { ...tab, pinned })
+  tabsStore.set({ ...state, tabs: rest })
   return true
 }
 
@@ -288,7 +307,7 @@ export function closeOtherTabs(keepId: string): number {
   if (!tabsStore.get().tabs.some(t => t.id === keepId)) return 0
   const ids = tabsStore
     .get()
-    .tabs.filter(t => t.id !== keepId)
+    .tabs.filter(t => t.id !== keepId && !t.pinned)
     .map(t => t.id)
   let closed = 0
   for (const id of ids) {
@@ -303,7 +322,10 @@ export function closeTabsToRight(anchorId: string): number {
   const state = tabsStore.get()
   const index = state.tabs.findIndex(t => t.id === anchorId)
   if (index < 0) return 0
-  const ids = state.tabs.slice(index + 1).map(t => t.id)
+  const ids = state.tabs
+    .slice(index + 1)
+    .filter(t => !t.pinned)
+    .map(t => t.id)
   let closed = 0
   for (const id of ids) {
     if (closeTab(id).kind === 'closed') closed += 1
@@ -311,9 +333,12 @@ export function closeTabsToRight(anchorId: string): number {
   return closed
 }
 
-/** 关闭全部干净标签；dirty 标签保持打开并留在标签栏。 */
+/** 关闭全部干净且未固定的标签；dirty/固定标签保持打开。 */
 export function closeSavedTabs(): number {
-  const ids = tabsStore.get().tabs.map(t => t.id)
+  const ids = tabsStore
+    .get()
+    .tabs.filter(t => !t.pinned)
+    .map(t => t.id)
   let closed = 0
   for (const id of ids) {
     if (closeTab(id).kind === 'closed') closed += 1

@@ -38,6 +38,7 @@ describe('serialize / parse', () => {
           savedContent: 'v1',
           strategy: strategyForTier('reduced' as const),
           dirty: true,
+          pinned: false,
         },
       ],
     }
@@ -50,7 +51,27 @@ describe('serialize / parse', () => {
       dirty: true,
     })
     expect(back?.tabs[0].strategy.tier).toBe('reduced')
+    expect(back?.tabs[0].pinned).toBe(false)
     expect(back?.activeId).toBe('a.rs')
+  })
+
+  it('pinned tabs survive serialization', () => {
+    const state = {
+      activeId: 'a.rs',
+      tabs: [
+        {
+          id: 'a.rs',
+          title: 'a.rs',
+          path: 'D:/p/a.rs',
+          content: 'v1',
+          savedContent: 'v1',
+          strategy: strategyForTier('full' as const),
+          dirty: false,
+          pinned: true,
+        },
+      ],
+    }
+    expect(parseTabs(serializeTabs(state))?.tabs[0].pinned).toBe(true)
   })
 
   it('空标签集合可恢复；activeId 不存在回落到第一个', () => {

@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import AppIcon from './AppIcon.vue'
 import { isTauri, revealPath } from '../services/bridge'
 import { copyText } from '../services/clipboard'
 import {
@@ -12,6 +13,7 @@ import {
   closeTabsToRight,
   moveTabTo,
   tabsStore,
+  togglePinned,
 } from '../services/tabs'
 
 const { t } = useI18n()
@@ -110,13 +112,16 @@ function openContextMenu(event: MouseEvent, tabId: string): void {
 }
 
 function runMenu(
-  action: 'close' | 'others' | 'right' | 'saved' | 'copy' | 'reveal',
+  action: 'pin' | 'close' | 'others' | 'right' | 'saved' | 'copy' | 'reveal',
 ): void {
   const current = menu.value
   if (!current) return
   const tab = state.value.tabs.find(t => t.id === current.id)
   menu.value = null
   switch (action) {
+    case 'pin':
+      togglePinned(current.id)
+      break
     case 'close':
       onClose(current.id)
       break
@@ -208,6 +213,12 @@ function onClose(tabId: string): void {
         :aria-selected="tab.id === state.activeId"
         @click="onActivate(tab.id)"
       >
+        <AppIcon
+          v-if="tab.pinned"
+          name="pin"
+          :size="10"
+          class="pin-icon"
+        />
         <span
           v-if="tab.dirty"
           class="dirty-dot"
@@ -238,6 +249,13 @@ function onClose(tabId: string): void {
       role="menu"
       :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
     >
+      <button
+        type="button"
+        @click="runMenu('pin')"
+      >
+        {{ menuTab()?.pinned ? t('tabs.menu.unpin') : t('tabs.menu.pin') }}
+      </button>
+      <div class="tab-menu-sep" />
       <button
         type="button"
         @click="runMenu('close')"
@@ -347,6 +365,11 @@ function onClose(tabId: string): void {
   align-items: center;
   gap: 6px;
   padding: 0 8px 0 12px;
+}
+
+.pin-icon {
+  flex: none;
+  color: var(--accent);
 }
 
 .dirty-dot {

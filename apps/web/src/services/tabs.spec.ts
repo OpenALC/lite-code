@@ -20,6 +20,7 @@ import {
   reopenClosedTab,
   setDirty,
   tabsStore,
+  togglePinned,
   updateContent,
   type TabsState,
 } from './tabs'
@@ -507,5 +508,34 @@ describe('批量关闭标签', () => {
     expect(closeSavedTabs()).toBe(2)
     expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['a.rs'])
     expect(tabsStore.get().activeId).toBe('a.rs')
+  })
+})
+
+describe('固定标签', () => {
+  it('固定后排到固定组末尾，取消固定移到末尾', () => {
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    openTab({ id: 'b.rs', title: 'b.rs' })
+    openTab({ id: 'c.rs', title: 'c.rs' })
+
+    expect(togglePinned('b.rs')).toBe(true)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['b.rs', 'sample', 'a.rs', 'c.rs'])
+    expect(togglePinned('c.rs')).toBe(true)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['b.rs', 'c.rs', 'sample', 'a.rs'])
+    expect(togglePinned('b.rs')).toBe(true)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['c.rs', 'sample', 'a.rs', 'b.rs'])
+    expect(togglePinned('missing')).toBe(false)
+  })
+
+  it('关闭其他与关闭已保存保留固定标签', () => {
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    openTab({ id: 'b.rs', title: 'b.rs' })
+    openTab({ id: 'c.rs', title: 'c.rs' })
+    togglePinned('a.rs')
+    activateTab('b.rs')
+
+    expect(closeOtherTabs('b.rs')).toBe(2)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['a.rs', 'b.rs'])
+    expect(closeSavedTabs()).toBe(1)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['a.rs'])
   })
 })
