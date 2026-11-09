@@ -1316,7 +1316,7 @@ onBeforeUnmount(() => {
         class="editor-col"
       >
         <TabBar />
-        <Breadcrumbs />
+        <Breadcrumbs :root="projectRoot" />
         <div class="editor-card">
           <ExtensionsPanel
             v-if="extensionsMounted"
