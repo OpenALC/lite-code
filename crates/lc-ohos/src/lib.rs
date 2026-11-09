@@ -5,7 +5,9 @@
 //! - `session_create` 强制 `plan` 模式（只读 + 对话），记录模型/思考挡位；
 //! - `agent_send` 首次发送时按 `providers_file` 构造 lc-core `AgentLoop`：plan 策略
 //!   + `read_file`/`glob`/`grep` 只读工具，事件逐条映射成契约 `EventEnvelope`；
-//!     provider 缺失或流传输失败时回退到 20 个 `[stub]` delta（`done.stop_reason = "stub"`）；
+//!     构造前先用 800ms TCP 预探 provider 的 host:port，不通直接回退 stub，
+//!     不再等 ureq 的 5s 连接超时；provider 缺失或流传输失败时回退到 20 个
+//!     `[stub]` delta（`done.stop_reason = "stub"`）；
 //! - `agent_cancel` 置位 `AgentLoop` 共享的取消令牌；
 //! - `providers_load` / `providers_save` 读写 `HostConfig.providers_file`，形状与桌面
 //!   `providers.rs` 的 `ProvidersView` 一致（密钥只回传 `hasApiKey`/末四位提示）；
@@ -13,12 +15,13 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lc_core::agent::{
     AgentLoop, CompactionRecord, LocalToolExecutor, LoopError, LoopOutcome, Risk, Session,
@@ -45,6 +48,10 @@ const STUB_DELTAS: u32 = 20;
 const STUB_DELAY: Duration = Duration::from_millis(25);
 const STUB_STOP_REASON: &str = "stub";
 const CANCELLED_STOP_REASON: &str = "cancelled";
+
+/// 构建 `AgentLoop` 前的 TCP 预探上限。ureq 的连接超时是 5s；离线时先用
+/// 800ms 判断 host:port 是否可达，避免首条消息停 5s 才回退 stub。
+const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 
 const DEFAULT_INSTRUCTIONS: &str =
     "你是 Lite Code 的编码助手。先阅读相关文件再回答；使用工具完成请求；用中文简洁回答。";
@@ -582,13 +589,21 @@ impl AgentFactory for RealAgentFactory {
         })
         .map_err(runtime_error_body)?;
         let client = match runtime.kind {
-            ProviderKind::OpenAiResponses => OpenAiResponsesClient::new(
-                &runtime.base_url,
-                &runtime.api_key,
-                Box::new(UreqSseTransport::with_connect_timeout(Duration::from_secs(
-                    5,
-                ))),
-            ),
+            ProviderKind::OpenAiResponses => {
+                if let Some((host, port)) = unreachable_target(&runtime.base_url) {
+                    return Err(ErrorBody::new(
+                        ErrorCode::Io,
+                        format!("provider is unreachable at {host}:{port} (TCP probe failed)"),
+                    ));
+                }
+                OpenAiResponsesClient::new(
+                    &runtime.base_url,
+                    &runtime.api_key,
+                    Box::new(UreqSseTransport::with_connect_timeout(Duration::from_secs(
+                        5,
+                    ))),
+                )
+            }
             ProviderKind::AnthropicMessages => {
                 return Err(runtime_error_body(RuntimeError::UnsupportedKind(
                     runtime.kind,
@@ -713,6 +728,69 @@ fn runtime_error_body(error: RuntimeError) -> ErrorBody {
             format!("provider kind {kind:?} has no streaming client"),
         ),
     }
+}
+
+/// 从 http(s) `baseUrl` 提取 `(host, port)`。协议不符或结构无法识别时返回
+/// `None`，调用方按“可达”处理，把错误留给真正的 HTTP 传输。
+fn probe_target(base_url: &str) -> Option<(String, u16)> {
+    let (scheme, rest) = base_url.trim().split_once("://")?;
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "http" => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    // 去掉 userinfo（user:pass@host），只探测真正的 host:port。
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, tail) = bracketed.split_once(']')?;
+        if host.is_empty() {
+            return None;
+        }
+        let port = match tail.strip_prefix(':') {
+            Some(raw) => raw.parse().ok()?,
+            None if tail.is_empty() => default_port,
+            None => return None,
+        };
+        return Some((host.to_owned(), port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, raw_port)) if !host.is_empty() => {
+            Some((host.to_owned(), raw_port.parse().ok()?))
+        }
+        Some(_) => None,
+        None => Some((authority.to_owned(), default_port)),
+    }
+}
+
+/// 在 `PROBE_TIMEOUT` 内做一次 TCP 预探（https 也只到 TCP 层，不验 TLS）。
+/// 返回 `Some((host, port))` 表示不可达；DNS 解析失败或 URL 无法解析时按可达
+/// 处理，保持既有错误/回退语义。
+fn unreachable_target(base_url: &str) -> Option<(String, u16)> {
+    let (host, port) = probe_target(base_url)?;
+    let Ok(addrs) = (host.as_str(), port).to_socket_addrs() else {
+        return None;
+    };
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let mut attempted = false;
+    for addr in addrs {
+        attempted = true;
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        if remaining.is_zero() {
+            break;
+        }
+        if TcpStream::connect_timeout(&addr, remaining).is_ok() {
+            return None;
+        }
+    }
+    attempted.then_some((host, port))
 }
 
 struct AgentTurn {
@@ -1052,6 +1130,8 @@ fn unsupported(cmd: &str) -> ErrorBody {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::time::{Duration, Instant};
 
     use lc_core::agent::{LlmStream, PolicyMode};
@@ -1640,7 +1720,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_failure_falls_back_to_stub() {
+    fn unreachable_provider_falls_back_to_stub_within_budget() {
         let (host, base) = setup();
         host.dispatch("providers_save", &stub_save_input().to_string())
             .unwrap();
@@ -1648,6 +1728,7 @@ mod tests {
         let session_id = create_session_with_model(&host, Some("stub-chat"));
         save_unreachable_provider(&host);
 
+        let started = Instant::now();
         host.dispatch(
             "agent_send",
             &json!({"session_id": session_id, "text": "read src/main.rs"}).to_string(),
@@ -1659,6 +1740,7 @@ mod tests {
                 .iter()
                 .any(|event| event["event"]["type"] == "agent:done")
         });
+        let elapsed = started.elapsed();
         let deltas: Vec<&Value> = snapshot
             .iter()
             .filter(|event| event["event"]["type"] == "agent:text_delta")
@@ -1672,6 +1754,18 @@ mod tests {
         }));
         let done = snapshot.last().unwrap();
         assert_eq!(done["event"]["stop_reason"], "stub");
+        assert!(
+            snapshot
+                .iter()
+                .all(|event| event["event"]["type"] != "error"),
+            "probe failure is a fallback, not an error event"
+        );
+        // 预探 800ms + 20×25ms stub 约 1.3s；2.5s 给 CI 留余量，同时确保
+        // 不会再等 ureq 的 5s 连接超时。
+        assert!(
+            elapsed < Duration::from_millis(2500),
+            "stub fallback took {elapsed:?}, expected < 2.5s"
+        );
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -1681,6 +1775,150 @@ mod tests {
         input["input"]["providers"][0]["baseUrl"] = json!("http://127.0.0.1:1/v1");
         input["input"]["providers"][0]["apiKey"] = json!("sk-test");
         host.dispatch("providers_save", &input.to_string()).unwrap();
+    }
+
+    #[test]
+    fn probe_target_parses_http_urls_and_skips_unknown_schemes() {
+        assert_eq!(
+            probe_target("http://example.test:8765/v1"),
+            Some(("example.test".into(), 8765))
+        );
+        assert_eq!(
+            probe_target("https://api.openai.com/v1"),
+            Some(("api.openai.com".into(), 443))
+        );
+        assert_eq!(
+            probe_target("http://127.0.0.1/v1?x=1"),
+            Some(("127.0.0.1".into(), 80))
+        );
+        assert_eq!(
+            probe_target(" https://[::1]:8443/v1 "),
+            Some(("::1".into(), 8443))
+        );
+        assert_eq!(probe_target("http:///v1"), None);
+        assert_eq!(probe_target("http://example.test:bad/v1"), None);
+        assert_eq!(probe_target("ftp://example.test/v1"), None);
+        assert_eq!(probe_target("not a url"), None);
+    }
+
+    #[test]
+    fn tcp_probe_detects_reachable_and_refused_ports() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(
+            unreachable_target(&format!("http://127.0.0.1:{port}/v1")),
+            None,
+            "listening port must be treated as reachable"
+        );
+        drop(listener);
+
+        let started = Instant::now();
+        assert_eq!(
+            unreachable_target(&format!("http://127.0.0.1:{port}/v1")),
+            Some(("127.0.0.1".into(), port)),
+            "closed port must be treated as unreachable"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// 极小 HTTP mock：忽略 TCP 预探连接（只连不发），对真正的 POST 返回固定状态。
+    fn spawn_http_status_mock(status: &'static str) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        if !read_http_request(&mut stream) {
+                            continue;
+                        }
+                        let response =
+                            format!("{status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        let _ = stream.write_all(response.as_bytes());
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> bool {
+        let mut data = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => return false,
+                Ok(read) => {
+                    data.extend_from_slice(&buf[..read]);
+                    let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&data[..end]);
+                    let content_length = headers
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let received = data.len().saturating_sub(end + 4);
+                    if received < content_length {
+                        let mut rest = vec![0u8; content_length - received];
+                        return stream.read_exact(&mut rest).is_ok();
+                    }
+                    return true;
+                }
+                Err(_) => return false,
+            }
+        }
+    }
+
+    #[test]
+    fn reachable_provider_with_http_401_still_falls_back_to_stub() {
+        let (port, server) = spawn_http_status_mock("HTTP/1.1 401 Unauthorized");
+        let (host, base) = setup();
+        let mut input = stub_save_input();
+        input["input"]["providers"][0]["baseUrl"] = json!(format!("http://127.0.0.1:{port}/v1"));
+        input["input"]["providers"][0]["apiKey"] = json!("sk-test");
+        host.dispatch("providers_save", &input.to_string()).unwrap();
+        let events = collect_events(&host);
+        let session_id = create_session_with_model(&host, Some("stub-chat"));
+
+        host.dispatch(
+            "agent_send",
+            &json!({"session_id": session_id, "text": "hello"}).to_string(),
+        )
+        .unwrap();
+
+        let snapshot = wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:done")
+        });
+        let deltas: Vec<&Value> = snapshot
+            .iter()
+            .filter(|event| event["event"]["type"] == "agent:text_delta")
+            .collect();
+        assert_eq!(deltas.len(), STUB_DELTAS as usize);
+        let done = snapshot.last().unwrap();
+        assert_eq!(done["event"]["stop_reason"], "stub");
+        assert!(
+            snapshot
+                .iter()
+                .all(|event| event["event"]["type"] != "error"),
+            "HTTP 401 before any visible output is a fallback, not an error event"
+        );
+        server.join().unwrap();
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1890,6 +2128,38 @@ mod tests {
         }
     }
 
+    struct PartialErrorLlm;
+
+    impl LlmStream for PartialErrorLlm {
+        fn stream(
+            &self,
+            _request: &LlmRequest,
+            sink: &mut dyn FnMut(LlmEvent),
+        ) -> Result<(), LlmError> {
+            sink(LlmEvent::TextDelta {
+                index: 0,
+                text: "partial answer".into(),
+            });
+            Err(LlmError::Http("connection reset".into()))
+        }
+    }
+
+    struct PartialErrorFactory;
+
+    impl AgentFactory for PartialErrorFactory {
+        fn create(&self, request: &AgentBuildRequest<'_>) -> Result<AgentLoop, ErrorBody> {
+            Ok(AgentLoop::new(
+                Session::new(request.session_id, PolicyMode::Plan),
+                Box::new(PartialErrorLlm),
+                Box::new(LocalToolExecutor::new(request.workspace_root)),
+                read_only_registry(),
+                request.workspace_root,
+                "fake-model",
+            )
+            .with_tools(read_only_registry().llm_tools()))
+        }
+    }
+
     #[test]
     fn agent_cancel_interrupts_real_loop() {
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1944,6 +2214,42 @@ mod tests {
                 .all(|event| event["event"]["type"] != "agent:done"
                     || event["event"]["stop_reason"] == "cancelled")
         );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn transport_error_after_visible_output_is_not_masked_as_stub() {
+        let (host, base) = setup_with_factory(Some(Arc::new(PartialErrorFactory)));
+        let events = collect_events(&host);
+        let session_id = create_session_with_model(&host, Some("fake-model"));
+
+        host.dispatch(
+            "agent_send",
+            &json!({"session_id": session_id, "text": "go"}).to_string(),
+        )
+        .unwrap();
+
+        let snapshot = wait_for(&events, |events| {
+            events
+                .iter()
+                .any(|event| event["event"]["type"] == "agent:done")
+        });
+        let deltas: Vec<&Value> = snapshot
+            .iter()
+            .filter(|event| event["event"]["type"] == "agent:text_delta")
+            .collect();
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0]["event"]["text"], "partial answer");
+        assert!(
+            snapshot
+                .iter()
+                .any(|event| event["event"]["type"] == "error"),
+            "transport error after visible output must surface as an error"
+        );
+        let done = snapshot.last().unwrap();
+        assert_eq!(done["event"]["type"], "agent:done");
+        assert_eq!(done["event"]["stop_reason"], "error");
 
         let _ = fs::remove_dir_all(&base);
     }

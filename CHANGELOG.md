@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.55] - 2026-11-09
+
+- 鸿蒙离线回退提速：provider baseUrl 800ms TCP 预探（`probe_target`/`unreachable_target`），不可达直接 stub 回退，~5.5s → ~1.3s；lc-ohos 19 项单测（含耗时断言），本机黑盒 2.92s → 1.33s
+
 ## [0.6.1-preview.54] - 2026-11-09
 
 - Agent 用量统计修复：finalizeTurn 按轮号 upsert（重复/迟到 done/error 覆盖同一行），终态事件不提前清累计器，loadHistory 隔离在途轮次；新增 5 项去重单测（413 全绿），桌面 mock 与鸿蒙 CDP 验证一轮一行
