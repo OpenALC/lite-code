@@ -10,8 +10,15 @@ import {
   historyDelete,
   historyList,
   historyRename,
+  shellKind,
   type HistorySummary,
 } from '../services/bridge'
+import {
+  historyMatchesQuery,
+  loadShowArchived,
+  saveShowArchived,
+  splitHistoryItems,
+} from '../services/historyView'
 import { samePath, type WorkspaceEntry } from '../services/workspaceStore'
 
 const props = defineProps<{
@@ -56,26 +63,22 @@ interface WorkspaceGroup {
   items: HistorySummary[]
 }
 
+const ohosHistory = shellKind() === 'ohos'
+const showArchived = ref(loadShowArchived())
+
 function matchesQuery(item: HistorySummary): boolean {
-  const term = query.value.trim().toLocaleLowerCase()
-  if (!term) return true
-  return (
-    item.title.toLocaleLowerCase().includes(term) ||
-    item.model.toLocaleLowerCase().includes(term) ||
-    item.mode.toLocaleLowerCase().includes(term) ||
-    item.workspace.toLocaleLowerCase().includes(term) ||
-    item.excerpt.toLocaleLowerCase().includes(term)
-  )
+  return historyMatchesQuery(item, query.value)
 }
 
-const items = computed(() =>
-  allItems.value.filter(item => {
-    if (item.archived) return false
-    if (!matchesQuery(item)) return false
-    if (!props.workspace) return !item.workspace
-    return !item.workspace || samePath(item.workspace, props.workspace)
+const scopedHistory = computed(() =>
+  splitHistoryItems(allItems.value, {
+    query: query.value,
+    workspace: props.workspace,
   }),
 )
+
+const items = computed(() => scopedHistory.value.active)
+const scopedArchived = computed(() => scopedHistory.value.archived)
 
 const archivedItems = computed(() =>
   allItems.value.filter(item => item.archived && matchesQuery(item)),
@@ -185,10 +188,15 @@ function startRename(item: HistorySummary): void {
   renamingId.value = item.id
   renameDraft.value = item.title
   void nextTick(() => {
-    const input = document.querySelector<HTMLInputElement>('.thread-rename')
+    const input = document.querySelector<HTMLInputElement>('.thread-rename, .session-rename')
     input?.focus()
     input?.select()
   })
+}
+
+function toggleShowArchived(): void {
+  showArchived.value = !showArchived.value
+  saveShowArchived(showArchived.value)
 }
 
 function cancelRename(): void {
@@ -337,7 +345,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="sessions">
+  <div
+    class="sessions"
+    :class="{ 'ohos-history': ohosHistory }"
+  >
     <template v-if="props.showWorkspaces">
       <div class="sessions-head">
         <span class="sessions-title">{{ t('agent.workspaces') }}</span>
@@ -651,7 +662,7 @@ onBeforeUnmount(() => {
           {{ error }}
         </p>
         <p
-          v-else-if="items.length === 0"
+          v-else-if="items.length === 0 && (!ohosHistory || scopedArchived.length === 0)"
           class="sessions-note"
         >
           {{ t('agent.historyEmpty') }}
@@ -666,25 +677,153 @@ onBeforeUnmount(() => {
           @click="open(item)"
           @keydown.enter.prevent="open(item)"
         >
-          <div class="session-main">
-            <span class="session-title">{{ item.title }}</span>
-            <span class="session-meta">
-              {{ modeLabel(item.mode) }} · {{ shortModel(item.model) }} · {{ formatTime(item.savedAt) }}
-            </span>
-          </div>
+          <template v-if="renamingId === item.id">
+            <input
+              v-model="renameDraft"
+              class="session-rename"
+              maxlength="120"
+              :aria-label="t('agent.renameChat')"
+              @click.stop
+              @keydown.enter.stop.prevent="commitRename(item)"
+              @keydown.esc.stop.prevent="cancelRename"
+              @blur="commitRename(item)"
+            >
+          </template>
+          <template v-else>
+            <div class="session-main">
+              <span class="session-title">{{ item.title }}</span>
+              <span class="session-meta">
+                {{ modeLabel(item.mode) }} · {{ shortModel(item.model) }} · {{ formatTime(item.savedAt) }}
+              </span>
+            </div>
+            <button
+              v-if="ohosHistory"
+              type="button"
+              class="session-action"
+              :title="t('agent.renameChat')"
+              :aria-label="t('agent.renameChat')"
+              @click.stop="startRename(item)"
+            >
+              <AppIcon
+                name="pencil"
+                :size="15"
+              />
+            </button>
+            <button
+              v-if="ohosHistory"
+              type="button"
+              class="session-action"
+              :title="t('agent.archiveChat')"
+              :aria-label="t('agent.archiveChat')"
+              @click.stop="toggleArchive(item, true)"
+            >
+              <AppIcon
+                name="archive"
+                :size="15"
+              />
+            </button>
+            <button
+              type="button"
+              class="session-delete"
+              :title="item.id === confirmId ? t('agent.historyDeleteConfirm') : t('agent.historyDelete')"
+              :aria-label="t('agent.historyDelete')"
+              @click.stop="remove(item)"
+            >
+              <AppIcon
+                name="x"
+                :size="ohosHistory ? 15 : 12"
+              />
+            </button>
+          </template>
+        </div>
+
+        <template v-if="ohosHistory">
           <button
             type="button"
-            class="session-delete"
-            :title="item.id === confirmId ? t('agent.historyDeleteConfirm') : t('agent.historyDelete')"
-            :aria-label="t('agent.historyDelete')"
-            @click.stop="remove(item)"
+            class="session-archive-toggle"
+            :aria-expanded="showArchived"
+            @click="toggleShowArchived"
           >
             <AppIcon
-              name="x"
-              :size="12"
+              name="archive"
+              :size="15"
             />
+            <span>{{ showArchived ? t('agent.hideArchived') : t('agent.showArchived') }}</span>
+            <span class="session-archive-count">{{ scopedArchived.length }}</span>
           </button>
-        </div>
+
+          <div
+            v-if="showArchived && scopedArchived.length > 0"
+            class="session-archived-list"
+          >
+            <div
+              v-for="item in scopedArchived"
+              :key="item.id"
+              class="session-row archived-row"
+              role="button"
+              tabindex="0"
+              @click="open(item)"
+              @keydown.enter.prevent="open(item)"
+            >
+              <template v-if="renamingId === item.id">
+                <input
+                  v-model="renameDraft"
+                  class="session-rename"
+                  maxlength="120"
+                  :aria-label="t('agent.renameChat')"
+                  @click.stop
+                  @keydown.enter.stop.prevent="commitRename(item)"
+                  @keydown.esc.stop.prevent="cancelRename"
+                  @blur="commitRename(item)"
+                >
+              </template>
+              <template v-else>
+                <div class="session-main">
+                  <span class="session-title">{{ item.title }}</span>
+                  <span class="session-meta">
+                    {{ modeLabel(item.mode) }} · {{ shortModel(item.model) }} · {{ formatTime(item.savedAt) }}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  class="session-action"
+                  :title="t('agent.renameChat')"
+                  :aria-label="t('agent.renameChat')"
+                  @click.stop="startRename(item)"
+                >
+                  <AppIcon
+                    name="pencil"
+                    :size="15"
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="session-action"
+                  :title="t('agent.unarchiveChat')"
+                  :aria-label="t('agent.unarchiveChat')"
+                  @click.stop="toggleArchive(item, false)"
+                >
+                  <AppIcon
+                    name="archive"
+                    :size="15"
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="session-delete"
+                  :title="item.id === confirmId ? t('agent.historyDeleteConfirm') : t('agent.historyDelete')"
+                  :aria-label="t('agent.historyDelete')"
+                  @click.stop="remove(item)"
+                >
+                  <AppIcon
+                    name="x"
+                    :size="15"
+                  />
+                </button>
+              </template>
+            </div>
+          </div>
+        </template>
       </div>
 
       <button
@@ -1114,6 +1253,104 @@ onBeforeUnmount(() => {
 }
 
 .session-delete:hover {
+  background: var(--panel-3);
+  color: var(--red);
+}
+
+.session-action {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+}
+
+.session-action:hover,
+.session-action:active {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.session-rename {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  outline: none;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.session-archive-toggle {
+  flex: none;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.session-archive-toggle:hover,
+.session-archive-toggle:active {
+  background: var(--panel-2);
+  color: var(--fg);
+}
+
+.session-archive-count {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font: 10px var(--font-mono);
+}
+
+.session-archived-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.archived-row {
+  color: var(--fg-faint);
+}
+
+.ohos-history .session-row {
+  min-height: 46px;
+  padding: 5px 4px 5px 10px;
+  gap: 6px;
+}
+
+.ohos-history .session-title {
+  font-size: 13px;
+}
+
+.ohos-history .session-meta {
+  font-size: 10.5px;
+}
+
+.ohos-history .archived-row .session-title {
+  color: var(--fg-dim);
+}
+
+.ohos-history .session-delete {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  opacity: 1;
+  color: var(--fg-dim);
+}
+
+.ohos-history .session-delete:hover,
+.ohos-history .session-delete:active {
   background: var(--panel-3);
   color: var(--red);
 }

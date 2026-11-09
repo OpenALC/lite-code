@@ -1,7 +1,7 @@
 {
   "name": "lite-code",
   "private": true,
-  "version": "0.6.1-preview.61",
+  "version": "0.6.1-preview.62",
   "packageManager": "pnpm@10.33.3",
   "engines": {
     "node": ">=22"
@@ -11,6 +11,7 @@
     "typecheck": "pnpm --filter @lite-code/web typecheck",
     "test": "pnpm --filter @lite-code/web test",
     "build": "pnpm --filter @lite-code/web build",
+    "build:ohos": "pnpm --filter @lite-code/web build:ohos",
     "db:bridge:build": "pnpm --filter @lite-code/db-bridge build",
     "db:bridge:build:check": "pnpm --filter @lite-code/db-bridge build:check",
     "db:bridge:check": "pnpm --filter @lite-code/db-bridge check",
