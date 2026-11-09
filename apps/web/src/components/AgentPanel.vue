@@ -20,6 +20,7 @@ import {
 import type { AgentSessionController, TurnStat } from '../services/agentSession'
 import { renderMarkdown } from '../services/markdown'
 import { subscribePrefs, uiPrefs } from '../services/themeStore'
+import { copyText } from '../services/clipboard'
 import { forkBeforeUserMessage } from '../services/forkSession'
 import {
   buildFileIndex,
@@ -324,24 +325,6 @@ function closeMenus(): void {
   openMenu.value = null
   ctxOpen.value = false
   closeMention()
-}
-
-/** 不用 navigator.clipboard：WebView2 会弹系统剪贴板权限条。 */
-function copyText(text: string): boolean {
-  const area = document.createElement('textarea')
-  area.value = text
-  area.style.position = 'fixed'
-  area.style.opacity = '0'
-  document.body.appendChild(area)
-  area.select()
-  let copied = false
-  try {
-    copied = document.execCommand('copy')
-  } catch {
-    copied = false
-  }
-  area.remove()
-  return copied
 }
 
 async function copyMessage(id: string, text: string): Promise<void> {

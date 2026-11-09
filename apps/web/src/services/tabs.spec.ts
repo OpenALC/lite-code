@@ -6,7 +6,10 @@ import {
   activeTab,
   adjacentTabId,
   clearClosedTabs,
+  closeOtherTabs,
+  closeSavedTabs,
   closeTab,
+  closeTabsToRight,
   INITIAL_TABS_STATE,
   markSaved,
   moveTabTo,
@@ -468,5 +471,41 @@ describe('Ctrl+Tab 循环切换', () => {
     openTab({ id: 'a.rs', title: 'a.rs' })
     const state = tabsStore.get()
     expect(adjacentTabId({ ...state, activeId: 'missing' }, 1)).toBe('sample')
+  })
+})
+
+describe('批量关闭标签', () => {
+  it('关闭其他只处理干净标签，保留 dirty 与目标标签', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'a' })
+    openTab({ id: 'b.rs', title: 'b.rs', content: 'b' })
+    openTab({ id: 'c.rs', title: 'c.rs', content: 'c' })
+    updateContent('b.rs', 'dirty')
+    activateTab('b.rs')
+
+    expect(closeOtherTabs('a.rs')).toBe(2)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['a.rs', 'b.rs'])
+    expect(tabsStore.get().activeId).toBe('a.rs')
+  })
+
+  it('关闭右侧只处理锚点之后的干净标签', () => {
+    openTab({ id: 'a.rs', title: 'a.rs' })
+    openTab({ id: 'b.rs', title: 'b.rs' })
+    openTab({ id: 'c.rs', title: 'c.rs' })
+    updateContent('c.rs', 'dirty')
+
+    expect(closeTabsToRight('a.rs')).toBe(1)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['sample', 'a.rs', 'c.rs'])
+    expect(closeTabsToRight('missing')).toBe(0)
+  })
+
+  it('关闭已保存会保留 dirty 标签并顺延激活', () => {
+    openTab({ id: 'a.rs', title: 'a.rs', content: 'a' })
+    openTab({ id: 'b.rs', title: 'b.rs', content: 'b' })
+    updateContent('a.rs', 'dirty')
+    activateTab('b.rs')
+
+    expect(closeSavedTabs()).toBe(2)
+    expect(tabsStore.get().tabs.map(t => t.id)).toEqual(['a.rs'])
+    expect(tabsStore.get().activeId).toBe('a.rs')
   })
 })

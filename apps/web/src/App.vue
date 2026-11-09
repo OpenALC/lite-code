@@ -1453,11 +1453,11 @@ onBeforeUnmount(() => {
 }
 
 .brand-mark {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border-radius: 5px;
-  background: linear-gradient(135deg, var(--accent), #9d7bff);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: url('/favicon.png') center / cover no-repeat;
+  box-shadow: 0 0 0 1px var(--border);
 }
 
 .brand-text {
@@ -1559,15 +1559,6 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 0;
   background: var(--bg);
-}
-
-.shell.agent-mode .brand-mark {
-  background: linear-gradient(135deg, #dedede, #8a8a8a);
-  box-shadow: none;
-}
-
-:root[data-theme='light'] .shell.agent-mode .brand-mark {
-  background: linear-gradient(135deg, #262626, #8a8a8a);
 }
 
 .shell.agent-mode .activity {

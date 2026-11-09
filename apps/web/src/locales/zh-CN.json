@@ -12,7 +12,15 @@
     "empty": "无打开的标签页",
     "dirty": "未保存的更改",
     "close": "关闭标签页",
-    "closeConfirm": "有未保存更改：再次点击确认关闭"
+    "closeConfirm": "有未保存更改：再次点击确认关闭",
+    "menu": {
+      "close": "关闭",
+      "closeOthers": "关闭其他",
+      "closeRight": "关闭右侧",
+      "closeSaved": "关闭已保存",
+      "copyPath": "复制路径",
+      "reveal": "在资源管理器中显示"
+    }
   },
   "editor": {
     "ready": "Monaco 已就绪：本缓冲区可编辑（P0 起壳验证）",

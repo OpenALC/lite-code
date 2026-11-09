@@ -103,3 +103,5 @@
 - 编辑器状态栏接入真实 Git 状态：分支、更改数、ahead/behind，启动时自动刷新
 - Ctrl+P 与 Agent 侧栏支持检索历史会话消息正文：`history_list` 返回最多 4000 字符摘要，演示模式对齐
 - 应用 Logo 换新：圆角透明背景母版，重生成 Windows/macOS/Linux/Android/iOS 全套图标与 Web favicon
+- 编辑器标签右键菜单：关闭/关闭其他/关闭右侧/关闭已保存/复制路径/在资源管理器显示
+- 标题栏品牌标记改用新 Logo，Agent 模式与亮色主题保持一致

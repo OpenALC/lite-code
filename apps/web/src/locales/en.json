@@ -12,7 +12,15 @@
     "empty": "No open tabs",
     "dirty": "Unsaved changes",
     "close": "Close tab",
-    "closeConfirm": "Unsaved changes — click again to confirm close"
+    "closeConfirm": "Unsaved changes — click again to confirm close",
+    "menu": {
+      "close": "Close",
+      "closeOthers": "Close Others",
+      "closeRight": "Close to the Right",
+      "closeSaved": "Close Saved",
+      "copyPath": "Copy Path",
+      "reveal": "Reveal in Explorer"
+    }
   },
   "editor": {
     "ready": "Monaco ready: this buffer is editable (P0 shell validation)",
