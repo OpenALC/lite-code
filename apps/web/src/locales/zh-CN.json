@@ -570,6 +570,9 @@
     "shortcuts": "Ctrl+Shift+P 命令面板 · Ctrl+P 快速打开"
   },
   "settings": {
+    "title": "设置",
+    "general": "通用",
+    "modelServices": "模型服务",
     "appearance": "外观",
     "theme": "主题",
     "dark": "深色",

@@ -762,6 +762,9 @@ function runMenu(action: () => void | Promise<void>): void {
 const SETTINGS_TAB_ID = '__settings__'
 function openSettings(): void {
   setAppMode('editor')
+  // 设置页需要完整编辑器宽度：暂时收起右侧 Agent/Git/DB 栏与底部面板。
+  rightVisible.value = false
+  bottomVisible.value = false
   openTab({
     id: SETTINGS_TAB_ID,
     title: t('activity.settings'),

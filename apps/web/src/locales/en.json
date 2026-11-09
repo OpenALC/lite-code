@@ -570,6 +570,9 @@
     "shortcuts": "Ctrl+Shift+P Command Palette · Ctrl+P Quick Open"
   },
   "settings": {
+    "title": "Settings",
+    "general": "General",
+    "modelServices": "Model services",
     "appearance": "Appearance",
     "theme": "Theme",
     "dark": "Dark",
