@@ -32,6 +32,7 @@ import {
   agentPickFiles,
   isTauri,
   providersLoad,
+  shellKind,
   type AgentAttachment,
   type ProviderView,
 } from '../services/bridge'
@@ -45,6 +46,8 @@ const props = defineProps<{
   previewOpen?: boolean
   /** 全宽 Agent 模式：Ctrl+F 打开会话内查找而不是编辑器查找。 */
   fullMode?: boolean
+  /** 只读外壳锁定模式：菜单只保留该项。 */
+  forceMode?: SessionMode
 }>()
 const emit = defineEmits<{
   'manage-providers': []
@@ -54,6 +57,10 @@ const emit = defineEmits<{
 const { t, te } = useI18n()
 
 const MODES: SessionMode[] = ['plan', 'chat', 'auto', 'yolo']
+/** forceMode 时只暴露锁定项；桌面不传，保持四种模式。 */
+const modeChoices = computed(() =>
+  props.forceMode ? MODES.filter(mode => mode === props.forceMode) : MODES,
+)
 const COMPACTION_FLASH_MS = 600
 const MAX_ATTACHMENTS = 10
 const DEFAULT_THINKING = ['off', 'low', 'medium', 'high']
@@ -77,6 +84,17 @@ const unsubscribePrefs = subscribePrefs(next => {
 })
 
 const tauri = isTauri()
+/** 附件选择依赖桌面原生选择器：只读外壳（shim 后 isTauri 也为 true）必须隐藏。 */
+const attachmentEnabled = shellKind() === 'tauri'
+
+// 锁定模式：首个会话创建前把控制器模式切到 forceMode（桌面不传，不触发）。
+watch(
+  () => props.forceMode,
+  mode => {
+    if (mode && state.value.mode !== mode) void props.controller.switchMode(mode)
+  },
+  { immediate: true },
+)
 const agent = computed(() => state.value.agent)
 const modelChoices = ref<ModelChoice[]>([])
 const defaultModelId = ref<string | null>(null)
@@ -863,7 +881,7 @@ function onComposerDragLeave(event: DragEvent): void {
 
 function onComposerDrop(event: DragEvent): void {
   dropping.value = false
-  if (!hasFiles(event) || !tauri) return
+  if (!hasFiles(event) || !attachmentEnabled) return
   const files = event.dataTransfer?.files
   if (files && files.length > 0) void addDroppedFiles([...files])
 }
@@ -1574,7 +1592,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
               class="pill-menu"
             >
               <button
-                v-for="mode in MODES"
+                v-for="mode in modeChoices"
                 :key="mode"
                 type="button"
                 class="pill-item"
@@ -1660,6 +1678,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
           <span class="spacer" />
 
           <button
+            v-if="attachmentEnabled"
             type="button"
             class="icon-btn attach-btn"
             :disabled="!tauri"

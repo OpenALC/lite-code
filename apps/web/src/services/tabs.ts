@@ -57,7 +57,7 @@ export function clearClosedTabs(): void {
 
 /** P0 样例缓冲区内容（与 main.rs 标签对应；不可保存，仅用于起壳展示）。 */
 export const SAMPLE_CONTENT = `// lite-code · P0
-// 这个缓冲区证明 Monaco 起壳成功：能打开、能编辑。
+// 这个缓冲区证明编辑器起壳成功：能打开、能编辑。
 // 文件系统集成（打开真实文件 / 保存 / 冲突检测）在 P1 落地。
 fn main() {
     println!("Hello, lite-code");

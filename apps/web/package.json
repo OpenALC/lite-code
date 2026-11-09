@@ -1,11 +1,12 @@
 {
   "name": "@lite-code/web",
   "private": true,
-  "version": "0.6.1-preview.49",
+  "version": "0.6.1-preview.50",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "build:ohos": "vue-tsc --noEmit && vite build --mode ohos",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint ."

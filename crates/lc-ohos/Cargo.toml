@@ -1,0 +1,16 @@
+[package]
+name = "lc-ohos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Lite Code 鸿蒙宿主：JSON dispatch、只读 fs 与 stub agent"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+lc-core = { workspace = true }
+lc-proto = { workspace = true }
+serde_json = { workspace = true }

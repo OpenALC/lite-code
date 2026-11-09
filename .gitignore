@@ -1,6 +1,7 @@
 target/
 node_modules/
 dist/
+dist-ohos/
 *.log
 .DS_Store
 Thumbs.db

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Hvigor launcher for the Lite Code HarmonyOS shell.
+#
+# DevEco Studio ships the hvigor engine under <DevEco>/tools/hvigor. This
+# launcher resolves that installation from DEVECO_HOME / DEVECO_SDK_HOME and
+# falls back to a project-local hvigor/hvigor-wrapper.js if one exists.
+
+set -u
+
+APP_HOME="$(cd "$(dirname "$0")" && pwd)"
+HVIGOR_JS=""
+
+if [ -n "${HVIGOR_WRAPPER_JS:-}" ] && [ -f "${HVIGOR_WRAPPER_JS}" ]; then
+  HVIGOR_JS="${HVIGOR_WRAPPER_JS}"
+elif [ -f "${APP_HOME}/hvigor/hvigor-wrapper.js" ]; then
+  HVIGOR_JS="${APP_HOME}/hvigor/hvigor-wrapper.js"
+else
+  DEVECO_CANDIDATE="${DEVECO_HOME:-}"
+  if [ -z "${DEVECO_CANDIDATE}" ] && [ -n "${DEVECO_SDK_HOME:-}" ]; then
+    DEVECO_CANDIDATE="$(cd "${DEVECO_SDK_HOME}/.." 2>/dev/null && pwd || true)"
+  fi
+  if [ -n "${DEVECO_CANDIDATE}" ] && [ -f "${DEVECO_CANDIDATE}/tools/hvigor/bin/hvigorw.js" ]; then
+    HVIGOR_JS="${DEVECO_CANDIDATE}/tools/hvigor/bin/hvigorw.js"
+  fi
+fi
+
+if [ -z "${HVIGOR_JS}" ]; then
+  echo "ERROR: hvigorw.js was not found." >&2
+  echo "Set DEVECO_SDK_HOME (for example D:\\ide\\Huawei\\DevEco Studio\\sdk)" >&2
+  echo "or DEVECO_HOME to the DevEco Studio installation directory." >&2
+  exit 1
+fi
+
+if [ -n "${NODE_HOME:-}" ] && [ -x "${NODE_HOME}/bin/node" ]; then
+  NODE_BIN="${NODE_HOME}/bin/node"
+elif [ -n "${NODE_HOME:-}" ] && [ -x "${NODE_HOME}/node.exe" ]; then
+  NODE_BIN="${NODE_HOME}/node.exe"
+elif command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node)"
+else
+  echo "ERROR: node was not found. Install Node.js or set NODE_HOME." >&2
+  exit 1
+fi
+
+cd "${APP_HOME}" || exit 1
+exec "${NODE_BIN}" "${HVIGOR_JS}" "$@"

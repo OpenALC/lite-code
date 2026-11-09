@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Lite Code HarmonyOS shell"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Lite Code read-only shell"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Lite Code"
+    }
+  ]
+}

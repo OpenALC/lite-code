@@ -1,0 +1,230 @@
+/* 鸿蒙只读外壳：手机三视图切换；≥900px 左文件树 + 中预览 + 右对话。 */
+.ohos-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.ohos-top {
+  flex: none;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: env(safe-area-inset-top) 12px 0;
+  background: var(--titlebar);
+  border-bottom: 1px solid var(--border);
+}
+
+.ohos-brand {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.ohos-project {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.ohos-top .spacer {
+  flex: 1;
+}
+
+.ohos-icon {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  color: var(--fg-dim);
+}
+
+.ohos-icon:hover {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+.ohos-error {
+  flex: none;
+  margin: 0;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--red, #e06c6c);
+  background: var(--panel-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.ohos-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.ohos-pane {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ohos-pane.is-active {
+  display: flex;
+}
+
+.ohos-nav {
+  flex: none;
+  display: flex;
+  height: calc(48px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--titlebar);
+  border-top: 1px solid var(--border);
+}
+
+.ohos-nav button {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
+.ohos-nav button.active {
+  color: var(--accent);
+}
+
+/* ---- 只读预览 ---- */
+
+.ro-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+
+.ro-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.ro-head {
+  flex: none;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ro-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.ro-badge {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.ro-truncated {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 10px;
+  color: var(--yellow, #e0b45c);
+  background: var(--panel-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.ro-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.ro-code {
+  margin: 0;
+  padding: 10px 0 20px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 4;
+  counter-reset: line;
+}
+
+.ro-line {
+  display: block;
+  position: relative;
+  min-height: 1.55em;
+  padding: 0 12px 0 48px;
+  white-space: pre;
+  counter-increment: line;
+}
+
+.ro-line::before {
+  content: counter(line);
+  position: absolute;
+  left: 0;
+  width: 36px;
+  padding-right: 10px;
+  text-align: right;
+  color: var(--fg-faint);
+  user-select: none;
+}
+
+/* ---- 平板 / 2in1：三栏 ---- */
+
+@media (min-width: 900px) {
+  .ohos-pane {
+    display: flex;
+  }
+
+  .ohos-pane.files {
+    flex: 0 0 240px;
+    border-right: 1px solid var(--border);
+  }
+
+  .ohos-pane.preview {
+    flex: 1 1 auto;
+  }
+
+  .ohos-pane.chat {
+    flex: 0 0 380px;
+    border-left: 1px solid var(--border);
+  }
+
+  .ohos-nav {
+    display: none;
+  }
+}

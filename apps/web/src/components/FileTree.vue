@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import {
   createEntry,
   deletePath,
+  isReadOnly,
   isTauri,
   movePath,
   readDir,
@@ -51,8 +52,12 @@ const rootLayer = computed(() => state.value.layers[state.value.root])
 const isEmpty = computed(() => rows.value.length === 0 && rootLayer.value?.state === 'ready')
 /** 未打开工作区（Tauri 模式且 root 为空；浏览器模式有占位数据可演示） */
 const noRoot = computed(() => state.value.root.length === 0 && !state.value.fallback)
+/** 只读外壳没有写入口：新建/重命名/删除/拖拽移动全部关闭 */
+const readOnly = isReadOnly()
 /** 浏览器占位数据不可写；拖拽与写操作统一关闭 */
-const canMutate = computed(() => state.value.root.length > 0 && !state.value.fallback)
+const canMutate = computed(
+  () => !readOnly && state.value.root.length > 0 && !state.value.fallback,
+)
 
 /** 文件打开失败的尾部提示（一次一条，成功即清除；错误码进 tooltip，UI.md §4） */
 const fileError = ref<{ code: string; message: string } | null>(null)
@@ -619,7 +624,7 @@ function onDragEnd(): void {
       {{ actionError.label }}
     </div>
     <div
-      v-if="!noRoot"
+      v-if="!noRoot && !readOnly"
       class="hint"
     >
       {{ t('tree.editableHint') }}

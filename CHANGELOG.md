@@ -118,6 +118,10 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 
+## [0.6.1-preview.50] - 2026-11-09
+
+- 鸿蒙首版外壳 MVP：`apps/ohos` 工程（虚拟 origin + onInterceptRequest + MIME/路径防护）、`scripts/ohos/build.mjs`、`apps/web` ohos 只读入口（build:ohos 产物 318KiB 无 Monaco）、`crates/lc-ohos` 宿主（fs 命令 + plan 锁定 + stub agent）；API 26 模拟器安装启动与渲染验证通过，HAP 2.89MiB
+
 ## [0.6.1-preview.49] - 2026-11-09
 
 - 顶栏下拉菜单并入全局 menu.css：文件/编辑/查看/帮助菜单与右键菜单同一套圆角/描边/hover

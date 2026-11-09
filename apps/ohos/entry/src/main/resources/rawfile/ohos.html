@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Lite Code · OHOS shell</title>
+  <style>
+    :root { color-scheme: dark light; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #1e1e1e;
+      color: #e6e6e6;
+      font-family: system-ui, -apple-system, "HarmonyOS Sans", sans-serif;
+    }
+    main { max-width: 32rem; padding: 2rem; text-align: center; }
+    h1 { margin: 0 0 .75rem; font-size: 1.5rem; font-weight: 600; }
+    p { margin: .35rem 0; font-size: .85rem; line-height: 1.5; }
+    #status { color: #f0a020; }
+    #detail { color: #9aa0a6; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Lite Code · OHOS shell</h1>
+    <p id="status">loading…</p>
+    <p id="origin"></p>
+    <p id="fallback"></p>
+    <p id="detail"></p>
+  </main>
+  <script>
+    (function () {
+      var status = document.getElementById('status');
+      var origin = document.getElementById('origin');
+      var fallback = document.getElementById('fallback');
+      var detail = document.getElementById('detail');
+
+      status.textContent = 'inline script OK';
+      origin.textContent = 'origin: ' + location.origin;
+      detail.textContent = navigator.userAgent;
+
+      fetch('https://app.litecode.example/__missing__')
+        .then(function (response) {
+          fallback.textContent = '404 interceptor check: HTTP ' + response.status;
+        })
+        .catch(function (error) {
+          fallback.textContent = '404 interceptor check failed: ' + error;
+        });
+    })();
+  </script>
+</body>
+</html>

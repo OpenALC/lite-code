@@ -1,0 +1,19 @@
+.hvigor/
+.idea/
+local.properties
+**/build/
+entry/.cxx/
+**/oh_modules/
+
+# Generated web assets: copied from apps/web/dist-ohos by scripts/ohos/build.mjs.
+entry/src/main/resources/rawfile/web/
+
+# Signing material must never enter the repository.
+signing/
+signature/
+*.p12
+*.p7b
+*.cer
+*.csr
+*.key
+*.pem

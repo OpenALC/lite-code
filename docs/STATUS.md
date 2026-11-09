@@ -1,13 +1,13 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.49 提交（见 `git log`）；版本 `0.6.1-preview.49`；契约 v0.7。
+> MILESTONES.md。快照时间：2026-11-09，main HEAD：preview.50 提交（见 `git log`）；版本 `0.6.1-preview.50`；契约 v0.7。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
 > P1 发布线：`v0.1.1-preview.1` draft 已按正确资产清单重建。
 > P2 发布线：`v0.2.1-preview.1` release 成功，6 个资产 draft 已产出（发布流程修复后首个自动 draft）。
-> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；滚动清单 updater-manifest 已提升到 .49；鸿蒙 MVP 切片 A/B 进行中。
+> P6 发布线：`v0.6.1-preview.4` 已发布（10 资产，含 arm64）；`preview.4/7/8/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/41/42/43/44/45/46/47/48/49` 已发布；`.40` 因 linuxdeploy 故障跳过（内容并入 .41）；`preview.50` 发布中；滚动清单 updater-manifest 已提升到 .49。
 
 ## 当前位置一览
 
@@ -65,7 +65,7 @@
 | P5 Agent DB 闭环 | ✅ 真实 SQLite：Agent 建表 → 写入 → 查询（`lc-core/tests/db_agent.rs`） |
 | P5 Git | ✅ status/diff/stage/unstage/commit/log 服务与 Tauri 命令；Git 面板 |
 | P5 发布 | ✅ `v0.5.1-preview.1` **已发布**（非 draft）：6 资产 |
-| P6 鸿蒙 | ✅ spike 完成（DevEco 26/API26）：ArkWeb 跑通前端、NAPI 传 handle；Monaco 内存/IME 未过 → 首版只读+对话；实施方案已归档 `docs/plans/ohos-shell.md`（虚拟 origin 加载、lc-ohos 宿主、MVP 两天切片） |
+| P6 鸿蒙 | ✅ spike + 首版外壳 MVP（preview.50）：`apps/ohos` 工程（dev.litecode.ohos，虚拟 origin 资源管线）、`build:ohos` 只读入口（318KiB 无 Monaco）、`lc-ohos` 宿主（fs/plan/stub agent，613 测试绿）、模拟器 API26 安装启动渲染验证；待办：NAPI 胶水（P3）、真 core 交叉编译探针、真机签名 |
 | P6 本地安全整改 | ✅ CSP frame-src/object-src；DB/MCP 输出不可信边界；审计范围写入 `docs/SECURITY-AUDIT.md` |
 | P6 A 类 arm64 | ✅ `v0.6.1-preview.3` tag 构建成功：aarch64 AppImage/deb、`lc-cli-arm64` 已发布 |
 | P6 A 类 更新器 | ✅ `update_check` + `latest.json` 生成器 + 回滚文档；无签名密钥时 `signed:false`，签名门禁未完全关闭 |
@@ -322,6 +322,17 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 5. **UI**：活动栏「插件」页、启停/重载/打开目录、命令执行、Ctrl+P 命令；
    设置页/供应商页不回归。
 6. **边界**：不承诺 VS Code API；无市场/签名/Webview/树视图；Node 插件为可信代码。
+
+## preview.50：鸿蒙首版外壳 MVP
+
+- `apps/ohos` 工程（dev.litecode.ohos）+ 虚拟 origin 资源管线（onInterceptRequest、MIME、
+  路径防护、404）+ `scripts/ohos/build.mjs`；HAP 2.89MiB。
+- `apps/web` ohos 只读入口（build:ohos 318KiB 无 Monaco）；`crates/lc-ohos` 宿主
+  （fs 命令复用 lc-core 校验、plan 锁定、stub agent，5 项新测试）。
+- 验证：cargo 613、web 408、lanes 12 全绿；模拟器 API26 安装/启动/渲染通过
+  （修复 MIME charset 致 HTML 纯文本问题）；真机拒未签名 HAP（预期）。
+- 待办：NAPI 胶水（P3）、lc-core OHOS 交叉编译探针、真机签名。
+- 发布：`v0.6.1-preview.50` 发布中。
 
 ## preview.49：顶栏菜单并入统一视觉
 

@@ -28,7 +28,7 @@
     }
   },
   "editor": {
-    "ready": "Monaco ready: this buffer is editable (P0 shell validation)",
+    "ready": "Editor ready: this buffer is editable (P0 shell validation)",
     "saved": "Saved",
     "savedDemo": "Saved (browser demo, not written to disk)",
     "saveFailed": "Save failed",

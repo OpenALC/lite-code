@@ -4,7 +4,7 @@ import pluginVue from 'eslint-plugin-vue'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist/', 'node_modules/'] },
+  { ignores: ['dist/', 'dist-ohos/', 'node_modules/'] },
   js.configs.recommended,
   // TS 已接管未定义全局的检查（window/HTMLElement 等），no-undef 会误报
   { rules: { 'no-undef': 'off' } },

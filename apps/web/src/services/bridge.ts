@@ -209,6 +209,21 @@ export function isTauri(): boolean {
   return internals() !== null
 }
 
+/** 承载前端的壳。`ohos` 由 tauriShim 注入的只读外壳标记识别。 */
+export type ShellKind = 'tauri' | 'ohos' | 'browser'
+
+export function shellKind(): ShellKind {
+  if (typeof window === 'undefined') return 'browser'
+  const marked = (window as unknown as { __LC_OHOS__?: boolean }).__LC_OHOS__
+  if (marked === true) return 'ohos'
+  return internals() !== null ? 'tauri' : 'browser'
+}
+
+/** 鸿蒙首版是「只读 + 对话」外壳：所有写操作入口必须关闭。 */
+export function isReadOnly(): boolean {
+  return shellKind() === 'ohos'
+}
+
 /** 桥接结果。ok 分支携带契约数据；error 分支携带契约 ErrorBody（错误码供 tooltip/日志，UI.md §4）。 */
 export type BridgeResult<T> =
   | { ok: true; data: T; fallback: boolean }
