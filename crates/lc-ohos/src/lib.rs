@@ -156,7 +156,8 @@ impl Host {
 
     fn create_session(&self, args: &Value) -> SessionInfo {
         let number = self.next_session.fetch_add(1, Ordering::Relaxed) + 1;
-        let (context_k, compress_at_k) = self.model_budget(args.get("model").and_then(Value::as_str));
+        let (context_k, compress_at_k) =
+            self.model_budget(args.get("model").and_then(Value::as_str));
         let info = SessionInfo {
             session_id: format!("ohos-{number}"),
             mode: SessionMode::Plan,
@@ -774,10 +775,7 @@ mod tests {
 
         let with_model = parse(
             &host
-                .dispatch(
-                    "session_create",
-                    r#"{"mode":"plan","model":"stub-chat"}"#,
-                )
+                .dispatch("session_create", r#"{"mode":"plan","model":"stub-chat"}"#)
                 .unwrap(),
         );
         assert_eq!(with_model["session"]["context_k"], 100);
