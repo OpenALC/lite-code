@@ -552,7 +552,14 @@
     "loading": "Searching…",
     "demo": "Browser demo: no real filesystem",
     "searchInFiles": "Search in files for “{query}”",
-    "invalidRegex": "Invalid regular expression"
+    "invalidRegex": "Invalid regular expression",
+    "replace": "Replace",
+    "replacePlaceholder": "Replace with…",
+    "replaceAll": "Replace All",
+    "replaceConfirm": "Replace in {files} files",
+    "replacing": "Replacing…",
+    "replaceDone": "Replaced {matches} occurrences in {files} files",
+    "replaceSkipped": "Skipped {count} files (unsaved changes or write failed)"
   },
   "welcome": {
     "title": "Welcome to Lite Code",

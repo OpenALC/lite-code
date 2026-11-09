@@ -4,10 +4,22 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { readFile, searchWorkspace, type SearchMatch, type SearchResult } from '../services/bridge'
+import {
+  readFile,
+  searchWorkspace,
+  writeFile,
+  type SearchMatch,
+  type SearchResult,
+} from '../services/bridge'
 import { requestReveal } from '../services/editorReveal'
 import { resolveEditorStrategy } from '../services/largeFile'
-import { activateTab, openTab, tabsStore } from '../services/tabs'
+import {
+  activateTab,
+  markSaved,
+  openTab,
+  tabsStore,
+  updateContent,
+} from '../services/tabs'
 import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{ root: string; seed?: { query: string; seq: number } }>()
@@ -20,8 +32,14 @@ const result = ref<SearchResult | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const isFallback = ref(false)
+const replaceOpen = ref(false)
+const replaceQuery = ref('')
+const replacing = ref(false)
+const replaceConfirm = ref(false)
+const replaceNote = ref('')
 
 let timer: ReturnType<typeof setTimeout> | null = null
+let confirmTimer: ReturnType<typeof setTimeout> | null = null
 let requestSeq = 0
 
 const summary = computed(() => {
@@ -52,6 +70,8 @@ async function run(q: string): Promise<void> {
 
 function schedule(): void {
   if (timer) clearTimeout(timer)
+  replaceNote.value = ''
+  replaceConfirm.value = false
   requestSeq += 1
   const q = query.value.trim()
   if (!q) {
@@ -136,8 +156,90 @@ async function openHit(path: string, line: number, column: number): Promise<void
   requestReveal(path, line, column)
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function armReplaceConfirm(): boolean {
+  if (replaceConfirm.value) return true
+  replaceConfirm.value = true
+  if (confirmTimer !== null) clearTimeout(confirmTimer)
+  confirmTimer = setTimeout(() => {
+    replaceConfirm.value = false
+    confirmTimer = null
+  }, 5000)
+  return false
+}
+
+async function replaceAll(): Promise<void> {
+  const data = result.value
+  const term = query.value.trim()
+  if (!data || !term || replacing.value) return
+  if (!armReplaceConfirm()) return
+  replaceConfirm.value = false
+  if (confirmTimer !== null) {
+    clearTimeout(confirmTimer)
+    confirmTimer = null
+  }
+  let pattern: RegExp
+  try {
+    pattern = new RegExp(
+      regex.value ? term : escapeRegExp(term),
+      caseSensitive.value ? 'g' : 'gi',
+    )
+  } catch {
+    error.value = t('search.invalidRegex')
+    return
+  }
+
+  replacing.value = true
+  error.value = null
+  replaceNote.value = ''
+  let changedFiles = 0
+  let changedMatches = 0
+  let skipped = 0
+  for (const file of data.files) {
+    const open = tabsStore.get().tabs.find(tab => tab.path === file.path)
+    if (open?.dirty) {
+      skipped += 1
+      continue
+    }
+    const loaded = await readFile(props.root, file.path)
+    if (!loaded.ok) {
+      skipped += 1
+      continue
+    }
+    const count = loaded.data.text.match(pattern)?.length ?? 0
+    if (count === 0) continue
+    const next = regex.value
+      ? loaded.data.text.replace(pattern, replaceQuery.value)
+      : loaded.data.text.replace(pattern, () => replaceQuery.value)
+    const written = await writeFile(file.path, next)
+    if (!written.ok) {
+      skipped += 1
+      continue
+    }
+    changedFiles += 1
+    changedMatches += count
+    if (open) {
+      updateContent(open.id, next)
+      markSaved(open.id)
+    }
+  }
+  replacing.value = false
+  replaceNote.value = t('search.replaceDone', {
+    files: changedFiles,
+    matches: changedMatches,
+  })
+  if (skipped > 0) {
+    replaceNote.value += ` ${t('search.replaceSkipped', { count: skipped })}`
+  }
+  await run(term)
+}
+
 onBeforeUnmount(() => {
   if (timer) clearTimeout(timer)
+  if (confirmTimer !== null) clearTimeout(confirmTimer)
   requestSeq += 1
 })
 </script>
@@ -177,6 +279,47 @@ onBeforeUnmount(() => {
       >
         .*
       </button>
+      <button
+        type="button"
+        class="toggle"
+        :class="{ active: replaceOpen }"
+        :title="t('search.replace')"
+        @click="replaceOpen = !replaceOpen"
+      >
+        <AppIcon
+          name="pencil"
+          :size="12"
+        />
+      </button>
+    </div>
+
+    <div
+      v-if="replaceOpen"
+      class="replace-box"
+    >
+      <input
+        v-model="replaceQuery"
+        type="text"
+        :placeholder="t('search.replacePlaceholder')"
+        spellcheck="false"
+        @keydown.enter="replaceAll"
+      >
+      <button
+        type="button"
+        class="replace-action"
+        :class="{ confirm: replaceConfirm }"
+        :disabled="replacing || !result || result.files.length === 0"
+        @click="replaceAll"
+      >
+        {{ replacing ? t('search.replacing') : replaceConfirm ? t('search.replaceConfirm', { files: result?.files.length ?? 0 }) : t('search.replaceAll') }}
+      </button>
+    </div>
+
+    <div
+      v-if="replaceNote"
+      class="meta replace-note"
+    >
+      {{ replaceNote }}
     </div>
 
     <div
@@ -290,6 +433,63 @@ onBeforeUnmount(() => {
   background: transparent;
   color: var(--fg);
   font-size: 12px;
+}
+
+.replace-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 0 8px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--input-bg, var(--bg));
+}
+
+.replace-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft, transparent);
+}
+
+.replace-box input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.replace-action {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.replace-action:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.replace-action.confirm {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+}
+
+.replace-action:disabled {
+  color: var(--fg-faint);
+}
+
+.replace-note {
+  margin-top: 4px;
+  color: var(--fg-dim);
 }
 
 .toggle {

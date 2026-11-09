@@ -552,7 +552,14 @@
     "loading": "搜索中…",
     "demo": "浏览器演示模式：无真实文件系统",
     "searchInFiles": "在文件中搜索 “{query}”",
-    "invalidRegex": "正则表达式无效"
+    "invalidRegex": "正则表达式无效",
+    "replace": "替换",
+    "replacePlaceholder": "替换为…",
+    "replaceAll": "替换全部",
+    "replaceConfirm": "确认替换 {files} 个文件",
+    "replacing": "替换中…",
+    "replaceDone": "已替换 {files} 个文件中的 {matches} 处",
+    "replaceSkipped": "跳过 {count} 个文件（有未保存更改或写入失败）"
   },
   "welcome": {
     "title": "欢迎使用 Lite Code",
