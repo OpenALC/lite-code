@@ -356,7 +356,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   通过）——打包插件系统六块收官 + db M3 契约 0.9；notes
   `docs/releases/0.6.1-preview.67.md`；workspace 714 项发版前实测全绿。
   后台发版脚本已修 `/tmp` 路径坑（上轮 step4 假循环根因）。
-- **插件市场设计定稿**（`docs/plans/plugin-marketplace.md`，agent-92）：
+- **市场 M1 核心已合**（`a1cc559`）：index/源/安装三模块 + version.rs
+  单一来源（~3900 行，lc-core 551 项，check-all 全量绿）；GC 挂启动/
+  web UI/签名档留 M1b/M2/M3。前置：**插件市场设计定稿**
+  （`docs/plans/plugin-marketplace.md`，agent-92）：
   静态 index+多源镜像（与 updater-manifest 同构，零服务端零新增重型依赖——
   ureq/zip/sha2 已在 lc-core）；签名两档（警告/强制 minisign 分钥）；
   curated PR 制审查；M1 index+安装/M2 更新卸载/M3 签名多镜像（13 点）。
