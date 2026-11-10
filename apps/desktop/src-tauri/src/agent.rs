@@ -18,8 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lc_core::agent::{
     AgentLoop, ApprovalDecision as CoreApprovalDecision, CompactionRecord, LocalToolExecutor,
-    LoopError, LoopOutcome, Session, SessionError, ToolError, ToolOutput, ToolRegistry, llm_event,
-    loop_outcome, mode_from_contract, session_info, session_instructions,
+    LoopError, LoopOutcome, Session, SessionError, ToolError, ToolOutput, ToolRegistry,
+    completion_events, llm_event, mode_from_contract, session_info, session_instructions,
 };
 use lc_core::llm::{LlmEvent, RuntimeError, load_for_model};
 use lc_core::mcp::{McpConfig, McpExecutor, McpHost};
@@ -256,14 +256,6 @@ fn compaction_event(session_id: &str, record: &CompactionRecord) -> CoreEvent {
         removed_messages: record.removed_messages,
         summary: record.summary.clone(),
     }
-}
-
-fn completion_events(session: &Session, outcome: &LoopOutcome) -> Vec<CoreEvent> {
-    let mut events = vec![CoreEvent::AgentSessionState {
-        session: session_info(session),
-    }];
-    events.extend(loop_outcome(&session.id, outcome));
-    events
 }
 
 /// 审批挂起时本轮没有结束，`busy` 保持到 `approval_resolve` 之后。

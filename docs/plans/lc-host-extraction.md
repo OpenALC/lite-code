@@ -58,7 +58,7 @@ crates/lc-ohos
      单测：回收序/running 保留/alive 抑制/并发轮次拒绝/unknown not_found）；
      workspace 663；check-all 全量门禁通过；模拟器切片 H 子集 b/c/d/f 全过
      （40 会话回收：ohos-5 not_found、ohos-41 ack；取消 cancelled；hilog 无 panic）。
-   - 明确不做：desktop `AgentSessions` 切换（M3 随 TurnRunner 一起）。
+   - 明确不做：desktop `AgentSessions` 切换（M3 判定见下，3c 保持宿主私有）。
 3. **M3 TurnRunner（切片修订，M2 后研读 desktop agent.rs 更新）**：
 
    **修订说明**：原设想「统一 `run_turn(factory, sink, cancel)` + ApprovalHook」。
@@ -79,13 +79,16 @@ crates/lc-ohos
      trait，删本地 `next_envelope`/`AtomicU64` seq。seq 起点：桌面现 0 起、
      ohos 1 起；统一走 `Seq`（1 起）后桌面首信封 seq 0→1——web 当前不消费
      envelope seq（已核实无丢序检测逻辑），单调性不变，风险低。
-   - **3b. 完成事件组合下沉**：lc-host 提供
-     `completion_events(info: SessionInfo, outcome: &LoopOutcome) -> Vec<CoreEvent>`
-     （桌面 `agent.rs` 已有同名私有 fn，原样下移）；lc-ohos 的 error 分支
-     组合不同（`loop_error_body` + session_state + done + stub 回退），仅共享
-     Ok 分支，error 路径留宿主。cancel 收尾形状两侧相同（swap 复位 →
-     cancelled state → done）但 info 来源不同（桌面从 `Session` 快照、ohos
-     从句柄写回），各留薄壳不合。
+   - **3b. 完成事件组合下沉（已合入 main）**：落点修订为 **lc-core
+     `agent::events`**（而非 lc-host——`completion_events` 依赖
+     `loop_outcome`/`session_info`，lc-host 不依赖 lc-core 是 M2 定下的边界）。
+     桌面 `agent.rs` 私有 `completion_events` 删除、改调共享实现（测试经
+     import 继续覆盖）；lc-core +1 项排序契约单测。完成事件序列的确切语义：
+     先发 `session_state` 快照，随后按终态区分——正常结束发一次
+     `agent:done(end_turn)`；等待审批发 `approval_required`（busy 保持，
+     等 `approval_resolve` 恢复后再走完成路径）；策略拒绝发
+     `permission_denied` 错误。鸿蒙保持 emitter 内写回交织的实现（plan
+     模式对审批/拒绝额外补 `agent:done`），事件顺序以共享函数为准。
    - **3c. 桌面 `AgentSessions` 表切 `Sessions<P>`：不做（M3a/M3b 实施后判定）**。
      桌面注册表语义与 `Sessions` 的本质不同：worker 长驻 + `Weak` 注册表自移除
      （无回收，alive 无用）、id 用 millis+counter（ordinal 无用）、busy CAS

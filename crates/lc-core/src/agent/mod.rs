@@ -19,7 +19,8 @@ pub use collector::{CollectedToolCall, CollectedTurn, CollectorError, TurnCollec
 pub use compact::{CompactionRecord, KEEP_RECENT_MESSAGES, compact, estimate_tokens};
 pub use environment::{EnvironmentContract, session_instructions};
 pub use events::{
-    approval_prompt, llm_event, loop_outcome, mode_from_contract, mode_to_contract, session_info,
+    approval_prompt, completion_events, llm_event, loop_outcome, mode_from_contract,
+    mode_to_contract, session_info,
 };
 pub use exec::{LocalToolExecutor, ToolCall, ToolError, ToolExecutor, ToolOutput};
 pub use r#loop::{

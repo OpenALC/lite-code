@@ -116,6 +116,20 @@ pub fn loop_outcome(session_id: &str, outcome: &LoopOutcome) -> Vec<CoreEvent> {
     }
 }
 
+/// 一轮正常结束（Ok 分支）的完成事件序列：`session_state` 快照在前，
+/// `loop_outcome` 事件随后。两端共享的排序契约（M3b 从桌面 `agent.rs`
+/// 下移）；鸿蒙 lc-ohos 的 Ok 分支因 `session_state` 写回与 Plan 模式
+/// 强约束交织在 emitter 内、不批量组装，且 plan 模式收到 NeedsApproval/
+/// Denied 时补发 `agent:done`（桌面审批挂起不补，busy 保持）——差异留在
+/// 宿主，本函数只钉住公共前缀顺序。
+pub fn completion_events(session: &Session, outcome: &LoopOutcome) -> Vec<CoreEvent> {
+    let mut events = vec![CoreEvent::AgentSessionState {
+        session: session_info(session),
+    }];
+    events.extend(loop_outcome(&session.id, outcome));
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +249,55 @@ mod tests {
                 stop_reason: "end_turn".into()
             }]
         );
+    }
+
+    #[test]
+    fn completion_events_put_session_state_first_for_all_outcomes() {
+        let session = Session::new("s1", PolicyMode::Auto).with_max_turns(5);
+
+        let final_events = completion_events(&session, &LoopOutcome::Final { text: "ok".into() });
+        assert!(matches!(
+            &final_events[0],
+            CoreEvent::AgentSessionState { session } if session.session_id == "s1"
+        ));
+        assert_eq!(
+            final_events[1],
+            CoreEvent::AgentDone {
+                session_id: "s1".into(),
+                stop_reason: "end_turn".into(),
+            }
+        );
+
+        let approval = LoopOutcome::NeedsApproval {
+            approval: ApprovalRequest {
+                id: 7,
+                tool: "shell".into(),
+                command: Some("echo hi".into()),
+                source: PolicySource::ExecuteReview,
+                reason: "review".into(),
+            },
+        };
+        let approval_events = completion_events(&session, &approval);
+        assert!(matches!(
+            &approval_events[1],
+            CoreEvent::AgentApprovalRequired { approval, .. } if approval.approval_id == 7
+        ));
+        // 共享契约：审批挂起只发 session_state + approval_required，不补
+        // agent:done（桌面 busy 保持到 resolve 之后；鸿蒙 plan 模式的 done 由
+        // 宿主按自己的语义补发）。
+        assert_eq!(approval_events.len(), 2);
+
+        let denied = completion_events(
+            &session,
+            &LoopOutcome::Denied {
+                source: PolicySource::Mode,
+                reason: "plan 模式禁止写入".into(),
+            },
+        );
+        assert!(matches!(
+            &denied[1],
+            CoreEvent::Error { error } if error.code == lc_proto::ErrorCode::PermissionDenied
+        ));
+        assert_eq!(denied.len(), 2);
     }
 }

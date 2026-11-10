@@ -17,3 +17,7 @@ scripts/perf/out/
 
 # 本地插件/工作区配置
 .lite-code/
+
+# 本地证据/草稿目录（约定永不提交，防误 add -A）
+.tmp/
+.zcode/
