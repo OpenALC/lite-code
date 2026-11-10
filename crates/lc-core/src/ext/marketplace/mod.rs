@@ -112,16 +112,22 @@ pub(crate) fn is_allowed_url(url: &str) -> bool {
     is_https_or_loopback(url) || is_file_url(url)
 }
 
-/// `file://` URL → 本地路径。支持 `file:///abs`（Windows 下 `/C:/...` 剥一层
-/// 前导斜杠）与 `file://localhost/abs`；拒绝 `..` 段，不做百分号解码
-/// （M1 约定路径不含空格，生成端与测试均使用原始路径）。
+/// `file://` URL → 本地路径。支持 `file:///abs`：Windows 盘符（`/C:/...`）
+/// 剥一层前导斜杠，Unix 绝对路径（`/tmp/...`）保留前导斜杠；也支持
+/// `file://localhost/abs`；拒绝 `..` 段，不做百分号解码（M1 约定路径不含
+/// 空格，生成端与测试均使用原始路径）。
 pub(crate) fn file_url_to_path(url: &str) -> Option<PathBuf> {
     if !is_file_url(url) {
         return None;
     }
     let rest = url.strip_prefix("file://")?;
     let path = if let Some(stripped) = rest.strip_prefix('/') {
-        stripped
+        // Windows 盘符（`/C:/...`）才剥前导斜杠；`/tmp/...` 这类 Unix 绝对
+        // 路径必须保留，否则解析成相对路径后文件打开失败（Ubuntu CI 实测）。
+        let is_windows_drive = stripped.len() >= 2
+            && stripped.as_bytes()[0].is_ascii_alphabetic()
+            && stripped.as_bytes()[1] == b':';
+        if is_windows_drive { stripped } else { rest }
     } else {
         let end = rest.find('/')?;
         if !rest[..end].eq_ignore_ascii_case("localhost") {
@@ -354,8 +360,9 @@ mod tests {
 
     #[test]
     fn file_url_round_trips_to_local_path() {
-        let path = file_url_to_path("file:///tmp/lite-code/index.json").expect("parse file url");
-        assert!(path.ends_with(Path::new("tmp/lite-code/index.json")));
+        // Unix 绝对路径必须保留前导斜杠（回归：曾被剥成相对路径导致 CI 红）。
+        let unix = file_url_to_path("file:///tmp/lite-code/index.json").expect("parse unix url");
+        assert_eq!(unix, Path::new("/tmp/lite-code/index.json"));
 
         let windows = file_url_to_path("file:///C:/tmp/index.json").expect("parse windows url");
         assert!(windows.ends_with(Path::new("C:/tmp/index.json")));
