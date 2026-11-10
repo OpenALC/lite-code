@@ -395,8 +395,15 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   注意：本轮子代理并发期间发生 stash 误操作事故（agent-84 误 git stash
   卷走他轨在途改动，后已被 pop 还原），主 agent 已外科手术隔离提交，
   各轨道最终状态以验收时全量门禁为准。
-- **Track B-M2 待派**（下一切片）：字节截断加固（MAX_CELL_BYTES/
-  MAX_RESULT_BYTES）+ CI PG/MySQL 服务容器集成测试。
+- **子代理 swarm 四轨道全部落地**（限额恢复后首轮，main `c2b3902`）：
+  Track A 插件级 Agent 工具（`002cf1a`，21 文件+2117，check-all 全绿）；
+  Track C LSP 补全/悬停/跳转（`74dcf3e`，契约 v0.8，web 477）；
+  Track B-M1 MySQL/PG 连接 UI（`50a81e3`）；B-M2 字节截断+CI 集成
+  （`65e0b14`+断言修复 `f040548`+clippy `9422b1e`——真实 PG/MySQL 集成
+  首跑验证通过：roundtrip/read-only/query/explain 全绿）。lc-host M4
+  关闭（`bafdd06`）；preview.65 已发布（10 资产+manifest .65）。
+  事故记录：agent-84 误 git stash 卷走他轨 WIP（已 pop 还原，主 agent
+  外科手术隔离提交，未污染任何轨道最终状态）。
   perf.yml 已在最新 main 触发（run 42858384352），观测 final 复审记录
   的窗口开关残留计数问题。
 - **perf 残留观测结论**（run 42858384352，main `dea9568`）：窗口开关 20 次
