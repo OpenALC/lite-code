@@ -358,7 +358,11 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   后台发版脚本已修 `/tmp` 路径坑（上轮 step4 假循环根因）。
 - **市场 M1 核心已合**（`a1cc559`）：index/源/安装三模块 + version.rs
   单一来源（~3900 行，lc-core 551 项，check-all 全量绿）；GC 挂启动/
-  web UI/签名档留 M1b/M2/M3。前置：**插件市场设计定稿**
+  web UI 已随 M1b 落地（`d073d2a`：浏览 tab+§3.7 确认对话框+563 项；
+  包大小暂显「未知」待 index 线补 size 字段）；Ubuntu CI 红已修
+  （`8173a52` file_url_to_path Unix 绝对路径——教训：file:// 解析必须
+  按平台分支断言）。GC 挂启动/签名档留 M1b 接线/M2/M3。前置：
+  **插件市场设计定稿**
   （`docs/plans/plugin-marketplace.md`，agent-92）：
   静态 index+多源镜像（与 updater-manifest 同构，零服务端零新增重型依赖——
   ureq/zip/sha2 已在 lc-core）；签名两档（警告/强制 minisign 分钥）；
