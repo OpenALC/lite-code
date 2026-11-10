@@ -40,6 +40,7 @@ Windows 一等公民，Linux 顺带，macOS 不构建。
 | `contract` | ubuntu-22.04 | 重新生成 TS 绑定，`git diff --exit-code` |
 | `lanes` | ubuntu-22.04 | `scripts/check-lanes.sh` 越界 import 检查 |
 | `web` | ubuntu-22.04 | `pnpm install --frozen-lockfile` / lint / typecheck / test / build |
+| `db-integration` | ubuntu-22.04 | PG/MySQL 服务容器上跑 `cargo test --locked db_integration`（完整 sidecar 管道；缺服务自动跳过） |
 | `audit` | ubuntu-22.04 | `pnpm audit --prod --audit-level high --registry=https://registry.npmjs.org`；发现 high/critical 漏洞或网络失败均 fail |
 | `updater-manifest` | ubuntu-22.04 | `node --test scripts/gen-update-manifest.test.mjs` |
 | `deny` | ubuntu-22.04 | `cargo deny check`（licenses / bans / advisories / sources） |

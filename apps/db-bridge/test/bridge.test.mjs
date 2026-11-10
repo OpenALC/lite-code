@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createBridge } from '../src/bridge.mjs';
 import { schemaSql } from '../src/config.mjs';
@@ -738,4 +741,181 @@ test('disconnect closes the driver and clears the connection', async () => {
     bridge.query({ connection_id: 'pg', sql: 'SELECT 1' }),
     (error) => error.code === 'invalid_argument',
   );
+});
+
+// ==== 字节截断（docs/plans/db-mysql-pg.md §3.5）====
+
+const SUFFIX = '…[truncated]';
+const CELL_BUDGET = 4096;
+const RESULT_BUDGET = 128 * 1024;
+
+test('postgres query truncates oversized cells with a suffix', async () => {
+  const { bridge, calls } = setup();
+  await bridge.connect(pgConnect());
+  calls.log.length = 0;
+
+  // 纯 ASCII 大 TEXT：截断后整体仍在 4 KiB 内并带省略后缀。
+  calls.pg.rows = [[1, 'x'.repeat(10_000)]];
+  const ascii = await bridge.query({
+    connection_id: 'pg',
+    sql: 'SELECT id, name FROM users',
+    limit: 10,
+  });
+  const asciiCell = ascii.rows[0][1];
+  assert.ok(asciiCell.endsWith(SUFFIX));
+  assert.ok(Buffer.byteLength(asciiCell, 'utf8') <= CELL_BUDGET);
+  assert.ok(asciiCell.length < 10_000, '单元格必须被截短');
+  assert.equal(ascii.truncated, false);
+
+  // 多字节 UTF-8：按字节截断但不能切出非法序列。
+  calls.pg.rows = [[2, '中'.repeat(2000)]];
+  const utf8 = await bridge.query({
+    connection_id: 'pg',
+    sql: 'SELECT id, name FROM users',
+    limit: 10,
+  });
+  const utf8Cell = utf8.rows[0][1];
+  assert.ok(utf8Cell.endsWith(SUFFIX));
+  assert.ok(Buffer.byteLength(utf8Cell, 'utf8') <= CELL_BUDGET);
+  assert.ok(!utf8Cell.includes('�'), '不应出现替换字符');
+
+  // 恰好 4 KiB 的单元格不动；超 1 字节才截断。
+  calls.pg.rows = [[3, 'y'.repeat(CELL_BUDGET)]];
+  const exact = await bridge.query({
+    connection_id: 'pg',
+    sql: 'SELECT id, name FROM users',
+    limit: 10,
+  });
+  assert.equal(exact.rows[0][1], 'y'.repeat(CELL_BUDGET));
+});
+
+test('postgres query stops early when result byte budget is exceeded', async () => {
+  const { bridge, calls } = setup();
+  await bridge.connect(pgConnect());
+  // 每行 4000 字节（未超单元格上限）：32 行 = 128 KiB 预算内，第 33 行停取。
+  calls.pg.rows = Array.from({ length: 40 }, (_, index) => [
+    index + 1,
+    'a'.repeat(4000),
+  ]);
+  calls.log.length = 0;
+
+  const result = await bridge.query({
+    connection_id: 'pg',
+    sql: 'SELECT id, name FROM users',
+    limit: 100,
+  });
+
+  assert.equal(result.row_count, Math.floor(RESULT_BUDGET / 4000));
+  assert.equal(result.rows.length, result.row_count);
+  assert.equal(result.truncated, true);
+  assert.equal(result.rows[0][1], 'a'.repeat(4000));
+});
+
+test('mysql query applies cell truncation and result byte budget', async () => {
+  const { bridge, calls } = setup();
+  await bridge.connect(mysqlConnect());
+  calls.log.length = 0;
+
+  calls.mysql.rows = [['b'.repeat(5000)], [null]];
+  const cellCut = await bridge.query({
+    connection_id: 'my',
+    sql: 'SELECT note FROM users',
+    limit: 10,
+  });
+  assert.ok(cellCut.rows[0][0].endsWith(SUFFIX));
+  assert.ok(Buffer.byteLength(cellCut.rows[0][0], 'utf8') <= CELL_BUDGET);
+  assert.equal(cellCut.rows[1][0], null);
+  assert.equal(cellCut.truncated, false);
+
+  calls.mysql.rows = Array.from({ length: 40 }, () => ['c'.repeat(4000)]);
+  const budgetHit = await bridge.query({
+    connection_id: 'my',
+    sql: 'SELECT note FROM users',
+    limit: 100,
+  });
+  assert.equal(budgetHit.row_count, Math.floor(RESULT_BUDGET / 4000));
+  assert.equal(budgetHit.truncated, true);
+});
+
+test('mssql query applies cell truncation and result byte budget', async () => {
+  const { bridge, calls } = setup();
+  await bridge.connect(mssqlConnect());
+  calls.log.length = 0;
+
+  calls.mssql.rows = [[1, 'm'.repeat(9000)], [2, 'tail']];
+  const result = await bridge.query({
+    connection_id: 'ms',
+    sql: 'SELECT id, name FROM dbo.users',
+    limit: 10,
+  });
+  assert.ok(result.rows[0][1].endsWith(SUFFIX));
+  assert.ok(Buffer.byteLength(result.rows[0][1], 'utf8') <= CELL_BUDGET);
+  assert.equal(result.rows[1][1], 'tail');
+  assert.equal(result.truncated, false);
+
+  calls.mssql.rows = Array.from({ length: 40 }, (_, index) => [
+    index + 1,
+    'n'.repeat(4000),
+  ]);
+  const budgetHit = await bridge.query({
+    connection_id: 'ms',
+    sql: 'SELECT id, name FROM dbo.users',
+    limit: 100,
+  });
+  assert.equal(budgetHit.row_count, Math.floor(RESULT_BUDGET / 4000));
+  assert.equal(budgetHit.truncated, true);
+});
+
+test('sqlite query applies cell truncation and result byte budget', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'db-bridge-truncate-'));
+  const { bridge } = setup();
+  try {
+    await bridge.connect({
+      connection_id: 'sq',
+      kind: 'sqlite',
+      database: join(directory, 'test.sqlite'),
+      read_only: false,
+    });
+    await bridge.execute({
+      connection_id: 'sq',
+      sql: 'CREATE TABLE items (id INTEGER PRIMARY KEY, body TEXT)',
+    });
+
+    const big = 'z'.repeat(10_000);
+    await bridge.execute({
+      connection_id: 'sq',
+      sql: `INSERT INTO items (id, body) VALUES (1, '${big}')`,
+    });
+    const single = await bridge.query({
+      connection_id: 'sq',
+      sql: 'SELECT id, body FROM items',
+      limit: 10,
+    });
+    const cell = single.rows[0][1];
+    assert.ok(cell.endsWith(SUFFIX));
+    assert.ok(Buffer.byteLength(cell, 'utf8') <= CELL_BUDGET);
+    assert.equal(single.truncated, false);
+
+    const rowText = 'y'.repeat(4000);
+    for (let id = 2; id <= 41; id += 1) {
+      await bridge.execute({
+        connection_id: 'sq',
+        sql: `INSERT INTO items (id, body) VALUES (${id}, '${rowText}')`,
+      });
+    }
+    const many = await bridge.query({
+      connection_id: 'sq',
+      sql: 'SELECT body FROM items WHERE id >= 2 ORDER BY id',
+      limit: 100,
+    });
+    // 40 行 × 4000 字节：预算内只放得下 32 行，提前停取并标记。
+    assert.equal(many.row_count, Math.floor(RESULT_BUDGET / 4000));
+    assert.equal(many.rows.length, many.row_count);
+    assert.equal(many.truncated, true);
+    assert.equal(many.rows[many.rows.length - 1][0], rowText);
+  } finally {
+    // Windows 下开着句柄删不掉文件，先关连接再清目录。
+    await bridge.disconnect({ connection_id: 'sq' }).catch(() => {});
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

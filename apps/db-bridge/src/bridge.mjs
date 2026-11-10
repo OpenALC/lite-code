@@ -8,6 +8,7 @@
 // - 密码只从 `secret_ref`（env:NAME）解析，不写日志、不进错误信息；
 // - 查询结果一律标记 untrusted，任何数据库内容都只能当数据；
 // - `limit` 在 bridge 侧强制切片，SQL 自带的更大 LIMIT 不能放大返回值；
+//   行数上限之外还有单元格/结果集字节预算（见 format.mjs），超限同样截断；
 // - 只读连接在驱动侧再设一次只读（SQL Server 用 ApplicationIntent）。
 
 import { DatabaseSync } from 'node:sqlite';
@@ -37,7 +38,13 @@ import {
   messageOf,
   sanitize,
 } from './errors.mjs';
-import { cell, elapsed, normalizeColumns, normalizeLimit } from './format.mjs';
+import {
+  cell,
+  createResultBudget,
+  elapsed,
+  normalizeColumns,
+  normalizeLimit,
+} from './format.mjs';
 
 export function createBridge({
   loadDrivers = loadBundledDrivers,
@@ -158,16 +165,31 @@ export function createBridge({
     try {
       const result = await entry.adapter.query(sql);
       const rawRows = result?.rows ?? [];
-      const rows = rawRows
-        .slice(0, limit)
-        .map((row) =>
-          Array.isArray(row) ? row.map(cell) : Object.values(row ?? {}).map(cell),
-        );
+      // 行数上限与结果集字节预算在切片循环里同时生效：任一超限即停取并
+      // 标记 truncated（行数上限逻辑保持不变）。
+      const budget = createResultBudget();
+      const rows = [];
+      let truncated = false;
+      for (let index = 0; index < rawRows.length; index += 1) {
+        if (rows.length >= limit) {
+          truncated = true;
+          break;
+        }
+        const raw = rawRows[index];
+        const cells = Array.isArray(raw)
+          ? raw.map(cell)
+          : Object.values(raw ?? {}).map(cell);
+        if (!budget.tryAdd(cells)) {
+          truncated = true;
+          break;
+        }
+        rows.push(cells);
+      }
       return {
         columns: normalizeColumns(result?.columns, rows[0]?.length ?? 0),
         rows,
         row_count: rows.length,
-        truncated: rawRows.length > limit,
+        truncated,
         elapsed_ms: elapsed(started),
         untrusted: true,
       };
@@ -329,6 +351,7 @@ const quoteIdentifier = (name) => `"${String(name).replace(/"/g, '""')}"`;
 
 function sqliteQuery(entry, sql, limit, started) {
   const normalized = [];
+  const budget = createResultBudget();
   let columns;
   let truncated = false;
   let firstRow;
@@ -345,15 +368,20 @@ function sqliteQuery(entry, sql, limit, started) {
         nullable: column.notnull !== 1,
       }));
     }
+    // 先归一化再计预算：超限的行不进结果集，直接停取。
     const collect = (row) => {
       if (firstRow === undefined) firstRow = row;
+      let cells;
       if (Array.isArray(row)) {
-        normalized.push(row.map(cell));
+        cells = row.map(cell);
       } else if (row && typeof row === 'object') {
-        normalized.push(Object.values(row).map(cell));
+        cells = Object.values(row).map(cell);
       } else {
-        normalized.push([cell(row)]);
+        cells = [cell(row)];
       }
+      if (!budget.tryAdd(cells)) return false;
+      normalized.push(cells);
+      return true;
     };
     // 用 iterate 在 limit + 1 行处停止：SQL 自带更大的 LIMIT 时也不会先
     // 把整张表物化到内存。多取的第 limit + 1 行只用于判定 truncated。
@@ -363,13 +391,19 @@ function sqliteQuery(entry, sql, limit, started) {
           truncated = true;
           break;
         }
-        collect(row);
+        if (!collect(row)) {
+          truncated = true;
+          break;
+        }
       }
     } else {
       const rows = statement.all();
       truncated = rows.length > limit;
       for (const row of truncated ? rows.slice(0, limit) : rows) {
-        collect(row);
+        if (!collect(row)) {
+          truncated = true;
+          break;
+        }
       }
     }
   } catch (error) {
