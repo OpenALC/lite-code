@@ -769,7 +769,45 @@ function openSettings(section: SettingsSection = 'general'): void {
   settingsOpen.value = true
   settingsReturnFocus.value =
     document.activeElement instanceof HTMLElement ? document.activeElement : null
-  void nextTick(() => settingsDialog.value?.focus())
+  void nextTick(() => {
+    const root = settingsDialog.value
+    if (!root) return
+    const first = root.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
+    ;(first ?? root).focus()
+  })
+}
+
+// 可聚焦控件（禁用项不计入）：打开聚焦与 Tab 循环共用。
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+// 模态打开期间的捕获阶段守卫：拦截应用级全局快捷键（CodeEditor 的 Ctrl+S
+// 保存、AgentPanel 的 Ctrl+F 查找、切页签/侧栏等窗口级监听），输入框原生
+// 编辑键（Ctrl+A/C/V/X/Z 等）不受影响（readiness 复核 2026-11-10）。
+function onModalGuardKeydown(event: KeyboardEvent): void {
+  if (!settingsOpen.value) return
+  const mod = event.ctrlKey || event.metaKey
+  if (!mod) return
+  const key = event.key.toLowerCase()
+  const blocked =
+    key === 's' ||
+    key === 'f' ||
+    key === 'p' ||
+    key === 'o' ||
+    key === 'w' ||
+    key === 'b' ||
+    key === 'j' ||
+    key === 'n' ||
+    key === ',' ||
+    key === '=' ||
+    key === '-' ||
+    key === '0' ||
+    key === 'tab' ||
+    (event.shiftKey && key === 't')
+  if (blocked) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
 }
 
 function closeSettings(): void {
@@ -778,18 +816,19 @@ function closeSettings(): void {
   settingsReturnFocus.value = null
 }
 
-// Tab 焦点循环锁在浮层内（复审 P2-1：键盘不落到背景编辑器）。
+// Tab 焦点循环锁在浮层内（readiness 复核：容器自身聚焦时反向 Tab 也拦截）。
 function onSettingsDialogKey(event: KeyboardEvent): void {
   if (event.key !== 'Tab' || !settingsDialog.value) return
   const root = settingsDialog.value
-  const focusables = root.querySelectorAll<HTMLElement>(
-    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-  )
+  const focusables = root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
   if (focusables.length === 0) return
   const first = focusables[0]
   const last = focusables[focusables.length - 1]
   const current = document.activeElement
-  if (event.shiftKey && (current === first || !root.contains(current))) {
+  if (
+    event.shiftKey &&
+    (current === first || current === root || !root.contains(current))
+  ) {
     event.preventDefault()
     last.focus()
   } else if (!event.shiftKey && current === last) {
@@ -926,6 +965,7 @@ onMounted(() => {
   document.documentElement.lang = prefs.value.locale
   renameTab(EXTENSIONS_TAB_ID, t('activity.extensions'))
   window.addEventListener('keydown', onKey)
+  window.addEventListener('keydown', onModalGuardKeydown, true)
   window.addEventListener('click', () => { openMenu.value = null })
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
   void taskSession.refresh()
@@ -959,6 +999,7 @@ onBeforeUnmount(() => {
   dbSession.dispose()
   gitSession.dispose()
   window.removeEventListener('keydown', onKey)
+  window.removeEventListener('keydown', onModalGuardKeydown, true)
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
 })
 </script>
