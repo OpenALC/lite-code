@@ -125,7 +125,10 @@
 - lc-host M2：会话编排骨架下沉共享 crate（`SessionHandle`/`SessionEntry<P>`/`Sessions`，鸿蒙删 194 行本地实现，36 项测试语义不变全过；lc-host +9 会话单测）
 - lc-host M3a：事件出口统一（`CoreEventSink`/`envelope`/`Seq::from_u64` 下沉，桌面 seq 统一 1 起）
 - lc-core M3b：`completion_events` 完成事件排序契约共享（三终态区分 end_turn/approval_required/permission_denied），桌面删私有实现
-- 设置页改为模式无关模态浮层（Kimi Code/Zcode 行为）：任何模式打开设置不再跳转 VSC；新增「供应商」分区内嵌供应商管理；Agent 侧栏 footer 入口直达浮层
+- 设置页改为模式无关模态浮层（Kimi Code/Zcode 行为）：任何模式打开设置不再跳转 VSC；新增「供应商」分区内嵌供应商管理；Agent 侧栏 footer 入口直达浮层（含焦点管理/键盘隔离/遗留标签过滤）
+- 插件级 Agent 工具：插件经 `contributes.tools` 向 AgentLoop 贡献工具（30s 超时/128KiB 截断/UNTRUSTED 边界），Risk::Mutating 走既有审批；ext-host 协议 `tool/execute` + `ctx.tools.register`（agent-81）
+- MySQL/PostgreSQL 连接管理 UI（M1）：远程连接表单（env 密码名不落明文）+ dbStore 放开四 kind（agent-84）；db-bridge 结果集字节截断（4KiB 单元格/128KiB 预算）+ CI PG/MySQL 服务容器集成测试（agent-85）
+- LSP 编辑器智能三件套（契约 v0.8）：completion/hover/definition 按路径请求 + Monaco 异步 provider + 跨文件跳转 registerEditorOpener（agent-82）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
