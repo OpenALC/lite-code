@@ -103,7 +103,15 @@ crates/lc-ohos
    两端信封形状不变（`isCoreEvent`/TS 零改动）；模拟器切片 H 子集 b/c/d/f
    回归；web 431 + workspace 全绿 + check-all；lc-host 新增 cancel 中断/
    seq 连续单测。
-4. **M4 收尾**：`spawn_worker` 仅剩桌面装配参数；lc-ohos `RealAgentFactory`/stub/预探成为 factory 组合。删除两端死代码。
+4. ~~**M4 收尾**~~：**已判定无需单独执行（2026-11-11）**。M3 修订后重新审视：
+   factory 组合在 M2/M3 形态下已自然成立——lc-ohos `RealAgentFactory`
+   返回 `Result`，stub 回退与 TCP 预探分别落在 turn 层（`run_agent_turn`
+   的两条回退路径）与 factory 内（`unreachable_target` 预探），职责清晰
+   无需搬迁；桌面 worker 保留长驻命令循环（M3c 判定）。死代码清扫：
+   clippy `-D warnings` 全绿无编译可见死代码；全库孤儿组件扫描仅发现
+   `apps/web/src/components/RuntimeSettings.vue`（414 行零引用），已删除。
+   lc-host 抽取计划至此全部关闭（M1 envelope / M2 sessions / M3a 事件出口
+   / 3b 完成事件组合 / 3c·3d 判定不做 / M4 收尾归零）。
 
 ## 4. 测试策略
 
