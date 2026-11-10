@@ -1,7 +1,7 @@
 {
   "name": "@lite-code/web",
   "private": true,
-  "version": "0.6.1-preview.65",
+  "version": "0.6.1-preview.66",
   "type": "module",
   "scripts": {
     "dev": "vite",

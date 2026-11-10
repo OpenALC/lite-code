@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "lc-cli"
-version = "0.6.1-preview.65"
+version = "0.6.1-preview.66"
 dependencies = [
  "clap",
  "lc-core",
@@ -2222,7 +2222,7 @@ dependencies = [
 
 [[package]]
 name = "lc-core"
-version = "0.6.1-preview.65"
+version = "0.6.1-preview.66"
 dependencies = [
  "dirs",
  "globset",
@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "lc-desktop"
-version = "0.6.1-preview.65"
+version = "0.6.1-preview.66"
 dependencies = [
  "lc-core",
  "lc-host",
@@ -2259,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "lc-host"
-version = "0.6.1-preview.65"
+version = "0.6.1-preview.66"
 dependencies = [
  "lc-proto",
  "serde_json",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "lc-ohos"
-version = "0.6.1-preview.65"
+version = "0.6.1-preview.66"
 dependencies = [
  "lc-core",
  "lc-host",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "lc-proto"
-version = "0.6.1-preview.65"
+version = "0.6.1-preview.66"
 dependencies = [
  "serde",
  "serde_json",

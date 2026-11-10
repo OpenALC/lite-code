@@ -1,7 +1,7 @@
 {
   "name": "lite-code",
   "private": true,
-  "version": "0.6.1-preview.65",
+  "version": "0.6.1-preview.66",
   "packageManager": "pnpm@10.33.3",
   "engines": {
     "node": ">=22"
