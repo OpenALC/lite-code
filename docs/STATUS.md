@@ -362,7 +362,14 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   新增「供应商」分区内嵌 ProvidersPanel；Agent 侧栏 footer 供应商/设置直达
   浮层。桌面 dev 运行时 e2e 全过（Agent 模式开浮层保持模式、Esc 关闭）；
   web 四件套 + build:ohos 全绿；demo 同步模态化。
-- **待发**：preview.65 tag（notes 已按审查定稿，等发版指令）。
+- **复审四项已修**（`a31c8cc`，复审文档 `docs/reviews/2026-11-10-main-rereview.md`）：
+  供应商编辑单实例（编辑器区页签移除，活动栏入口直达浮层模型分区）；
+  demo `?view=settings` 启动中断（模态标记移到脚本前）；浮层焦点管理
+  （移入/Tab 锁定/屏蔽后台快捷键/还原焦点）；持久化遗留
+  `__settings__`/`__providers__` 标签恢复过滤（+1 单测，web 432 项）。
+  运行时 e2e 全过；release notes 验证记录按复审更正（CI 取消链说明、
+  web 变更列明、432 计数）。
+- **待发**：preview.65 tag（notes 已按两轮审查定稿，等发版指令）。
 
 ## main(2)：lc-host M3a 事件出口统一（f8a4cce）
 
