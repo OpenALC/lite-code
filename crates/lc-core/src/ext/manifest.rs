@@ -40,6 +40,10 @@ pub(crate) struct PluginManifest {
     pub runtime: PluginRuntime,
     #[serde(default)]
     pub main: Option<String>,
+    /// 激活事件（docs/EXTENSIONS.md §4）：空数组或含 `*` 立即激活；
+    /// 仅 `onCommand:<commandId>` 时延迟到首次命令/工具调用。
+    #[serde(default, rename = "activationEvents")]
+    pub activation_events: Vec<String>,
     #[serde(default)]
     pub contributes: Contributes,
 }
@@ -275,6 +279,22 @@ fn validate_manifest(
     if manifest.name.is_empty() {
         manifest.name = manifest.id.clone();
     }
+
+    // 激活事件校验（docs/EXTENSIONS.md §4）：v1 仅支持 `*` 与
+    // `onCommand:<commandId>`；非法事件只把该插件标记为 error。
+    let mut activation_events = Vec::new();
+    for event in &manifest.activation_events {
+        let event = event.trim();
+        if event != "*" && !event.starts_with("onCommand:") {
+            return Err(format!(
+                "activationEvents 无效：`{event}`（仅支持 `*` 或 `onCommand:<commandId>`）"
+            ));
+        }
+        if !activation_events.iter().any(|existing| existing == event) {
+            activation_events.push(event.to_string());
+        }
+    }
+    manifest.activation_events = activation_events;
 
     let mut command_ids = HashSet::new();
     for command in &mut manifest.contributes.commands {

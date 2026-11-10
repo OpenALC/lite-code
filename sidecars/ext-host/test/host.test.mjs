@@ -402,6 +402,183 @@ test("invalid storage JSON is ignored and rewritten", async (t) => {
   }
 });
 
+test("onCommand plugins lazy-activate on first execute; star and missing events stay eager", async (t) => {
+  const fixture = await createFixture(t);
+  const lazy = await writePlugin(fixture.pluginsRoot, "test.lazy", {
+    commands: ["test.lazy.hello", "test.lazy.other"],
+    tools: [{ name: "test.lazy.tool", command: "test.lazy.hello" }],
+    activationEvents: ["onCommand:test.lazy.hello"],
+    source: `
+      export function activate(ctx) {
+        ctx.log("test.lazy activated");
+        ctx.commands.register("test.lazy.hello", (args) => ({ via: "command", args: args ?? {} }));
+        ctx.commands.register("test.lazy.other", () => ({ via: "other" }));
+      }
+      export function deactivate() {
+        console.error("test.lazy deactivated");
+      }
+    `
+  });
+  const lazyTool = await writePlugin(fixture.pluginsRoot, "test.lazy-tool", {
+    commands: ["test.lazy-tool.run"],
+    tools: [{ name: "test.lazy-tool.echo", command: "test.lazy-tool.run" }],
+    activationEvents: ["onCommand:test.lazy-tool.run"],
+    source: `
+      export function activate(ctx) {
+        ctx.log("test.lazy-tool activated");
+        ctx.commands.register("test.lazy-tool.run", (args) => ({ via: "tool-fallback", args: args ?? {} }));
+      }
+    `
+  });
+  const eagerStar = await writePlugin(fixture.pluginsRoot, "test.eager-star", {
+    commands: ["test.eager-star.run"],
+    activationEvents: ["*"],
+    source: `
+      export function activate(ctx) {
+        ctx.log("test.eager-star activated");
+        ctx.commands.register("test.eager-star.run", () => "star-ok");
+      }
+    `
+  });
+  const never = await writePlugin(fixture.pluginsRoot, "test.never", {
+    commands: ["test.never.run"],
+    activationEvents: ["onCommand:test.never.run"],
+    source: `
+      export function activate(ctx) {
+        ctx.log("test.never activated");
+        ctx.commands.register("test.never.run", () => "never-ok");
+      }
+      export function deactivate() {
+        console.error("test.never deactivate must not run");
+      }
+    `
+  });
+
+  const client = new HostClient(fixture.workspaceRoot);
+  try {
+    const result = await initializeHost(client, fixture, [
+      fixture.spec,
+      lazy,
+      lazyTool,
+      eagerStar,
+      never
+    ]);
+    assert.deepEqual(result.errors, []);
+    // initialize 只激活立即插件；延迟插件不 import/activate。
+    assert.deepEqual(
+      result.plugins.map((plugin) => plugin.id),
+      ["example.hello", "test.eager-star"]
+    );
+    assert.match(client.stderr, /hello-node activated/);
+    assert.match(client.stderr, /test\.eager-star activated/);
+    assert.doesNotMatch(client.stderr, /test\.lazy activated/);
+    assert.doesNotMatch(client.stderr, /test\.lazy-tool activated/);
+    assert.doesNotMatch(client.stderr, /test\.never activated/);
+
+    // 命中未声明命令不触发激活，reason 保持 plugin-not-loaded。
+    const undeclared = await client.execute("test.lazy", "test.undeclared", {}, "lazy-undeclared");
+    assert.equal(undeclared.error.code, -32601);
+    assert.equal(undeclared.error.data.reason, "plugin-not-loaded");
+    assert.doesNotMatch(client.stderr, /test\.lazy activated/);
+
+    // 首次 command/execute 懒激活并派发。
+    const first = await client.execute("test.lazy", "test.lazy.hello", { n: 1 }, "lazy-first");
+    assert.equal(first.error, undefined);
+    assert.deepEqual(first.result, { via: "command", args: { n: 1 } });
+    assert.match(client.stderr, /test\.lazy activated/);
+
+    // tool/execute 命中另一延迟插件：懒激活后经 command 回退派发。
+    const toolFirst = await client.executeTool("test.lazy-tool", "test.lazy-tool.echo", { n: 2 }, "lazy-tool");
+    assert.equal(toolFirst.error, undefined);
+    assert.deepEqual(toolFirst.result, {
+      result: { via: "tool-fallback", args: { n: 2 } }
+    });
+    assert.match(client.stderr, /test\.lazy-tool activated/);
+
+    // 幂等：重复 execute / tool 不再激活（各只激活一次）。
+    const second = await client.execute("test.lazy", "test.lazy.other", {}, "lazy-second");
+    assert.deepEqual(second.result, { via: "other" });
+    const viaTool = await client.executeTool("test.lazy", "test.lazy.tool", { n: 3 }, "lazy-tool-again");
+    assert.deepEqual(viaTool.result, { result: { via: "command", args: { n: 3 } } });
+    assert.equal((client.stderr.match(/test\.lazy activated/g) ?? []).length, 1);
+    assert.equal((client.stderr.match(/test\.lazy-tool activated/g) ?? []).length, 1);
+
+    // shutdown：已激活的延迟插件正常 deactivate；从未激活的不调用 deactivate。
+    const { response, exit } = await client.shutdown();
+    assert.deepEqual(response.result, { ok: true });
+    assert.equal(exit.code, 0);
+    assert.match(client.stderr, /test\.lazy deactivated/);
+    assert.doesNotMatch(client.stderr, /test\.never deactivate must not run/);
+    assert.deepEqual(client.protocolErrors, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("lazy activation failure returns -32601 with reason and does not retry", async (t) => {
+  const fixture = await createFixture(t);
+  const brokenActivate = await writePlugin(fixture.pluginsRoot, "test.lazy-broken", {
+    commands: ["test.lazy-broken.run"],
+    activationEvents: ["onCommand:test.lazy-broken.run"],
+    source: `
+      export function activate() {
+        console.error("test.lazy-broken activating");
+        throw new Error("lazy activation exploded");
+      }
+    `
+  });
+  const brokenImport = await writePlugin(fixture.pluginsRoot, "test.lazy-import", {
+    main: "./missing.mjs",
+    commands: ["test.lazy-import.run"],
+    activationEvents: ["onCommand:test.lazy-import.run"]
+  });
+
+  const client = new HostClient(fixture.workspaceRoot);
+  try {
+    const result = await initializeHost(client, fixture, [
+      fixture.spec,
+      brokenActivate,
+      brokenImport
+    ]);
+    // 延迟插件不在 initialize 加载，加载错误也不出现在 errors 里。
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(
+      result.plugins.map((plugin) => plugin.id),
+      ["example.hello"]
+    );
+    assert.doesNotMatch(client.stderr, /test\.lazy-broken activating/);
+
+    // activate 阶段失败：-32601 + reason/stage，stderr 记录。
+    const first = await client.execute("test.lazy-broken", "test.lazy-broken.run", {}, "broken-1");
+    assert.equal(first.error.code, -32601);
+    assert.equal(first.error.data.reason, "activation-failed");
+    assert.equal(first.error.data.stage, "activate");
+    assert.match(first.error.message, /lazy activation exploded/);
+    assert.match(client.stderr, /Lazy activation failed for plugin "test\.lazy-broken"/);
+    assert.match(client.stderr, /test\.lazy-broken activating/);
+
+    // 失败状态不重试：activate 只运行一次，错误原样返回。
+    const second = await client.execute("test.lazy-broken", "test.lazy-broken.run", {}, "broken-2");
+    assert.equal(second.error.code, -32601);
+    assert.equal(second.error.data.reason, "activation-failed");
+    assert.equal((client.stderr.match(/test\.lazy-broken activating/g) ?? []).length, 1);
+
+    // import 阶段失败同样走 -32601 路径。
+    const importFail = await client.execute("test.lazy-import", "test.lazy-import.run", {}, "broken-3");
+    assert.equal(importFail.error.code, -32601);
+    assert.equal(importFail.error.data.reason, "activation-failed");
+    assert.equal(importFail.error.data.stage, "import");
+    assert.match(importFail.error.message, /missing\.mjs/);
+
+    // 其它插件不受影响。
+    const hello = await client.execute("example.hello", "example.hello", {}, "broken-4");
+    assert.equal(hello.result.calls, 1);
+    assert.deepEqual(client.protocolErrors, []);
+  } finally {
+    await client.close();
+  }
+});
+
 test("generated asset matches sidecar sources", async () => {
   const { stdout } = await execFileAsync(process.execPath, [BUILD_SCRIPT, "--check"], {
     cwd: REPO_ROOT

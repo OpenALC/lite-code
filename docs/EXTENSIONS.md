@@ -54,7 +54,9 @@
 ```
 
 校验：`id` 唯一、`version` 非空、`runtime` 合法、`main` 必须落在插件目录内且存在
-（declarative 除外）、命令 id 唯一、清单大小 ≤ 256 KiB。`contributes.tools` 另校验：
+（declarative 除外）、命令 id 唯一、清单大小 ≤ 256 KiB。`activationEvents` 另校验：
+每个事件必须是 `*` 或以 `onCommand:` 开头，非法事件只把该插件标记为 `error`
+（延迟激活语义见 §4）。`contributes.tools` 另校验：
 `name` 合法（小写字母/数字/点/线、插件内唯一）、`description` 非空、`parameters`
 必须是 object 类型 JSON Schema（带 `type` 字段时必须为 `"object"`）、`command`
 必须出现在 `contributes.commands` 中或与 `name` 一致（缺省即 `name`）。
@@ -146,7 +148,7 @@ node ext-host.mjs
 stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
 
 - Rust → host：
-  - `initialize` `{ workspaceRoot, plugins: [{ id, path, main, commands, tools: [{ name, command }] }] }`
+  - `initialize` `{ workspaceRoot, plugins: [{ id, path, main, commands, tools: [{ name, command }], activationEvents }] }`——`activationEvents` 为清单原样的字符串数组；空数组（缺省字段）或含 `"*"` 表示立即激活，否则该插件延迟激活。
   - `command/execute` `{ pluginId, command, args }`
   - `tool/execute` `{ pluginId, tool, args }` → `{ result: <插件返回值> }`（默认超时 30s）
   - `shutdown` `{}`
@@ -158,7 +160,17 @@ stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
   - `storage.get(key)` / `storage.set(key, value)`（宿主内存 + 插件级 JSON）
   - `window.showMessage(text)`（v0 记录日志）
   - `log(...)`
-- v0 启动时加载所有启用插件；`activationEvents` 仅记录，延迟激活后续实现。
+- 延迟激活（v1）：`activationEvents` 生效。无 `activationEvents`（宿主收到空数组）
+  或含 `"*"` 的插件在 `initialize` 时立即 import + activate（向后兼容）；仅含
+  `onCommand:<commandId>` 的插件记为「延迟」——不 import、不 activate，宿主只
+  登记其声明的 command/tool → pluginId 映射。`command/execute` 与 `tool/execute`
+  命中延迟插件的声明项时先懒激活（import + activate）再派发；v1 粒度为插件级，
+  事件串里的 commandId 不参与匹配，任一声明的 command/tool 被调用即激活整个插件。
+  懒激活幂等：同一插件只激活一次（并发/重复调用共享同一次激活）；激活失败返回
+  JSON-RPC `-32601`，`data.reason = "activation-failed"`（另含 `stage`/`message`），
+  失败状态记录到 stderr 且本会话不重试。未激活的延迟插件没有 deactivate；
+  已激活插件的 deactivate 语义不变。延迟插件的加载错误不进 `initialize` 的
+  `errors`（那时还没加载），经首次调用的 `-32601` 上报。
 - 单个插件加载失败不阻止其它插件；错误写入 `initialize` 的 `errors`。
 
 ### 4.1 插件级 Agent 工具
@@ -167,6 +179,8 @@ stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
 
 - 派发顺序：`tool/execute` 先查 `ctx.tools.register(name, handler)` 注册的 handler；
   未注册时回退到清单 `command` 映射的命令 handler；都没有返回 JSON-RPC `-32601`。
+- 延迟激活的插件（§4）其工具仍出现在 `plugin_tools()` 清单里——Agent 看得到、
+  首次 `tool/execute` 命中时才懒激活执行。
 - v0 仅 `node` runtime 插件可贡献工具（wasm/declarative 声明的工具不参与注册）；
   宿主未运行、插件禁用、Node 缺失或超时（默认 30s）时该工具不注册，静默降级，
   不报错阻塞会话。
@@ -215,7 +229,8 @@ node wasm-host.mjs --wasm <plugin.wasm> --command <id> --args <json> --workspace
 
 已实现：清单发现/校验、启用禁用、Node 命令、WASM 命令、MCP 声明、LSP 诊断、
 LSP 补全/悬停/跳转、插件管理页、命令面板入口、插件级 Agent 工具（清单 contributes.tools、
-`tool/execute` 协议、桌面端 AgentLoop 接线、一律 Risk::Mutating 走既有审批）。
+`tool/execute` 协议、桌面端 AgentLoop 接线、一律 Risk::Mutating 走既有审批）、
+延迟激活（`activationEvents` 的 `onCommand:` / `*` 两类事件，§4）。
 
 未实现：VS Code API 兼容、插件市场、Webview UI、树视图、
-延迟激活、插件签名、插件依赖、主题/语言声明。
+插件签名、插件依赖、主题/语言声明。

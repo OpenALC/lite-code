@@ -49,6 +49,9 @@ struct HostPlugin {
     main: String,
     commands: Vec<String>,
     tools: Vec<HostTool>,
+    /// 激活事件（docs/EXTENSIONS.md §4 延迟激活）：空数组或含 `*` 表示
+    /// 立即激活，否则宿主延迟到首次命令/工具调用。
+    activation_events: Vec<String>,
 }
 
 /// Node 扩展宿主句柄。`execute` 在需要时启动宿主；`reset` 强制下次重启。
@@ -308,6 +311,7 @@ impl ExtHost {
                             "command": tool.command,
                         }))
                         .collect::<Vec<_>>(),
+                    "activationEvents": plugin.activation_events,
                 }))
                 .collect::<Vec<_>>(),
         });
@@ -409,6 +413,7 @@ fn host_plugins(plugins: &[DiscoveredPlugin]) -> Vec<HostPlugin> {
                         command: tool.command.clone().unwrap_or_else(|| tool.name.clone()),
                     })
                     .collect(),
+                activation_events: manifest.activation_events.clone(),
             })
         })
         .collect();

@@ -15,6 +15,10 @@ const commandRegistry = createCommandRegistry();
 const toolRegistry = createToolRegistry();
 
 let loadedPlugins = [];
+let pluginWorkspace = null;
+const pendingPlugins = new Map(); // pluginId -> { descriptor, state, promise, stage, message }
+const pendingCommands = new Map(); // command -> pluginId（仅延迟插件声明的命令）
+const pendingTools = new Map(); // tool name -> pluginId（仅延迟插件声明的工具）
 let initialized = false;
 let shuttingDown = false;
 let deactivated = false;
@@ -136,6 +140,29 @@ function normalizeTools(pluginId, tools) {
   return normalized;
 }
 
+function normalizeActivationEvents(pluginId, events) {
+  if (events === undefined || events === null) return [];
+  if (!Array.isArray(events)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" activationEvents must be an array`);
+  }
+
+  const normalized = [];
+  for (const event of events) {
+    if (typeof event !== "string" || event.trim().length === 0) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has an invalid activation event`);
+    }
+    const trimmed = event.trim();
+    if (!normalized.includes(trimmed)) normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+// 延迟判定是插件级的：activationEvents 非空且不含 `*` 即为延迟插件，
+// 任一声明的 command/tool 被调用时激活整个插件（docs/EXTENSIONS.md §4）。
+function isLazyDescriptor(descriptor) {
+  return descriptor.activationEvents.length > 0 && !descriptor.activationEvents.includes("*");
+}
+
 function describePlugin(spec) {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
     throw pluginError("manifest", "Plugin entry must be an object");
@@ -161,7 +188,8 @@ function describePlugin(spec) {
     path: pluginPath,
     entry,
     commands: normalizeCommands(spec.id, spec.commands),
-    tools: normalizeTools(spec.id, spec.tools)
+    tools: normalizeTools(spec.id, spec.tools),
+    activationEvents: normalizeActivationEvents(spec.id, spec.activationEvents)
   };
 }
 
@@ -219,6 +247,73 @@ async function loadPlugin(descriptor, pluginWorkspace) {
   };
 }
 
+// 延迟插件不 import/activate，只登记 command/tool -> pluginId 映射，
+// 首次命中时由 activatePendingPlugin 懒激活（docs/EXTENSIONS.md §4）。
+function registerPendingPlugin(descriptor) {
+  if (pendingPlugins.has(descriptor.id)) {
+    throw pluginError("manifest", `Duplicate plugin id "${descriptor.id}"`);
+  }
+  for (const command of descriptor.commands) {
+    const owner = pendingCommands.get(command);
+    if (owner && owner !== descriptor.id) {
+      throw pluginError("manifest", `Command "${command}" is already declared by pending plugin "${owner}"`);
+    }
+  }
+  for (const tool of descriptor.tools) {
+    const owner = pendingTools.get(tool.name);
+    if (owner && owner !== descriptor.id) {
+      throw pluginError("manifest", `Tool "${tool.name}" is already declared by pending plugin "${owner}"`);
+    }
+  }
+
+  pendingPlugins.set(descriptor.id, {
+    descriptor,
+    state: "pending",
+    promise: null,
+    stage: null,
+    message: null
+  });
+  for (const command of descriptor.commands) pendingCommands.set(command, descriptor.id);
+  for (const tool of descriptor.tools) pendingTools.set(tool.name, descriptor.id);
+}
+
+function forgetPendingPlugin(pluginId) {
+  pendingPlugins.delete(pluginId);
+  for (const [command, owner] of pendingCommands) {
+    if (owner === pluginId) pendingCommands.delete(command);
+  }
+  for (const [tool, owner] of pendingTools) {
+    if (owner === pluginId) pendingTools.delete(tool);
+  }
+}
+
+// 懒激活幂等：并发/重复调用共享同一次激活；失败状态记录后不重试。
+// 返回 null 表示不是延迟插件；否则返回 { ok, stage?, message? }。
+function activatePendingPlugin(pluginId) {
+  const pending = pendingPlugins.get(pluginId);
+  if (!pending) return null;
+  if (pending.state === "failed") {
+    return { ok: false, stage: pending.stage, message: pending.message };
+  }
+  if (!pending.promise) {
+    pending.state = "activating";
+    pending.promise = loadPlugin(pending.descriptor, pluginWorkspace)
+      .then((plugin) => {
+        forgetPendingPlugin(pluginId);
+        loadedPlugins.push(plugin);
+        return { ok: true };
+      })
+      .catch((error) => {
+        pending.state = "failed";
+        pending.stage = error && typeof error.pluginStage === "string" ? error.pluginStage : "activate";
+        pending.message = messageOf(error);
+        hostLog(`Lazy activation failed for plugin "${pluginId}" (stage: ${pending.stage}): ${pending.message}`);
+        return { ok: false, stage: pending.stage, message: pending.message };
+      });
+  }
+  return pending.promise;
+}
+
 async function handleInitialize(id, params) {
   if (initialized) {
     return errorResponse(id, RPC_INTERNAL_ERROR, "Extension host is already initialized");
@@ -250,7 +345,11 @@ async function handleInitialize(id, params) {
         throw pluginError("manifest", `Duplicate plugin id "${descriptor.id}"`);
       }
       seen.add(descriptor.id);
-      plugins.push(await loadPlugin(descriptor, nextWorkspace));
+      if (isLazyDescriptor(descriptor)) {
+        registerPendingPlugin(descriptor);
+      } else {
+        plugins.push(await loadPlugin(descriptor, nextWorkspace));
+      }
     } catch (error) {
       const details = thrownDetails(error);
       errors.push({
@@ -262,6 +361,7 @@ async function handleInitialize(id, params) {
   }
 
   loadedPlugins = plugins;
+  pluginWorkspace = nextWorkspace;
   initialized = true;
 
   return resultResponse(id, {
@@ -291,7 +391,19 @@ async function handleExecute(id, params) {
     return errorResponse(id, RPC_INVALID_PARAMS, "command/execute.command must be a non-empty string");
   }
 
-  const found = commandRegistry.lookup(pluginId, command);
+  let found = commandRegistry.lookup(pluginId, command);
+  if (!found.found && pendingCommands.get(command) === pluginId) {
+    const activation = await activatePendingPlugin(pluginId);
+    if (activation && !activation.ok) {
+      return errorResponse(
+        id,
+        RPC_METHOD_NOT_FOUND,
+        `Plugin "${pluginId}" failed to activate: ${activation.message}`,
+        { pluginId, command, reason: "activation-failed", stage: activation.stage }
+      );
+    }
+    found = commandRegistry.lookup(pluginId, command);
+  }
   if (!found.found) {
     return errorResponse(id, RPC_METHOD_NOT_FOUND, `Command not found: ${pluginId}/${command}`, {
       pluginId,
@@ -331,7 +443,19 @@ async function handleToolExecute(id, params) {
     return errorResponse(id, RPC_INVALID_PARAMS, "tool/execute.tool must be a non-empty string");
   }
 
-  const found = toolRegistry.lookup(pluginId, tool);
+  let found = toolRegistry.lookup(pluginId, tool);
+  if (!found.found && pendingTools.get(tool) === pluginId) {
+    const activation = await activatePendingPlugin(pluginId);
+    if (activation && !activation.ok) {
+      return errorResponse(
+        id,
+        RPC_METHOD_NOT_FOUND,
+        `Plugin "${pluginId}" failed to activate: ${activation.message}`,
+        { pluginId, tool, reason: "activation-failed", stage: activation.stage }
+      );
+    }
+    found = toolRegistry.lookup(pluginId, tool);
+  }
   if (!found.found) {
     return errorResponse(id, RPC_METHOD_NOT_FOUND, `Tool not found: ${pluginId}/${tool}`, {
       pluginId,
@@ -450,6 +574,9 @@ async function deactivatePlugins() {
   const deadline = Date.now() + DEACTIVATE_BUDGET_MS;
   const plugins = loadedPlugins.slice().reverse();
   loadedPlugins = [];
+  pendingPlugins.clear();
+  pendingCommands.clear();
+  pendingTools.clear();
   initialized = false;
 
   for (const plugin of plugins) {

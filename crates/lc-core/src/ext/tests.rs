@@ -1582,3 +1582,109 @@ export function deactivate() {}
     assert!(matches!(error, ExtError::ToolNotFound { .. }), "{error:?}");
     host.shutdown();
 }
+
+// ---- 延迟激活（docs/EXTENSIONS.md §4）----
+
+#[test]
+fn activation_events_are_validated_and_default_to_eager() {
+    // 合法形态：缺省字段、["*"]、["onCommand:<id>"]、含 `*` 的混合列表。
+    let temp = TempDir::new("act-valid");
+    let paths = test_paths(&temp);
+    let mut star = node_manifest("example.star", "./index.mjs", &["star.run"]);
+    star["activationEvents"] = json!(["*"]);
+    write_plugin(&paths.user_dir, "star", star, &["index.mjs"]);
+
+    let mut on_command = node_manifest("example.oncommand", "./index.mjs", &["oncommand.run"]);
+    on_command["activationEvents"] = json!(["onCommand:oncommand.run"]);
+    write_plugin(&paths.user_dir, "oncommand", on_command, &["index.mjs"]);
+
+    let mut mixed = node_manifest("example.mixed", "./index.mjs", &["mixed.run"]);
+    mixed["activationEvents"] = json!(["onCommand:mixed.run", "*", "onCommand:mixed.run"]);
+    write_plugin(&paths.user_dir, "mixed", mixed, &["index.mjs"]);
+
+    write_node_plugin(&paths, "default", "example.default", &["default.run"]);
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 4);
+    assert!(
+        list.plugins.iter().all(|plugin| plugin.error.is_none()),
+        "{:?}",
+        list.plugins
+    );
+    let discovered = enabled_plugins(&paths, false).expect("enabled");
+    let events = |id: &str| {
+        discovered
+            .iter()
+            .find(|plugin| plugin.info.id == id)
+            .and_then(|plugin| plugin.manifest.as_ref())
+            .map(|manifest| manifest.activation_events.clone())
+    };
+    assert_eq!(events("example.star"), Some(vec!["*".to_string()]));
+    assert_eq!(
+        events("example.oncommand"),
+        Some(vec!["onCommand:oncommand.run".to_string()])
+    );
+    // 列表去重，顺序稳定。
+    assert_eq!(
+        events("example.mixed"),
+        Some(vec!["onCommand:mixed.run".to_string(), "*".to_string()])
+    );
+    assert_eq!(events("example.default"), Some(Vec::new()));
+
+    // 非法事件只把该插件标记为 error，不影响列表本身。
+    for (tag, value) in [
+        ("bad-view", json!(["onView:explorer"])),
+        ("bad-workspace", json!(["workspaceContains:**/*.rs"])),
+        ("bad-bare", json!(["onCommand"])),
+        ("bad-empty", json!(["  "])),
+    ] {
+        let temp = TempDir::new(&format!("act-{tag}"));
+        let paths = test_paths(&temp);
+        let mut manifest = node_manifest(&format!("example.{tag}"), "./index.mjs", &["bad.run"]);
+        manifest["activationEvents"] = value;
+        write_plugin(&paths.user_dir, "bad", manifest, &["index.mjs"]);
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let error = list.plugins[0]
+            .error
+            .as_deref()
+            .unwrap_or_else(|| panic!("{tag}: 应标记 error"));
+        assert!(error.contains("activationEvents"), "{tag}: {error}");
+        assert!(!list.plugins[0].enabled);
+    }
+}
+
+#[test]
+fn initialize_payload_carries_activation_events() {
+    let Some(node) = test_node() else {
+        return;
+    };
+    let temp = TempDir::new("act-payload");
+    let paths = test_paths(&temp);
+    let mut lazy = node_manifest("example.lazy", "./index.mjs", &["test.echo"]);
+    lazy["activationEvents"] = json!(["onCommand:test.echo"]);
+    write_plugin(&paths.user_dir, "lazy", lazy, &["index.mjs"]);
+    write_node_plugin(&paths, "eager", "example.eager", &["test.other"]);
+    let workspace = temp.path.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let marker = temp.path.join("init-marker.txt");
+    let script = write_fake_host(&temp, &marker);
+
+    let mut host = ExtHost::new(Some(node));
+    host.set_host_script(Some(script));
+    let result = host
+        .execute_with_paths(&paths, false, &workspace, "test.echo", json!({}))
+        .expect("execute");
+    // initialize 载荷：延迟插件带 activationEvents，立即插件带缺省空数组。
+    let plugins = result["plugins"].as_array().expect("plugins echo");
+    let lazy = plugins
+        .iter()
+        .find(|plugin| plugin["id"] == "example.lazy")
+        .expect("lazy plugin echo");
+    assert_eq!(lazy["activationEvents"], json!(["onCommand:test.echo"]));
+    let eager = plugins
+        .iter()
+        .find(|plugin| plugin["id"] == "example.eager")
+        .expect("eager plugin echo");
+    assert_eq!(eager["activationEvents"], json!([]));
+    host.shutdown();
+}

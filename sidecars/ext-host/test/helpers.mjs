@@ -224,13 +224,20 @@ export async function createFixture(t) {
   return { root, workspaceRoot, pluginsRoot, pluginDir, manifest, spec, readme };
 }
 
-export async function writePlugin(pluginsRoot, id, { main = "./index.mjs", source, commands = [] } = {}) {
+export async function writePlugin(
+  pluginsRoot,
+  id,
+  { main = "./index.mjs", source, commands = [], tools, activationEvents } = {}
+) {
   const dir = path.join(pluginsRoot, id);
   await fs.mkdir(dir, { recursive: true });
   if (source !== undefined) {
     await fs.writeFile(path.join(dir, "index.mjs"), source, "utf8");
   }
-  return { id, path: dir, main, commands };
+  const spec = { id, path: dir, main, commands };
+  if (tools !== undefined) spec.tools = tools;
+  if (activationEvents !== undefined) spec.activationEvents = activationEvents;
+  return spec;
 }
 
 export async function initializeHost(client, fixture, plugins = [fixture.spec]) {
