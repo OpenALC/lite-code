@@ -1871,6 +1871,165 @@ apps/web/src/settings/ModelList.vue:41  {{ m.contextK }}k / 压缩 {{ m.compress
   </div>
 </div>
 
+<div class="modal-mask" id="settings-modal" hidden>
+  <div class="settings-dialog">
+    <button type="button" class="modal-close" id="settings-close" title="关闭">×</button>
+        <div class="settings" id="settings-page">
+          <aside class="settings-nav">
+            <h1>设置</h1>
+            <div class="settings-tabs" id="settings-tabs">
+              <button type="button" class="active" data-settings-section="general"><svg class="icon"><use href="#i-settings"/></svg><span>通用</span></button>
+              <button type="button" data-settings-section="editor"><svg class="icon"><use href="#i-code"/></svg><span>编辑器</span></button>
+              <button type="button" data-settings-section="agent"><svg class="icon"><use href="#i-agent"/></svg><span>Agent</span></button>
+              <button type="button" data-settings-section="providers"><svg class="icon"><use href="#i-providers"/></svg><span>供应商</span></button>
+              <button type="button" data-settings-section="shortcuts"><svg class="icon"><use href="#i-keyboard"/></svg><span>快捷键</span></button>
+              <button type="button" data-settings-section="about"><svg class="icon"><use href="#i-info"/></svg><span>关于</span></button>
+            </div>
+          </aside>
+
+          <main class="settings-main">
+            <section class="settings-content" data-settings-section="general">
+              <h2>通用</h2>
+              <section class="settings-group">
+                <div class="row">
+                  <span>主题</span>
+                  <div class="segmented" id="settings-theme">
+                    <button type="button" data-theme="dark" class="active">深色</button>
+                    <button type="button" data-theme="light">浅色</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <span>页面缩放</span>
+                  <div class="zoom">
+                    <button type="button" id="zoom-minus" aria-label="缩小">−</button>
+                    <button type="button" class="zoom-value" id="zoom-value" title="恢复 100%">100%</button>
+                    <button type="button" id="zoom-plus" aria-label="放大">+</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <span>语言</span>
+                  <select id="settings-locale">
+                    <option value="zh-CN" selected>简体中文</option>
+                    <option value="en">English</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <span>主题快捷键</span>
+                  <button type="button" class="ghost" data-action="toggle-theme">Ctrl+Alt+T</button>
+                </div>
+              </section>
+            </section>
+
+            <section class="settings-content" data-settings-section="editor" hidden>
+              <h2>编辑器</h2>
+              <section class="settings-group">
+                <div class="row">
+                  <span>字体大小</span>
+                  <div class="stepper">
+                    <button type="button" id="font-size-minus" aria-label="减小字号">−</button>
+                    <button type="button" class="stepper-value" id="font-size-value" title="恢复默认字号">13 px</button>
+                    <button type="button" id="font-size-plus" aria-label="增大字号">+</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <span>Tab 宽度</span>
+                  <div class="segmented compact" id="tab-size">
+                    <button type="button" class="active" data-tab-size="2">2</button>
+                    <button type="button" data-tab-size="4">4</button>
+                    <button type="button" data-tab-size="8">8</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <span>自动换行</span>
+                  <div class="segmented" id="word-wrap">
+                    <button type="button" class="active" data-wrap="off">关</button>
+                    <button type="button" data-wrap="on">开</button>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section class="settings-content" data-settings-section="agent" hidden>
+              <h2>Agent</h2>
+              <section class="settings-group">
+                <div class="group-intro">
+                  <span>模型服务</span>
+                  <p class="row-desc">供应商、模型与 API Key 在左侧“供应商”页面配置。</p>
+                  <code class="path">~/.lite-code/providers.json</code>
+                  <button type="button" class="manage" data-action="manage-providers">管理供应商</button>
+                </div>
+                <div class="row">
+                  <span>发送键</span>
+                  <div class="segmented compact" id="send-key">
+                    <button type="button" class="active" data-send-key="enter">Enter 发送</button>
+                    <button type="button" data-send-key="ctrl-enter">Ctrl+Enter</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <span>消息密度</span>
+                  <div class="segmented" id="agent-density">
+                    <button type="button" class="active" data-density="comfortable">舒适</button>
+                    <button type="button" data-density="compact">紧凑</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <span>Agent 字号</span>
+                  <div class="stepper">
+                    <button type="button" id="agent-font-minus" aria-label="减小 Agent 字号">−</button>
+                    <button type="button" class="stepper-value" id="agent-font-value" title="恢复默认字号">14 px</button>
+                    <button type="button" id="agent-font-plus" aria-label="增大 Agent 字号">+</button>
+                  </div>
+                </div>
+              </section>
+              <section class="settings-group">
+                <div class="row">
+                  <span>数据库</span>
+                  <span class="muted">SQLite · PostgreSQL · MySQL · SQL Server</span>
+                </div>
+                <div class="row">
+                  <span>MCP</span>
+                  <span class="muted">stdio · 项目 MCP 需显式启用</span>
+                </div>
+              </section>
+            </section>
+
+            <section class="settings-content" data-settings-section="providers" hidden>
+            <section class="settings-group">
+              <div class="group-intro">
+                <span>模型服务</span>
+                <p class="row-desc">供应商与模型列表在独立页管理；支持 OpenAI Responses，Anthropic Messages 后续版本提供。</p>
+                <button class="manage" id="settings-open-providers" type="button">打开供应商管理</button>
+              </div>
+            </section>
+          </section>
+          <section class="settings-content" data-settings-section="shortcuts" hidden>
+              <h2>快捷键</h2>
+              <section class="settings-group">
+                <div class="row"><span>快速打开：文件、命令、工作区、历史会话</span><kbd>Ctrl+P</kbd></div>
+                <div class="row"><span>重新打开关闭的编辑器</span><kbd>Ctrl+Shift+T</kbd></div>
+                <div class="row"><span>关闭编辑器</span><kbd>Ctrl+W</kbd></div>
+                <div class="row"><span>下一个编辑器</span><kbd>Ctrl+Tab</kbd></div>
+                <div class="row"><span>上一个编辑器</span><kbd>Ctrl+Shift+Tab</kbd></div>
+                <div class="row"><span>显示/隐藏侧栏</span><kbd>Ctrl+B</kbd></div>
+                <div class="row"><span>显示/隐藏底部面板</span><kbd>Ctrl+J</kbd></div>
+                <div class="row"><span>设置</span><kbd>Ctrl+,</kbd></div>
+                <div class="row"><span>切换主题</span><kbd>Ctrl+Alt+T</kbd></div>
+                <div class="row"><span>页面缩放</span><kbd>Ctrl+= / - / 0</kbd></div>
+              </section>
+            </section>
+
+            <section class="settings-content" data-settings-section="about" hidden>
+              <h2>关于</h2>
+              <section class="settings-group">
+                <div class="row"><span>Lite Code</span><code>版本 v0.6.1-preview.64</code></div>
+                <div class="row row-stack"><p class="row-desc">轻量桌面 Agent 工作台；契约与核心在 Rust 侧。</p></div>
+              </section>
+            </section>
+          </main>
+        </div>
+  </div>
+</div>
+
 <script>
 'use strict';
 (function () {
@@ -3933,163 +4092,5 @@ apps/web/src/settings/ModelList.vue:41  {{ m.contextK }}k / 压缩 {{ m.compress
 })();
 
 </script>
-<div class="modal-mask" id="settings-modal" hidden>
-  <div class="settings-dialog">
-    <button type="button" class="modal-close" id="settings-close" title="关闭">×</button>
-        <div class="settings" id="settings-page">
-          <aside class="settings-nav">
-            <h1>设置</h1>
-            <div class="settings-tabs" id="settings-tabs">
-              <button type="button" class="active" data-settings-section="general"><svg class="icon"><use href="#i-settings"/></svg><span>通用</span></button>
-              <button type="button" data-settings-section="editor"><svg class="icon"><use href="#i-code"/></svg><span>编辑器</span></button>
-              <button type="button" data-settings-section="agent"><svg class="icon"><use href="#i-agent"/></svg><span>Agent</span></button>
-              <button type="button" data-settings-section="providers"><svg class="icon"><use href="#i-providers"/></svg><span>供应商</span></button>
-              <button type="button" data-settings-section="shortcuts"><svg class="icon"><use href="#i-keyboard"/></svg><span>快捷键</span></button>
-              <button type="button" data-settings-section="about"><svg class="icon"><use href="#i-info"/></svg><span>关于</span></button>
-            </div>
-          </aside>
-
-          <main class="settings-main">
-            <section class="settings-content" data-settings-section="general">
-              <h2>通用</h2>
-              <section class="settings-group">
-                <div class="row">
-                  <span>主题</span>
-                  <div class="segmented" id="settings-theme">
-                    <button type="button" data-theme="dark" class="active">深色</button>
-                    <button type="button" data-theme="light">浅色</button>
-                  </div>
-                </div>
-                <div class="row">
-                  <span>页面缩放</span>
-                  <div class="zoom">
-                    <button type="button" id="zoom-minus" aria-label="缩小">−</button>
-                    <button type="button" class="zoom-value" id="zoom-value" title="恢复 100%">100%</button>
-                    <button type="button" id="zoom-plus" aria-label="放大">+</button>
-                  </div>
-                </div>
-                <div class="row">
-                  <span>语言</span>
-                  <select id="settings-locale">
-                    <option value="zh-CN" selected>简体中文</option>
-                    <option value="en">English</option>
-                  </select>
-                </div>
-                <div class="row">
-                  <span>主题快捷键</span>
-                  <button type="button" class="ghost" data-action="toggle-theme">Ctrl+Alt+T</button>
-                </div>
-              </section>
-            </section>
-
-            <section class="settings-content" data-settings-section="editor" hidden>
-              <h2>编辑器</h2>
-              <section class="settings-group">
-                <div class="row">
-                  <span>字体大小</span>
-                  <div class="stepper">
-                    <button type="button" id="font-size-minus" aria-label="减小字号">−</button>
-                    <button type="button" class="stepper-value" id="font-size-value" title="恢复默认字号">13 px</button>
-                    <button type="button" id="font-size-plus" aria-label="增大字号">+</button>
-                  </div>
-                </div>
-                <div class="row">
-                  <span>Tab 宽度</span>
-                  <div class="segmented compact" id="tab-size">
-                    <button type="button" class="active" data-tab-size="2">2</button>
-                    <button type="button" data-tab-size="4">4</button>
-                    <button type="button" data-tab-size="8">8</button>
-                  </div>
-                </div>
-                <div class="row">
-                  <span>自动换行</span>
-                  <div class="segmented" id="word-wrap">
-                    <button type="button" class="active" data-wrap="off">关</button>
-                    <button type="button" data-wrap="on">开</button>
-                  </div>
-                </div>
-              </section>
-            </section>
-
-            <section class="settings-content" data-settings-section="agent" hidden>
-              <h2>Agent</h2>
-              <section class="settings-group">
-                <div class="group-intro">
-                  <span>模型服务</span>
-                  <p class="row-desc">供应商、模型与 API Key 在左侧“供应商”页面配置。</p>
-                  <code class="path">~/.lite-code/providers.json</code>
-                  <button type="button" class="manage" data-action="manage-providers">管理供应商</button>
-                </div>
-                <div class="row">
-                  <span>发送键</span>
-                  <div class="segmented compact" id="send-key">
-                    <button type="button" class="active" data-send-key="enter">Enter 发送</button>
-                    <button type="button" data-send-key="ctrl-enter">Ctrl+Enter</button>
-                  </div>
-                </div>
-                <div class="row">
-                  <span>消息密度</span>
-                  <div class="segmented" id="agent-density">
-                    <button type="button" class="active" data-density="comfortable">舒适</button>
-                    <button type="button" data-density="compact">紧凑</button>
-                  </div>
-                </div>
-                <div class="row">
-                  <span>Agent 字号</span>
-                  <div class="stepper">
-                    <button type="button" id="agent-font-minus" aria-label="减小 Agent 字号">−</button>
-                    <button type="button" class="stepper-value" id="agent-font-value" title="恢复默认字号">14 px</button>
-                    <button type="button" id="agent-font-plus" aria-label="增大 Agent 字号">+</button>
-                  </div>
-                </div>
-              </section>
-              <section class="settings-group">
-                <div class="row">
-                  <span>数据库</span>
-                  <span class="muted">SQLite · PostgreSQL · MySQL · SQL Server</span>
-                </div>
-                <div class="row">
-                  <span>MCP</span>
-                  <span class="muted">stdio · 项目 MCP 需显式启用</span>
-                </div>
-              </section>
-            </section>
-
-            <section class="settings-content" data-settings-section="providers" hidden>
-            <section class="settings-group">
-              <div class="group-intro">
-                <span>模型服务</span>
-                <p class="row-desc">供应商与模型列表在独立页管理；支持 OpenAI Responses，Anthropic Messages 后续版本提供。</p>
-                <button class="manage" id="settings-open-providers" type="button">打开供应商管理</button>
-              </div>
-            </section>
-          </section>
-          <section class="settings-content" data-settings-section="shortcuts" hidden>
-              <h2>快捷键</h2>
-              <section class="settings-group">
-                <div class="row"><span>快速打开：文件、命令、工作区、历史会话</span><kbd>Ctrl+P</kbd></div>
-                <div class="row"><span>重新打开关闭的编辑器</span><kbd>Ctrl+Shift+T</kbd></div>
-                <div class="row"><span>关闭编辑器</span><kbd>Ctrl+W</kbd></div>
-                <div class="row"><span>下一个编辑器</span><kbd>Ctrl+Tab</kbd></div>
-                <div class="row"><span>上一个编辑器</span><kbd>Ctrl+Shift+Tab</kbd></div>
-                <div class="row"><span>显示/隐藏侧栏</span><kbd>Ctrl+B</kbd></div>
-                <div class="row"><span>显示/隐藏底部面板</span><kbd>Ctrl+J</kbd></div>
-                <div class="row"><span>设置</span><kbd>Ctrl+,</kbd></div>
-                <div class="row"><span>切换主题</span><kbd>Ctrl+Alt+T</kbd></div>
-                <div class="row"><span>页面缩放</span><kbd>Ctrl+= / - / 0</kbd></div>
-              </section>
-            </section>
-
-            <section class="settings-content" data-settings-section="about" hidden>
-              <h2>关于</h2>
-              <section class="settings-group">
-                <div class="row"><span>Lite Code</span><code>版本 v0.6.1-preview.64</code></div>
-                <div class="row row-stack"><p class="row-desc">轻量桌面 Agent 工作台；契约与核心在 Rust 侧。</p></div>
-              </section>
-            </section>
-          </main>
-        </div>
-  </div>
-</div>
 </body>
 </html>

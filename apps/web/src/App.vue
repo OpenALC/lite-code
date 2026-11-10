@@ -12,7 +12,6 @@ import DbPanel from './components/DbPanel.vue'
 import ExtensionsPanel from './components/ExtensionsPanel.vue'
 import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
-import ProvidersPanel from './components/ProvidersPanel.vue'
 import SearchView from './components/SearchView.vue'
 import SettingsPanel, { type SettingsSection } from './components/SettingsPanel.vue'
 import TabBar from './components/TabBar.vue'
@@ -762,23 +761,47 @@ function runMenu(action: () => void | Promise<void>): void {
 // 布局、不收起侧栏/底部面板，Esc 或点遮罩关闭；供应商管理内嵌为「模型」分区。
 const settingsOpen = ref(false)
 const settingsInitial = ref<SettingsSection>('general')
+const settingsDialog = ref<HTMLElement | null>(null)
+const settingsReturnFocus = ref<HTMLElement | null>(null)
+
 function openSettings(section: SettingsSection = 'general'): void {
   settingsInitial.value = section
   settingsOpen.value = true
-}
-function closeSettings(): void {
-  settingsOpen.value = false
+  settingsReturnFocus.value =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null
+  void nextTick(() => settingsDialog.value?.focus())
 }
 
-const PROVIDERS_TAB_ID = '__providers__'
+function closeSettings(): void {
+  settingsOpen.value = false
+  settingsReturnFocus.value?.focus()
+  settingsReturnFocus.value = null
+}
+
+// Tab 焦点循环锁在浮层内（复审 P2-1：键盘不落到背景编辑器）。
+function onSettingsDialogKey(event: KeyboardEvent): void {
+  if (event.key !== 'Tab' || !settingsDialog.value) return
+  const root = settingsDialog.value
+  const focusables = root.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )
+  if (focusables.length === 0) return
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const current = document.activeElement
+  if (event.shiftKey && (current === first || !root.contains(current))) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && current === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+// 供应商管理唯一入口 = 设置浮层的「供应商」分区（复审 P1-1：同一编辑实例，
+// 避免双实例各自保存互相覆盖旧配置）。
 function openProviders(): void {
-  setAppMode('editor')
-  openTab({
-    id: PROVIDERS_TAB_ID,
-    title: t('providers.title'),
-    path: null,
-    content: '',
-  })
+  openSettings('providers')
 }
 
 const EXTENSIONS_TAB_ID = '__extensions__'
@@ -795,7 +818,6 @@ function openExtensions(): void {
 }
 
 watch(locale, () => {
-  renameTab(PROVIDERS_TAB_ID, t('providers.title'))
   renameTab(EXTENSIONS_TAB_ID, t('activity.extensions'))
 })
 
@@ -858,6 +880,8 @@ function onKey(event: KeyboardEvent): void {
     closeSettings()
     return
   }
+  // 设置浮层打开时屏蔽后台编辑快捷键（Ctrl+W/Ctrl+Tab/缩放等）。
+  if (settingsOpen.value) return
   const mod = event.ctrlKey || event.metaKey
   if (mod && event.key.toLowerCase() === 'p') {
     event.preventDefault()
@@ -900,7 +924,6 @@ onMounted(() => {
   document.documentElement.dataset.theme = prefs.value.theme
   locale.value = prefs.value.locale
   document.documentElement.lang = prefs.value.locale
-  renameTab(PROVIDERS_TAB_ID, t('providers.title'))
   renameTab(EXTENSIONS_TAB_ID, t('activity.extensions'))
   window.addEventListener('keydown', onKey)
   window.addEventListener('click', () => { openMenu.value = null })
@@ -1178,7 +1201,6 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="act-btn"
-          :class="{ active: activeTabId === '__providers__' }"
           :title="t('activity.providers')"
           @click="openProviders"
         >
@@ -1325,8 +1347,7 @@ onBeforeUnmount(() => {
             v-show="activeTabId === '__extensions__'"
             @changed="onExtensionsChanged"
           />
-          <ProvidersPanel v-show="activeTabId === '__providers__'" />
-          <template v-if="activeTabId !== '__providers__' && activeTabId !== '__extensions__'">
+          <template v-if="activeTabId !== '__extensions__'">
             <CodeEditor v-if="openTabs.length > 0" />
             <div
               v-else
@@ -1688,10 +1709,13 @@ onBeforeUnmount(() => {
       @click.self="closeSettings"
     >
       <div
+        ref="settingsDialog"
         class="settings-dialog"
         role="dialog"
         aria-modal="true"
+        tabindex="-1"
         :aria-label="t('settings.title')"
+        @keydown="onSettingsDialogKey"
       >
         <button
           type="button"

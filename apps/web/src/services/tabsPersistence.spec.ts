@@ -92,6 +92,14 @@ describe('serialize / parse', () => {
     expect(back?.tabs.map(t => t.id)).toEqual(['ok'])
     expect(back?.activeId).toBe('ok')
   })
+
+  it('旧版设置/供应商特殊页签恢复时丢弃并回落激活页', () => {
+    const back = parseTabs(
+      '{"activeId":"__settings__","tabs":[{"id":"__settings__","title":"设置","content":""},{"id":"__providers__","title":"供应商","content":""},{"id":"main.rs","title":"main.rs","content":"fn main(){}"}]}',
+    )
+    expect(back?.tabs.map(t => t.id)).toEqual(['main.rs'])
+    expect(back?.activeId).toBe('main.rs')
+  })
 })
 
 describe('load / save', () => {

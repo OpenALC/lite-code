@@ -67,6 +67,9 @@ export function parseTabs(raw: string | null): TabsState | null {
     if (typeof item !== 'object' || item === null) continue
     const t = item as Record<string, unknown>
     if (typeof t.id !== 'string' || t.id.length === 0) continue
+    // 旧版特殊页签（设置/供应商曾是编辑器页签）现已改为浮层，不再渲染：
+    // 恢复时丢弃，避免升级前留下的「设置」标签变成空白编辑器（复审 P2-2）。
+    if (t.id === '__settings__' || t.id === '__providers__') continue
     if (typeof t.title !== 'string' || t.title.length === 0) continue
     if (typeof t.content !== 'string') continue
     const savedContent = typeof t.savedContent === 'string' ? t.savedContent : t.content
