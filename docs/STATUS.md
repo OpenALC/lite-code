@@ -402,6 +402,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   （`65e0b14`+断言修复 `f040548`+clippy `9422b1e`——真实 PG/MySQL 集成
   首跑验证通过：roundtrip/read-only/query/explain 全绿）。lc-host M4
   关闭（`bafdd06`）；preview.65 已发布（10 资产+manifest .65）。
+- **swarm 后鸿蒙回归全绿**（新 HAP 于重拉的 Relay_Phone_API26 模拟器）：
+  切片 H 子集 b/c/d/f 全过（工具流 786ms、三轮复用 303ms、取消 cancelled、
+  40 会话回收 ohos-5 not_found、零 JS 错误）——lc-host Sessions 经 swarm
+  大改后鸿蒙端行为不变。ohos 专用前端不受桌面设置浮层影响（无该入口）。
   事故记录：agent-84 误 git stash 卷走他轨 WIP（已 pop 还原，主 agent
   外科手术隔离提交，未污染任何轨道最终状态）。
   perf.yml 已在最新 main 触发（run 42858384352），观测 final 复审记录
