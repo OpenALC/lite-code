@@ -386,6 +386,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   建议提交），release 工作流后台执行（等 draft→发布→updater-manifest）；
   perf.yml 已在最新 main 触发（run 42858384352），观测 final 复审记录
   的窗口开关残留计数问题。
+- **perf 残留观测结论**（run 42858384352，main `dea9568`）：窗口开关 20 次
+  残留进程 **0**（基线 0；final 复审在 `b69cf33` 亦为 0），托盘 RSS 25.6MB、
+  冷启动 34ms、热启动 32ms、`c2db89b` 的单实例残留 1 未复现——暂按偶发
+  记录，继续靠 nightly perf 观测，不阻塞发版。
 
 ## main(2)：lc-host M3a 事件出口统一（f8a4cce）
 
