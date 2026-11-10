@@ -822,6 +822,7 @@ pub fn run() {
             ext::ext_reload,
             ext::ext_execute_command,
             ext::ext_open_dir,
+            ext::ext_read_theme,
             lsp::lsp_start_all,
             lsp::lsp_did_open,
             lsp::lsp_did_change,

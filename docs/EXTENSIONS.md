@@ -47,11 +47,35 @@
         "args": ["--stdio"],
         "env": {}
       }
+    ],
+    "themes": [
+      {
+        "label": "Dusk",                  // 设置页展示名（非空、插件内唯一）
+        "path": "./themes/dusk.json",     // 插件目录内的主题 JSON（读取时限 64 KiB）
+        "uiTheme": "dark"                 // 基色：dark | light
+      }
     ]
   },
   "permissions": ["workspace.read"]    // 提示用；Node 插件本质是可信代码
 }
 ```
+
+主题 JSON 形状（定死）：
+
+```jsonc
+{
+  "name": "Dusk",
+  "colors": { "--bg": "#101014", "--fg": "#e6e9ef" }
+}
+```
+
+`colors` 是 CSS 变量名→值映射（对应 `tokens.css` 的 `--bg`/`--fg`/`--accent` 等）。
+UI 侧只白名单 `--` 前缀的合法变量名，其余键一律忽略（防注入其它规则）。应用时
+注入/更新一个 `<style data-plugin-theme="<slug>">`，选择器
+`:root[data-theme='<slug>']`；slug 规则 `plugin--<pluginId>--<label-slug>`
+（label 转小写、非字母数字折叠为 `-`、空则回落 `theme`）。slug 作为 theme 值
+持久化进 `lc.ui.prefs`；所属插件禁用/删除后回落 `dark` 并清理样式标签。
+任何 runtime（含 declarative）均可声明主题。
 
 校验：`id` 唯一、`version` 非空、`runtime` 合法、`main` 必须落在插件目录内且存在
 （declarative 除外）、命令 id 唯一、清单大小 ≤ 256 KiB。`activationEvents` 另校验：
@@ -60,6 +84,9 @@
 `name` 合法（小写字母/数字/点/线、插件内唯一）、`description` 非空、`parameters`
 必须是 object 类型 JSON Schema（带 `type` 字段时必须为 `"object"`）、`command`
 必须出现在 `contributes.commands` 中或与 `name` 一致（缺省即 `name`）。
+`contributes.themes` 另校验：`label` 非空且插件内唯一、`path` 必须落在插件
+目录内且为已存在的 `.json`（复用 main 的 canonicalize 模式）、`uiTheme` 只能
+是 `dark`/`light`；主题文件在 `ext_read_theme` 读取时限 64 KiB。
 任一校验失败只把该插件标记为 `error`，不影响其它插件。
 
 ## 2. 运行形态
@@ -80,6 +107,7 @@ ext_list() -> PluginList
 ext_set_enabled(id, enabled) -> PluginList
 ext_reload() -> PluginList
 ext_execute_command(command, args?) -> { result: any }
+ext_read_theme(plugin_id, path) -> { json }
 ext_open_dir() -> ack
 lsp_start_plugins() -> { servers: [{ id, languageIds }], errors: [] }
 lsp_start_all(configs?) -> { servers, errors }
@@ -111,6 +139,11 @@ lsp_definition(path, line, column) -> Location[]
   completion/hover/definition provider + `registerEditorOpener` 跨文件跳转
   落到标签系统），无 server 不注册，Monaco 保留内置建议。
 
+`ext_read_theme`：读取插件贡献的主题 JSON（§1 形状）。`path` 必须是该插件
+清单 `contributes.themes` 中声明过的相对路径——解析后落在插件目录外、未声明、
+插件不存在或已禁用一律 `not_found`（防目录穿越）；文件超过 64 KiB 报
+`invalid_argument`；非法 JSON 同样 `invalid_argument`。
+
 `PluginList`：
 
 ```jsonc
@@ -126,7 +159,8 @@ lsp_definition(path, line, column) -> Location[]
     "error": null,
     "commands": [{ "command": "example.hello", "title": "Hello" }],
     "mcpServers": ["filesystem"],
-    "languageServers": ["typescript"]
+    "languageServers": ["typescript"],
+    "themes": [{ "label": "Dusk", "path": "./themes/dusk.json", "uiTheme": "dark" }]
   }],
   "dir": "C:\\Users\\...\\extensions",
   "nodeAvailable": true
@@ -230,7 +264,9 @@ node wasm-host.mjs --wasm <plugin.wasm> --command <id> --args <json> --workspace
 已实现：清单发现/校验、启用禁用、Node 命令、WASM 命令、MCP 声明、LSP 诊断、
 LSP 补全/悬停/跳转、插件管理页、命令面板入口、插件级 Agent 工具（清单 contributes.tools、
 `tool/execute` 协议、桌面端 AgentLoop 接线、一律 Risk::Mutating 走既有审批）、
-延迟激活（`activationEvents` 的 `onCommand:` / `*` 两类事件，§4）。
+延迟激活（`activationEvents` 的 `onCommand:` / `*` 两类事件，§4）、
+主题声明（`contributes.themes` 校验、`ext_read_theme` 读取、web 设置页切换、
+插件禁用/删除后回落 dark 并清理）。
 
 未实现：VS Code API 兼容、插件市场、Webview UI、树视图、
-插件签名、插件依赖、主题/语言声明。
+插件签名、插件依赖、语言声明。

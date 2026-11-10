@@ -597,6 +597,8 @@
     "theme": "主题",
     "dark": "深色",
     "light": "浅色",
+    "pluginThemes": "插件主题",
+    "pluginThemeSource": "来自 {name}",
     "zoom": "页面缩放",
     "language": "语言",
     "themeShortcut": "主题快捷键",

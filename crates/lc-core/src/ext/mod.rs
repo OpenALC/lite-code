@@ -23,11 +23,15 @@ mod wasm;
 mod tests;
 
 use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use lc_proto::{ErrorBody, ErrorCode, NodeStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::fs::{RealPathResolver, display_path, ensure_within_root};
 
 pub use host::ExtHost;
 pub use host::TOOL_TIMEOUT;
@@ -43,6 +47,8 @@ pub const USER_EXTENSIONS_DIR: &str = "extensions";
 pub const PROJECT_EXTENSIONS_REL: &str = ".lite-code/extensions";
 /// 清单大小上限（256 KiB）。
 pub const MAX_MANIFEST_BYTES: u64 = manifest::MAX_MANIFEST_BYTES;
+/// 主题文件大小上限（64 KiB，docs/EXTENSIONS.md §1）。
+pub const MAX_THEME_BYTES: u64 = manifest::MAX_THEME_BYTES;
 
 /// 插件运行形态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +65,16 @@ pub struct PluginCommand {
     pub command: String,
     #[serde(default)]
     pub title: String,
+}
+
+/// 插件贡献的配色主题（`PluginInfo.themes` 元素，docs/EXTENSIONS.md §1）。
+/// `path` 是相对插件目录的清单原样路径，经 `ext_read_theme` 读取。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginTheme {
+    pub label: String,
+    pub path: String,
+    pub ui_theme: String,
 }
 
 /// 单个插件的展示信息（`PluginList.plugins` 元素）。
@@ -78,6 +94,8 @@ pub struct PluginInfo {
     pub commands: Vec<PluginCommand>,
     pub mcp_servers: Vec<String>,
     pub language_servers: Vec<String>,
+    /// 贡献的配色主题（无声明为空数组）。
+    pub themes: Vec<PluginTheme>,
 }
 
 /// 插件列表（`ext_list` / `ext_reload` / `ext_set_enabled` 的返回）。
@@ -130,6 +148,16 @@ pub enum ExtError {
     WasmTimeout { timeout_ms: u64 },
     #[error("declarative 插件不执行代码")]
     DeclarativeNotExecutable,
+    #[error("插件 `{plugin}` 的主题 `{path}` 不存在、未声明或所属插件已禁用")]
+    ThemeNotFound { plugin: String, path: String },
+    #[error("插件 `{plugin}` 的主题 `{path}` 超过 64 KiB 上限")]
+    ThemeOversized { plugin: String, path: String },
+    #[error("插件 `{plugin}` 的主题 `{path}` 不是合法 JSON：{reason}")]
+    ThemeInvalid {
+        plugin: String,
+        path: String,
+        reason: String,
+    },
 }
 
 impl ExtError {
@@ -153,6 +181,10 @@ impl ExtError {
             ExtError::WasmFailed(_) => ErrorCode::Internal,
             ExtError::WasmTimeout { .. } => ErrorCode::Timeout,
             ExtError::DeclarativeNotExecutable => ErrorCode::NotImplemented,
+            ExtError::ThemeNotFound { .. } => ErrorCode::NotFound,
+            ExtError::ThemeOversized { .. } | ExtError::ThemeInvalid { .. } => {
+                ErrorCode::InvalidArgument
+            }
         }
     }
 
@@ -281,6 +313,81 @@ pub fn set_enabled_at(
     }
     state.set_enabled(id, enabled)?;
     list_plugins_at(paths, allow_project, node_available)
+}
+
+/// 读取插件贡献的主题文件（`ext_read_theme`，docs/EXTENSIONS.md §3）。
+/// `theme_path` 必须是该插件清单 `contributes.themes` 中声明过的相对路径
+/// （canonicalize 后落在插件目录内，复用 main 的解析模式），文件 ≤ 64 KiB。
+pub fn read_theme(
+    workspace_root: Option<&Path>,
+    plugin_id: &str,
+    theme_path: &str,
+) -> Result<Value, ExtError> {
+    let paths = ExtPaths::default_for(workspace_root)?;
+    read_theme_at(&paths, project_allowed(), plugin_id, theme_path)
+}
+
+/// 在指定布局下读取主题文件（测试与嵌入方使用）。
+pub fn read_theme_at(
+    paths: &ExtPaths,
+    allow_project: bool,
+    plugin_id: &str,
+    theme_path: &str,
+) -> Result<Value, ExtError> {
+    let not_found = || ExtError::ThemeNotFound {
+        plugin: plugin_id.to_string(),
+        path: theme_path.to_string(),
+    };
+    let plugins = enabled_plugins(paths, allow_project)?;
+    let Some(plugin) = plugins
+        .iter()
+        .find(|plugin| plugin.info.id == plugin_id)
+        .filter(|plugin| plugin.info.enabled)
+    else {
+        return Err(not_found());
+    };
+    let Some(manifest) = plugin.manifest.as_ref() else {
+        return Err(not_found());
+    };
+    // 请求路径先按 main 的模式解析：`..`/软链逃逸与目录外路径在此拒绝。
+    let candidate = plugin.dir.join(theme_path);
+    let resolved =
+        ensure_within_root(&plugin.dir, &candidate, &RealPathResolver).map_err(|_| not_found())?;
+    // 再与清单声明逐个比对 canonical 路径：未声明的路径一律拒绝（防穿越）。
+    let declared = manifest.contributes.themes.iter().any(|theme| {
+        let declared_path = plugin.dir.join(&theme.path);
+        ensure_within_root(&plugin.dir, &declared_path, &RealPathResolver)
+            .is_ok_and(|canonical| canonical == resolved)
+    });
+    if !declared {
+        return Err(not_found());
+    }
+    let file = File::open(&resolved).map_err(|error| {
+        ExtError::Io(format!(
+            "读取主题 {} 失败：{error}",
+            display_path(&resolved)
+        ))
+    })?;
+    let mut bytes = Vec::new();
+    file.take(MAX_THEME_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            ExtError::Io(format!(
+                "读取主题 {} 失败：{error}",
+                display_path(&resolved)
+            ))
+        })?;
+    if bytes.len() as u64 > MAX_THEME_BYTES {
+        return Err(ExtError::ThemeOversized {
+            plugin: plugin_id.to_string(),
+            path: theme_path.to_string(),
+        });
+    }
+    serde_json::from_slice(&bytes).map_err(|error| ExtError::ThemeInvalid {
+        plugin: plugin_id.to_string(),
+        path: theme_path.to_string(),
+        reason: error.to_string(),
+    })
 }
 
 /// 内置 sidecar 的定位/落盘：

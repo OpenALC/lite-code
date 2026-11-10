@@ -1688,3 +1688,258 @@ fn initialize_payload_carries_activation_events() {
     assert_eq!(eager["activationEvents"], json!([]));
     host.shutdown();
 }
+
+// ---- 主题声明与 ext_read_theme（docs/EXTENSIONS.md §1/§3）----
+
+fn theme_manifest(id: &str, themes: Value) -> Value {
+    let mut manifest = node_manifest(id, "./index.mjs", &[]);
+    manifest["contributes"]["themes"] = themes;
+    manifest
+}
+
+fn write_theme_file(root: &Path, plugin_dir: &str, rel: &str, content: &[u8]) {
+    let path = root.join(plugin_dir).join(rel);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("创建主题目录");
+    }
+    fs::write(path, content).expect("写主题文件");
+}
+
+#[test]
+fn manifest_themes_are_validated_and_serialized() {
+    // 合法：node 插件携带主题声明，camelCase 序列化进 PluginInfo.themes。
+    let temp = TempDir::new("themes-valid");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "themed",
+        theme_manifest(
+            "example.themed",
+            json!([
+                { "label": "Dusk", "path": "./themes/dusk.json", "uiTheme": "dark" },
+                { "label": "Paper", "path": "themes/paper.json", "uiTheme": "light" }
+            ]),
+        ),
+        &["index.mjs"],
+    );
+    write_theme_file(&paths.user_dir, "themed", "themes/dusk.json", b"{}");
+    write_theme_file(&paths.user_dir, "themed", "themes/paper.json", b"{}");
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert!(
+        list.plugins[0].error.is_none(),
+        "{:?}",
+        list.plugins[0].error
+    );
+    assert_eq!(list.plugins[0].themes.len(), 2);
+    assert_eq!(list.plugins[0].themes[0].label, "Dusk");
+    assert_eq!(list.plugins[0].themes[0].path, "./themes/dusk.json");
+    assert_eq!(list.plugins[0].themes[0].ui_theme, "dark");
+
+    let serialized = serde_json::to_value(&list).expect("serialize");
+    assert_eq!(serialized["plugins"][0]["themes"][0]["label"], "Dusk");
+    assert_eq!(
+        serialized["plugins"][0]["themes"][0]["path"],
+        "./themes/dusk.json"
+    );
+    assert_eq!(serialized["plugins"][0]["themes"][0]["uiTheme"], "dark");
+
+    // 非法项只把该插件标记为 error，不影响列表本身。
+    for (tag, themes_value, files, expected) in [
+        (
+            "escape",
+            json!([{ "label": "Out", "path": "../outside.json", "uiTheme": "dark" }]),
+            &["../outside.json"][..],
+            "插件目录内",
+        ),
+        (
+            "not-json",
+            json!([{ "label": "Txt", "path": "themes/x.txt", "uiTheme": "dark" }]),
+            &["themes/x.txt"][..],
+            "必须是 .json 文件",
+        ),
+        (
+            "bad-ui-theme",
+            json!([{ "label": "Blue", "path": "themes/blue.json", "uiTheme": "blue" }]),
+            &["themes/blue.json"][..],
+            "uiTheme 非法",
+        ),
+        (
+            "empty-label",
+            json!([{ "label": "  ", "path": "themes/x.json", "uiTheme": "dark" }]),
+            &["themes/x.json"][..],
+            "label 不能为空",
+        ),
+        (
+            "dup-label",
+            json!([
+                { "label": "Same", "path": "themes/a.json", "uiTheme": "dark" },
+                { "label": "Same", "path": "themes/b.json", "uiTheme": "light" }
+            ]),
+            &["themes/a.json", "themes/b.json"][..],
+            "label 重复",
+        ),
+        (
+            "missing",
+            json!([{ "label": "Gone", "path": "themes/gone.json", "uiTheme": "dark" }]),
+            &[][..],
+            "不存在",
+        ),
+    ] {
+        let temp = TempDir::new(&format!("themes-{tag}"));
+        let paths = test_paths(&temp);
+        write_plugin(
+            &paths.user_dir,
+            "bad",
+            theme_manifest(&format!("example.bad-{tag}"), themes_value),
+            &[],
+        );
+        for file in files {
+            write_theme_file(&paths.user_dir, "bad", file, b"{}");
+        }
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let error = list.plugins[0]
+            .error
+            .as_deref()
+            .unwrap_or_else(|| panic!("{tag}: 应标记 error"));
+        assert!(error.contains(expected), "{tag}: {error}");
+        assert!(!list.plugins[0].enabled);
+        assert!(list.plugins[0].themes.is_empty());
+    }
+}
+
+#[test]
+fn read_theme_round_trips_declared_path() {
+    // declarative 插件也可声明主题（docs/EXTENSIONS.md §1）。
+    let temp = TempDir::new("theme-read");
+    let paths = test_paths(&temp);
+    let theme_json = json!({
+        "name": "Dusk",
+        "colors": { "--bg": "#101014", "--fg": "#e6e9ef" }
+    });
+    write_plugin(
+        &paths.user_dir,
+        "themed",
+        json!({
+            "id": "example.themed",
+            "name": "Themed",
+            "version": "0.1.0",
+            "runtime": "declarative",
+            "contributes": {
+                "themes": [{ "label": "Dusk", "path": "themes/dusk.json", "uiTheme": "dark" }]
+            }
+        }),
+        &[],
+    );
+    write_theme_file(
+        &paths.user_dir,
+        "themed",
+        "themes/dusk.json",
+        &serde_json::to_vec_pretty(&theme_json).expect("serialize theme"),
+    );
+
+    let value = read_theme_at(&paths, false, "example.themed", "themes/dusk.json")
+        .expect("read declared theme");
+    assert_eq!(value, theme_json);
+
+    // 等价相对写法（带 ./）canonicalize 后同样命中声明。
+    let dot =
+        read_theme_at(&paths, false, "example.themed", "./themes/dusk.json").expect("read ./");
+    assert_eq!(dot, theme_json);
+}
+
+#[test]
+fn read_theme_rejects_traversal_undeclared_disabled_and_unknown() {
+    let temp = TempDir::new("theme-read-reject");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "themed",
+        theme_manifest(
+            "example.themed",
+            json!([{ "label": "Dusk", "path": "themes/dusk.json", "uiTheme": "dark" }]),
+        ),
+        &["index.mjs"],
+    );
+    write_theme_file(&paths.user_dir, "themed", "themes/dusk.json", b"{}");
+    // 磁盘上存在但清单未声明：证明拦截依据是声明匹配而非文件存在性。
+    write_theme_file(&paths.user_dir, "themed", "themes/secret.json", b"{}");
+    fs::write(paths.user_dir.join("outside.json"), b"{}").expect("写目录外文件");
+
+    // 路径穿越（解析后落在插件目录外）。
+    let error = read_theme_at(&paths, false, "example.themed", "../../outside.json")
+        .expect_err("path traversal");
+    assert!(matches!(error, ExtError::ThemeNotFound { .. }), "{error:?}");
+    assert_eq!(error.code(), ErrorCode::NotFound);
+
+    // 未声明路径（即使文件真实存在）。
+    let error = read_theme_at(&paths, false, "example.themed", "themes/secret.json")
+        .expect_err("undeclared path");
+    assert!(matches!(error, ExtError::ThemeNotFound { .. }), "{error:?}");
+
+    // 目录内不存在的路径。
+    let error = read_theme_at(&paths, false, "example.themed", "themes/nope.json")
+        .expect_err("missing path");
+    assert!(matches!(error, ExtError::ThemeNotFound { .. }), "{error:?}");
+
+    // 未知插件与已禁用插件同样拒绝。
+    let error = read_theme_at(&paths, false, "example.unknown", "themes/dusk.json")
+        .expect_err("unknown plugin");
+    assert!(matches!(error, ExtError::ThemeNotFound { .. }), "{error:?}");
+    set_enabled_at(&paths, false, "example.themed", false, false).expect("disable");
+    let error = read_theme_at(&paths, false, "example.themed", "themes/dusk.json")
+        .expect_err("disabled plugin");
+    assert!(matches!(error, ExtError::ThemeNotFound { .. }), "{error:?}");
+    set_enabled_at(&paths, false, "example.themed", true, false).expect("enable");
+    read_theme_at(&paths, false, "example.themed", "themes/dusk.json")
+        .expect("read after re-enable");
+}
+
+#[test]
+fn read_theme_enforces_size_cap_and_valid_json() {
+    let temp = TempDir::new("theme-read-size");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "sized",
+        theme_manifest(
+            "example.sized",
+            json!([{ "label": "Cap", "path": "themes/cap.json", "uiTheme": "dark" }]),
+        ),
+        &["index.mjs"],
+    );
+
+    // 恰好 64 KiB 的合法 JSON 可以读取。
+    let prefix = "{\"name\":\"";
+    let suffix = "\",\"colors\":{}}";
+    let pad = (MAX_THEME_BYTES as usize) - prefix.len() - suffix.len();
+    let exact = format!("{prefix}{}{suffix}", "x".repeat(pad));
+    assert_eq!(exact.len(), MAX_THEME_BYTES as usize);
+    write_theme_file(
+        &paths.user_dir,
+        "sized",
+        "themes/cap.json",
+        exact.as_bytes(),
+    );
+    let value =
+        read_theme_at(&paths, false, "example.sized", "themes/cap.json").expect("read exact cap");
+    assert_eq!(value["colors"], json!({}));
+
+    // 超帽 1 字节 → ThemeOversized（invalid_argument）。
+    let over = format!("{prefix}{}{suffix}", "x".repeat(pad + 1));
+    write_theme_file(&paths.user_dir, "sized", "themes/cap.json", over.as_bytes());
+    let error = read_theme_at(&paths, false, "example.sized", "themes/cap.json")
+        .expect_err("oversized theme");
+    assert!(
+        matches!(error, ExtError::ThemeOversized { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+
+    // 非法 JSON → ThemeInvalid（invalid_argument）。
+    write_theme_file(&paths.user_dir, "sized", "themes/cap.json", b"{ not json");
+    let error = read_theme_at(&paths, false, "example.sized", "themes/cap.json")
+        .expect_err("invalid theme json");
+    assert!(matches!(error, ExtError::ThemeInvalid { .. }), "{error:?}");
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+}

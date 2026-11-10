@@ -21,6 +21,7 @@ import { activeTab, tabsStore, type Tab } from '../services/tabs'
 import {
   initUiPrefs,
   subscribePrefs,
+  themeBaseMode,
   toggleTheme,
   uiPrefs,
 } from '../services/themeStore'
@@ -55,7 +56,7 @@ const projectName = computed(() =>
   root.value ? basenamePath(root.value) : t('tree.noRoot'),
 )
 const themeLabel = computed(() =>
-  theme.value === 'dark' ? t('settings.light') : t('settings.dark'),
+  themeBaseMode(theme.value) === 'dark' ? t('settings.light') : t('settings.dark'),
 )
 
 const unsubscribeTabs = tabsStore.subscribe(next => {
@@ -207,7 +208,7 @@ onBeforeUnmount(() => {
         @click="switchTheme"
       >
         <AppIcon
-          :name="theme === 'dark' ? 'sun' : 'moon'"
+          :name="themeBaseMode(theme) === 'dark' ? 'sun' : 'moon'"
           :size="15"
         />
       </button>

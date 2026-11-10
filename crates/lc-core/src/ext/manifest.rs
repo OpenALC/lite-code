@@ -14,10 +14,12 @@ use serde_json::Value;
 
 use crate::fs::{FsError, RealPathResolver, display_path, ensure_within_root};
 
-use super::{ExtError, ExtPaths, PluginCommand, PluginInfo, PluginRuntime};
+use super::{ExtError, ExtPaths, PluginCommand, PluginInfo, PluginRuntime, PluginTheme};
 
 pub(crate) const MANIFEST_FILE: &str = "plugin.json";
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+/// 主题文件大小上限（docs/EXTENSIONS.md §1）：读取时由 `ext_read_theme` 校验。
+pub(crate) const MAX_THEME_BYTES: u64 = 64 * 1024;
 
 /// 一个已发现条目。`manifest` 为 `None` 表示该目录的清单无效或 id 冲突，
 /// 只用于列表展示，不能执行命令或参与 MCP 合并。
@@ -60,6 +62,19 @@ pub(crate) struct Contributes {
     /// Agent 可见的插件工具（docs/EXTENSIONS.md §1/§4）。
     #[serde(default)]
     pub tools: Vec<PluginToolDecl>,
+    /// 配色主题声明（docs/EXTENSIONS.md §1）：UI 经 `ext_read_theme` 拉取 JSON。
+    #[serde(default)]
+    pub themes: Vec<ThemeDecl>,
+}
+
+/// 主题声明。`path` 是相对插件目录的主题 JSON（校验时须已存在且在目录内，
+/// 读取时另限 64 KiB）；`ui_theme` 校验后只可能是 `dark`/`light`。
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ThemeDecl {
+    pub label: String,
+    pub path: String,
+    #[serde(rename = "uiTheme")]
+    pub ui_theme: String,
 }
 
 /// 插件声明的 Agent 工具。`command` 映射到插件内注册的命令 handler，
@@ -371,6 +386,47 @@ fn validate_manifest(
         tool.command = Some(command);
     }
 
+    // 主题声明校验（docs/EXTENSIONS.md §1）：label 非空且插件内唯一、
+    // uiTheme 只能是 dark/light、path 必须是插件目录内已存在的 .json
+    // （复用 main 的 canonicalize 模式，防 `..`/软链逃逸）；大小在读取时另校。
+    let mut theme_labels = HashSet::new();
+    for theme in &mut manifest.contributes.themes {
+        theme.label = theme.label.trim().to_string();
+        if theme.label.is_empty() {
+            return Err("themes.label 不能为空".into());
+        }
+        if !theme_labels.insert(theme.label.clone()) {
+            return Err(format!("themes.label 重复：`{}`", theme.label));
+        }
+        let ui_theme = theme.ui_theme.trim().to_string();
+        if ui_theme != "dark" && ui_theme != "light" {
+            return Err(format!(
+                "themes.uiTheme 非法：`{}`（仅支持 dark 或 light）",
+                theme.ui_theme
+            ));
+        }
+        theme.ui_theme = ui_theme;
+        let raw_path = theme.path.trim();
+        if !raw_path.ends_with(".json") {
+            return Err(format!("themes.path 必须是 .json 文件：`{raw_path}`"));
+        }
+        let candidate = dir.join(raw_path);
+        let resolved =
+            ensure_within_root(dir, &candidate, &RealPathResolver).map_err(
+                |error| match error {
+                    FsError::NotFound { .. } => format!("themes.path 不存在：`{raw_path}`"),
+                    FsError::PathOutsideRoot { .. } => {
+                        format!("themes.path 必须落在插件目录内：`{raw_path}`")
+                    }
+                    other => format!("themes.path 校验失败：{other}"),
+                },
+            )?;
+        if !resolved.is_file() {
+            return Err(format!("themes.path 不是文件：`{raw_path}`"));
+        }
+        theme.path = raw_path.to_string();
+    }
+
     let mut mcp_names = HashSet::new();
     let mut normalized_mcp = BTreeMap::new();
     for (name, declared) in std::mem::take(&mut manifest.contributes.mcp_servers) {
@@ -502,6 +558,16 @@ fn info_from_manifest(manifest: &PluginManifest, dir: &Path, enabled: bool) -> P
         commands: manifest.contributes.commands.clone(),
         mcp_servers,
         language_servers,
+        themes: manifest
+            .contributes
+            .themes
+            .iter()
+            .map(|theme| PluginTheme {
+                label: theme.label.clone(),
+                path: theme.path.clone(),
+                ui_theme: theme.ui_theme.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -655,6 +721,7 @@ fn error_info(
         commands,
         mcp_servers,
         language_servers,
+        themes: Vec::new(),
     }
 }
 

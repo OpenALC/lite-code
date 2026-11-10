@@ -74,6 +74,7 @@ import { LAYOUT_LIMITS, clamp } from './services/layoutProfile'
 import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { createTaskController } from './services/taskStore'
 import { extensionsExecuteCommand, extensionsList } from './services/extensions'
+import { syncPluginThemes } from './services/pluginThemes'
 import { subscribeAgentContext } from './services/agentContext'
 import { requestReveal } from './services/editorReveal'
 import { resolveEditorStrategy } from './services/largeFile'
@@ -109,6 +110,7 @@ import {
   setLocale,
   setZoom,
   subscribePrefs,
+  themeBaseMode,
   toggleTheme,
   uiPrefs,
   zoomBy,
@@ -466,6 +468,7 @@ const pluginCommands = ref<PluginCommandItem[]>([])
 
 function onExtensionsChanged(): void {
   void refreshPluginCommands()
+  void syncPluginThemes()
   if (projectRoot.value) startLsp()
 }
 
@@ -974,6 +977,7 @@ onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
   void taskSession.refresh()
   void refreshPluginCommands()
+  void syncPluginThemes()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
@@ -1150,7 +1154,7 @@ onBeforeUnmount(() => {
           @click="toggleTheme"
         >
           <AppIcon
-            :name="prefs.theme === 'dark' ? 'sun' : 'moon'"
+            :name="themeBaseMode(prefs.theme) === 'dark' ? 'sun' : 'moon'"
             :size="16"
           />
         </button>

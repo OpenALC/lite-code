@@ -597,6 +597,8 @@
     "theme": "Theme",
     "dark": "Dark",
     "light": "Light",
+    "pluginThemes": "Plugin themes",
+    "pluginThemeSource": "from {name}",
     "zoom": "Page Zoom",
     "language": "Language",
     "themeShortcut": "Theme shortcut",

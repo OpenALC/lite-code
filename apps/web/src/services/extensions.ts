@@ -6,9 +6,19 @@ import { isTauri, type AckResult, type BridgeResult } from './bridge'
 
 export type PluginRuntime = 'node' | 'wasm' | 'declarative'
 
+/** 主题基于的基色（docs/EXTENSIONS.md §1）。 */
+export type PluginUiTheme = 'dark' | 'light'
+
 export interface PluginCommand {
   command: string
   title: string
+}
+
+/** 插件贡献的配色主题（ext_list 携带，JSON 经 ext_read_theme 读取）。 */
+export interface PluginTheme {
+  label: string
+  path: string
+  uiTheme: PluginUiTheme
 }
 
 export interface PluginInfo {
@@ -23,6 +33,7 @@ export interface PluginInfo {
   commands: PluginCommand[]
   mcpServers: string[]
   languageServers: string[]
+  themes: PluginTheme[]
 }
 
 export interface PluginList {
@@ -83,6 +94,19 @@ function isPluginRuntime(value: unknown): value is PluginRuntime {
   return value === 'node' || value === 'wasm' || value === 'declarative'
 }
 
+function isPluginUiTheme(value: unknown): value is PluginUiTheme {
+  return value === 'dark' || value === 'light'
+}
+
+function isPluginTheme(value: unknown): value is PluginTheme {
+  return (
+    isRecord(value) &&
+    typeof value.label === 'string' &&
+    typeof value.path === 'string' &&
+    isPluginUiTheme(value.uiTheme)
+  )
+}
+
 function isPluginCommand(value: unknown): value is PluginCommand {
   return (
     isRecord(value) &&
@@ -105,7 +129,9 @@ function isPluginInfo(value: unknown): value is PluginInfo {
     Array.isArray(value.commands) &&
     value.commands.every(isPluginCommand) &&
     isStringArray(value.mcpServers) &&
-    isStringArray(value.languageServers)
+    isStringArray(value.languageServers) &&
+    Array.isArray(value.themes) &&
+    value.themes.every(isPluginTheme)
   )
 }
 
@@ -159,6 +185,9 @@ function demoPluginList(): PluginList {
         ],
         mcpServers: [],
         languageServers: [],
+        themes: [
+          { label: 'Demo Dusk', path: './themes/dusk.json', uiTheme: 'dark' },
+        ],
       },
       {
         id: 'demo.notes',
@@ -172,11 +201,25 @@ function demoPluginList(): PluginList {
         commands: [{ command: 'demo.notes.open', title: 'Open demo notes' }],
         mcpServers: ['filesystem'],
         languageServers: [],
+        themes: [],
       },
     ],
     dir: DEMO_EXTENSIONS_DIR,
     nodeAvailable: true,
   }
+}
+
+// 浏览器 dev 演示主题：形状与 docs/EXTENSIONS.md §1 的主题 JSON 一致。
+const DEMO_THEME_FILES: Record<string, unknown> = {
+  'demo.hello>./themes/dusk.json': {
+    name: 'Demo Dusk',
+    colors: {
+      '--bg': '#101014',
+      '--panel': '#181820',
+      '--fg': '#e6e9ef',
+      '--accent': '#8ab4ff',
+    },
+  },
 }
 
 // ==== 命令包装 ====
@@ -262,6 +305,45 @@ export async function extensionsExecuteCommand(
       }
     }
     return { ok: true, data: { result: raw.result }, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
+export interface ExtThemeResult {
+  json: unknown
+}
+
+/**
+ * 读取插件贡献的主题文件（docs/EXTENSIONS.md §3）。Rust 侧只允许插件目录内
+ * 且清单声明过的 path；浏览器 dev 返回演示主题 JSON，ohos shim 未转发该
+ * 命令时按 reject 的 ErrorBody 进入 error 分支（同步逻辑会跳过该主题）。
+ */
+export async function extensionsReadTheme(
+  pluginId: string,
+  path: string,
+): Promise<BridgeResult<ExtThemeResult>> {
+  if (!isTauri()) {
+    const json = DEMO_THEME_FILES[`${pluginId}>${path}`]
+    if (json === undefined) {
+      return {
+        ok: false,
+        error: internalError(`演示插件 ${pluginId} 未声明主题 ${path}`),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { json }, fallback: true }
+  }
+  try {
+    const raw = await tauriInvoke<unknown>('ext_read_theme', { pluginId, path })
+    if (!isRecord(raw) || !('json' in raw)) {
+      return {
+        ok: false,
+        error: internalError('ext_read_theme 返回了非预期载荷'),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { json: raw.json }, fallback: false }
   } catch (error) {
     return { ok: false, error: asErrorBody(error), fallback: false }
   }

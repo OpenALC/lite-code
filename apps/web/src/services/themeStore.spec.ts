@@ -13,17 +13,30 @@ import {
   PREFS_STORAGE_KEY,
   TAB_SIZE_DEFAULT,
   WORD_WRAP_DEFAULT,
+  applyPluginTheme,
+  isPluginThemeSlug,
   loadPrefs,
+  normalizePluginThemeColors,
+  normalizePluginThemeJson,
   normalizePrefs,
+  pluginThemeCss,
+  pluginThemeOwner,
+  pluginThemeSlug,
+  registerPluginTheme,
+  removePluginTheme,
   savePrefs,
   setAgentDensity,
   setAgentFontSize,
   setAgentSendKey,
   setFontSize,
   setTabSize,
+  setTheme,
   setWordWrap,
   subscribePrefs,
+  themeBaseMode,
+  toggleTheme,
   uiPrefs,
+  unregisterPluginTheme,
 } from './themeStore'
 
 function fakeStorage(initial: Record<string, string> = {}): {
@@ -185,5 +198,143 @@ describe('setter 与订阅', () => {
     } finally {
       unsubscribe()
     }
+  })
+})
+
+// ---- 插件主题（docs/EXTENSIONS.md §1）：slug、白名单、样式注入与回落 ----
+
+class FakeStyleTag {
+  textContent = ''
+  removed = false
+  attrs = new Map<string, string>()
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value)
+  }
+
+  remove(): void {
+    this.removed = true
+  }
+
+  matches(slug: string): boolean {
+    return !this.removed && this.attrs.get('data-plugin-theme') === slug
+  }
+}
+
+class FakeThemeDoc {
+  readonly tags: FakeStyleTag[] = []
+  readonly head = {
+    appendChild: (node: FakeStyleTag) => {
+      this.tags.push(node)
+    },
+  }
+
+  querySelector(selector: string): FakeStyleTag | null {
+    const match = /^style\[data-plugin-theme="(.+)"\]$/.exec(selector)
+    if (!match) return null
+    return this.tags.find(tag => tag.matches(match[1])) ?? null
+  }
+
+  createElement(): FakeStyleTag {
+    return new FakeStyleTag()
+  }
+}
+
+describe('插件主题', () => {
+  afterEach(() => {
+    setTheme('dark')
+    unregisterPluginTheme('plugin--demo.hello--demo-dusk')
+    unregisterPluginTheme('plugin--my--plugin--x')
+  })
+
+  it('slug：label 折叠成小写线连，纯中文回落 theme', () => {
+    expect(pluginThemeSlug('demo.hello', 'Demo Dusk')).toBe('plugin--demo.hello--demo-dusk')
+    expect(pluginThemeSlug('demo.hello', 'My  Theme!')).toBe(
+      'plugin--demo.hello--my-theme',
+    )
+    expect(pluginThemeSlug('demo.hello', '暗夜')).toBe('plugin--demo.hello--theme')
+    expect(isPluginThemeSlug('plugin--a--b')).toBe(true)
+    expect(isPluginThemeSlug('dark')).toBe(false)
+  })
+
+  it('pluginThemeOwner 还原插件 id（含 id 自身带 -- 的情形）', () => {
+    expect(pluginThemeOwner('plugin--demo.hello--demo-dusk')).toBe('demo.hello')
+    expect(pluginThemeOwner('plugin--my--plugin--x')).toBe('my--plugin')
+    expect(pluginThemeOwner('dark')).toBeNull()
+    expect(pluginThemeOwner('plugin--x')).toBeNull()
+  })
+
+  it('colors 白名单只收合法的 -- 变量名，忽略其余键与非字符串值', () => {
+    expect(
+      normalizePluginThemeColors({
+        '--bg': ' #101014 ',
+        '--fg': '#e6e9ef',
+        body: 'red',
+        '--evil key': 'x',
+        '--empty': '   ',
+        '--num': 42,
+      }),
+    ).toEqual({ '--bg': '#101014', '--fg': '#e6e9ef' })
+    expect(normalizePluginThemeColors(null)).toEqual({})
+    expect(normalizePluginThemeColors('x')).toEqual({})
+  })
+
+  it('normalizePluginThemeJson 校验形状；normalizePrefs 保留 slug', () => {
+    expect(
+      normalizePluginThemeJson({ name: 'Dusk', colors: { '--bg': '#000' } }),
+    ).toEqual({ name: 'Dusk', colors: { '--bg': '#000' } })
+    expect(normalizePluginThemeJson({ name: 'Dusk' })).toBeNull()
+    expect(normalizePluginThemeJson('x')).toBeNull()
+    const slug = 'plugin--demo.hello--demo-dusk'
+    expect(normalizePrefs({ theme: slug }).theme).toBe(slug)
+    expect(normalizePrefs({ theme: 'light' }).theme).toBe('light')
+    expect(normalizePrefs({ theme: 'garbage' }).theme).toBe('dark')
+  })
+
+  it('pluginThemeCss 生成 :root[data-theme] 规则，空 colors 返回 null', () => {
+    expect(pluginThemeCss('plugin--demo.hello--demo-dusk', { '--bg': '#000' })).toBe(
+      ":root[data-theme='plugin--demo.hello--demo-dusk'] {\n  --bg: #000;\n}",
+    )
+    expect(pluginThemeCss('plugin--x--y', {})).toBeNull()
+  })
+
+  it('applyPluginTheme 注入/更新/移除 style 标签，removePluginTheme 清理', () => {
+    const doc = new FakeThemeDoc()
+    const slug = 'plugin--demo.hello--demo-dusk'
+    expect(applyPluginTheme(slug, { '--bg': '#000' }, doc)).toBe(true)
+    expect(doc.tags).toHaveLength(1)
+    expect(doc.tags[0].attrs.get('data-plugin-theme')).toBe(slug)
+
+    // 同一 slug 再次注入：更新既有标签而不是新增。
+    expect(applyPluginTheme(slug, { '--bg': '#111' }, doc)).toBe(true)
+    expect(doc.tags).toHaveLength(1)
+    expect(doc.tags[0].textContent).toContain('#111')
+
+    // 内容相同时不重复写。
+    const before = doc.tags[0].textContent
+    expect(applyPluginTheme(slug, { '--bg': '#111' }, doc)).toBe(true)
+    expect(doc.tags[0].textContent).toBe(before)
+
+    expect(removePluginTheme(slug, doc)).toBe(true)
+    expect(doc.tags[0].removed).toBe(true)
+    expect(removePluginTheme(slug, doc)).toBe(false)
+    expect(applyPluginTheme(slug, {}, doc)).toBe(false)
+  })
+
+  it('toggleTheme 基于注册 uiTheme 的基色往返', () => {
+    const slug = 'plugin--demo.hello--demo-dusk'
+    registerPluginTheme(slug, 'dark')
+    setTheme(slug)
+    expect(uiPrefs().theme).toBe(slug)
+    toggleTheme()
+    expect(uiPrefs().theme).toBe('light')
+    toggleTheme()
+    expect(uiPrefs().theme).toBe('dark')
+
+    // 注册亮基色插件主题：toggle 回 dark；注销后基色回落 dark。
+    setTheme(slug)
+    expect(themeBaseMode(slug)).toBe('dark')
+    unregisterPluginTheme(slug)
+    expect(themeBaseMode(slug)).toBe('dark')
   })
 })

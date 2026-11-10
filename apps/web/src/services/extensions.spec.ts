@@ -4,6 +4,7 @@ import {
   extensionsExecuteCommand,
   extensionsList,
   extensionsOpenDir,
+  extensionsReadTheme,
   extensionsReload,
   extensionsSetEnabled,
   type PluginList,
@@ -42,6 +43,7 @@ const sampleList: PluginList = {
       commands: [{ command: 'example.hello', title: 'Hello' }],
       mcpServers: ['filesystem'],
       languageServers: ['typescript'],
+      themes: [{ label: 'Dusk', path: './themes/dusk.json', uiTheme: 'dark' }],
     },
   ],
   dir: 'C:\\Users\\demo\\.lite-code\\extensions',
@@ -111,6 +113,17 @@ describe('浏览器 fallback', () => {
         args: { name: 'Ada' },
       })
     }
+  })
+
+  it('extensionsReadTheme 返回演示主题 JSON；未声明路径进 error', async () => {
+    const ok = await extensionsReadTheme('demo.hello', './themes/dusk.json')
+    expect(ok.ok).toBe(true)
+    expect(ok.fallback).toBe(true)
+    if (ok.ok) {
+      expect(ok.data.json).toMatchObject({ name: 'Demo Dusk' })
+    }
+    const missing = await extensionsReadTheme('demo.notes', './themes/dusk.json')
+    expect(missing.ok).toBe(false)
   })
 })
 
@@ -185,6 +198,25 @@ describe('Tauri 路径', () => {
     expect(withArgs.ok).toBe(true)
     if (withArgs.ok) expect(withArgs.data.result).toEqual({ done: true })
     expect(withoutArgs.ok).toBe(true)
+  })
+
+  it('ext_read_theme 传 pluginId 与 path，校验 { json } 载荷', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { json: { name: 'Dusk', colors: { '--bg': '#000' } } }
+      },
+    })
+    const res = await extensionsReadTheme('example.hello', './themes/dusk.json')
+    expect(calls).toEqual([
+      {
+        cmd: 'ext_read_theme',
+        args: { pluginId: 'example.hello', path: './themes/dusk.json' },
+      },
+    ])
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.data.json).toMatchObject({ name: 'Dusk' })
   })
 })
 

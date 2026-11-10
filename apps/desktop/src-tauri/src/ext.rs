@@ -17,6 +17,12 @@ pub struct ExtCommandResult {
     pub result: Value,
 }
 
+/// `ext_read_theme` 的返回：`{ "json": <主题文件内容> }`。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExtThemeResult {
+    pub json: Value,
+}
+
 /// 单宿主进程常驻：所有命令与 Agent 会话共享同一个 [`ExtHost`]，
 /// 首次使用时探测 Node。返回 Arc 以便 Agent worker 的工具执行器长期持有。
 pub(crate) fn shared_host() -> Arc<Mutex<ExtHost>> {
@@ -128,6 +134,21 @@ pub(crate) async fn ext_execute_command(
 }
 
 #[tauri::command]
+pub(crate) async fn ext_read_theme(
+    plugin_id: String,
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<ExtThemeResult, ErrorBody> {
+    let root = state.get();
+    blocking(move || {
+        let json = lc_core::ext::read_theme(root.as_deref(), &plugin_id, &path)
+            .map_err(|error| error.to_error_body())?;
+        Ok(ExtThemeResult { json })
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn ext_open_dir() -> Result<CommandResult, ErrorBody> {
     blocking(|| {
         let paths = ExtPaths::default_for(None).map_err(|error| error.to_error_body())?;
@@ -202,6 +223,16 @@ mod tests {
         })
         .expect("serialize");
         assert_eq!(value["result"]["ok"], true);
+    }
+
+    #[test]
+    fn theme_result_serializes_json_field() {
+        let value = serde_json::to_value(ExtThemeResult {
+            json: json!({"name": "Dusk", "colors": {"--bg": "#101014"}}),
+        })
+        .expect("serialize");
+        assert_eq!(value["json"]["name"], "Dusk");
+        assert_eq!(value["json"]["colors"]["--bg"], "#101014");
     }
 
     #[test]

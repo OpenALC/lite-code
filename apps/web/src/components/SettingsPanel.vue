@@ -5,6 +5,11 @@ import { useI18n } from 'vue-i18n'
 import AppIcon from './AppIcon.vue'
 import ProvidersPanel from './ProvidersPanel.vue'
 import {
+  pluginThemeOptions,
+  subscribePluginThemes,
+  type PluginThemeOption,
+} from '../services/pluginThemes'
+import {
   AGENT_FONT_DEFAULT,
   AGENT_FONT_MAX,
   AGENT_FONT_MIN,
@@ -34,6 +39,17 @@ const unsub = subscribePrefs(next => {
   prefs.value = next
 })
 onBeforeUnmount(unsub)
+
+// 插件贡献的主题（docs/EXTENSIONS.md §1）；App 在启动与插件变更时同步。
+const pluginThemes = ref<PluginThemeOption[]>(pluginThemeOptions())
+const unsubThemes = subscribePluginThemes(next => {
+  pluginThemes.value = next
+})
+onBeforeUnmount(unsubThemes)
+
+function changeTheme(value: string): void {
+  setTheme(value)
+}
 
 const zoomLabel = computed(() => `${Math.round(prefs.value.zoom * 100)}%`)
 const fontSizeLabel = computed(() => `${prefs.value.fontSize} px`)
@@ -105,22 +121,29 @@ function changeLocale(value: string): void {
         <section class="settings-group">
           <div class="row">
             <span>{{ t('settings.theme') }}</span>
-            <div class="segmented">
-              <button
-                type="button"
-                :class="{ active: prefs.theme === 'dark' }"
-                @click="setTheme('dark')"
-              >
+            <select
+              :value="prefs.theme"
+              @change="changeTheme(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="dark">
                 {{ t('settings.dark') }}
-              </button>
-              <button
-                type="button"
-                :class="{ active: prefs.theme === 'light' }"
-                @click="setTheme('light')"
-              >
+              </option>
+              <option value="light">
                 {{ t('settings.light') }}
-              </button>
-            </div>
+              </option>
+              <optgroup
+                v-if="pluginThemes.length > 0"
+                :label="t('settings.pluginThemes')"
+              >
+                <option
+                  v-for="theme in pluginThemes"
+                  :key="theme.slug"
+                  :value="theme.slug"
+                >
+                  {{ theme.label }}（{{ t('settings.pluginThemeSource', { name: theme.pluginName }) }}）
+                </option>
+              </optgroup>
+            </select>
           </div>
           <div class="row">
             <span>{{ t('settings.zoom') }}</span>
