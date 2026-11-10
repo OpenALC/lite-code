@@ -350,6 +350,15 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   B 类（soak/审计/签名/Win11）未触碰，按 §6 等待维护者。
 - **发布纪律**：M2/M3a 均未推 tag；preview.65 与 M3b/3c 留审查后。
 
+## preview.67 发版中（2026-11-11）
+
+- tag `v0.6.1-preview.67` 打在 `18f7db9`（版本变更+notes，CI 绿、check-version
+  通过）——打包插件系统六块收官 + db M3 契约 0.9；notes
+  `docs/releases/0.6.1-preview.67.md`；workspace 714 项发版前实测全绿。
+  后台发版脚本已修 `/tmp` 路径坑（上轮 step4 假循环根因）。
+- **preview.66 已发布**（前情）：10 资产 + updater-manifest 提升到 .66
+  （previous=.65），插件延迟激活随该版交付。
+
 ## preview.66 发版中（2026-11-11）
 
 - tag `v0.6.1-preview.66` 打在 `b8041b1`（版本变更+notes 提交，CI 绿、
