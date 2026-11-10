@@ -4,12 +4,38 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use lc_core::ext::marketplace::{
+    BUILTIN_SOURCE_NAME, MarketSearchResult, RegistryList, RegistrySource,
+};
 use lc_core::ext::{ExtError, ExtHost, ExtPaths, PluginList};
 use lc_proto::{CommandResult, ErrorBody, ErrorCode};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::WorkspaceState;
+
+/// 默认插件源地址：官方 marketplace 仓库的 release 资产（占位常量，发布前
+/// 落定；同 updater 的 DEFAULT_MANIFEST_URL 模式，
+/// docs/plans/plugin-marketplace.md §3.3/§7）。
+pub(crate) const DEFAULT_REGISTRY_URL: &str =
+    "https://github.com/OpenALC/lite-code-marketplace/releases/download/plugin-index/latest.json";
+
+/// 源 URL 覆盖环境变量（测试缝，同 LC_UPDATE_MANIFEST_URL）。
+pub(crate) const REGISTRY_URL_ENV: &str = "LC_PLUGIN_REGISTRY_URL";
+
+/// 源 URL：显式环境变量优先，否则用固定滚动地址。
+pub(crate) fn registry_url() -> String {
+    std::env::var(REGISTRY_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_REGISTRY_URL.to_string())
+}
+
+/// 内置官方源（桌面层持有常量，lc-core 侧可同名覆盖/禁用）。
+pub(crate) fn builtin_registry_source() -> RegistrySource {
+    RegistrySource::new(BUILTIN_SOURCE_NAME, registry_url())
+}
 
 /// `ext_execute_command` 的返回：`{ "result": <插件返回值> }`。
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -216,6 +242,141 @@ pub(crate) async fn ext_open_dir() -> Result<CommandResult, ErrorBody> {
     .await
 }
 
+// ==== 插件市场命令（docs/plans/plugin-marketplace.md §3.4）：薄转发，业务在
+// `lc_core::ext::marketplace`，DTO camelCase，错误码复用既有 ErrorCode。 ====
+
+#[tauri::command]
+pub(crate) async fn ext_registry_list() -> Result<RegistryList, ErrorBody> {
+    let builtin = builtin_registry_source();
+    blocking(move || {
+        lc_core::ext::marketplace::list_registries(&builtin).map_err(|error| error.to_error_body())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn ext_registry_add(
+    name: String,
+    url: String,
+    require_signatures: Option<bool>,
+    pubkey: Option<String>,
+) -> Result<RegistryList, ErrorBody> {
+    let builtin = builtin_registry_source();
+    blocking(move || {
+        lc_core::ext::marketplace::add_registry(
+            &builtin,
+            &name,
+            &url,
+            require_signatures.unwrap_or(false),
+            pubkey.as_deref(),
+        )
+        .map_err(|error| error.to_error_body())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn ext_registry_remove(name: String) -> Result<RegistryList, ErrorBody> {
+    let builtin = builtin_registry_source();
+    blocking(move || {
+        lc_core::ext::marketplace::remove_registry(&builtin, &name)
+            .map_err(|error| error.to_error_body())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn ext_search(
+    query: Option<String>,
+    refresh: Option<bool>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<MarketSearchResult, ErrorBody> {
+    let root = state.get();
+    let node = host_node_path()?;
+    let builtin = builtin_registry_source();
+    blocking(move || {
+        let paths =
+            ExtPaths::default_for(root.as_deref()).map_err(|error| error.to_error_body())?;
+        lc_core::ext::marketplace::search(
+            &paths,
+            &builtin,
+            query.as_deref(),
+            refresh.unwrap_or(false),
+            node.is_some(),
+        )
+        .map_err(|error| error.to_error_body())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn ext_install(
+    id: String,
+    version: Option<String>,
+    source: Option<String>,
+    force: Option<bool>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<PluginList, ErrorBody> {
+    let root = state.get();
+    let node = host_node_path()?;
+    let builtin = builtin_registry_source();
+    blocking(move || {
+        let paths =
+            ExtPaths::default_for(root.as_deref()).map_err(|error| error.to_error_body())?;
+        lc_core::ext::marketplace::install(
+            &paths,
+            &builtin,
+            &id,
+            version.as_deref(),
+            source.as_deref(),
+            force.unwrap_or(false),
+            node.is_some(),
+        )
+        .map_err(|error| error.to_error_body())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn ext_update(
+    id: Option<String>,
+    force: Option<bool>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<PluginList, ErrorBody> {
+    let root = state.get();
+    let node = host_node_path()?;
+    let builtin = builtin_registry_source();
+    blocking(move || {
+        let paths =
+            ExtPaths::default_for(root.as_deref()).map_err(|error| error.to_error_body())?;
+        lc_core::ext::marketplace::update(
+            &paths,
+            &builtin,
+            id.as_deref(),
+            force.unwrap_or(false),
+            node.is_some(),
+        )
+        .map_err(|error| error.to_error_body())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn ext_uninstall(
+    id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<PluginList, ErrorBody> {
+    let root = state.get();
+    let node = host_node_path()?;
+    blocking(move || {
+        let paths =
+            ExtPaths::default_for(root.as_deref()).map_err(|error| error.to_error_body())?;
+        lc_core::ext::marketplace::uninstall(&paths, &id, node.is_some())
+            .map_err(|error| error.to_error_body())
+    })
+    .await
+}
+
 fn ensure_extensions_dir(paths: &ExtPaths) -> Result<PathBuf, ExtError> {
     std::fs::create_dir_all(&paths.user_dir).map_err(|error| {
         ExtError::Io(format!(
@@ -321,5 +482,32 @@ mod tests {
         let body = ExtError::NodeUnavailable.to_error_body();
         assert_eq!(body.code, ErrorCode::NodeUnavailable);
         assert!(body.message.contains("Node"));
+    }
+
+    #[test]
+    fn registry_url_env_overrides_builtin_default() {
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let old = std::env::var_os(REGISTRY_URL_ENV);
+        // SAFETY: 测试进程内临时覆盖 URL 环境变量，同一把 ENV_LOCK 串行化，
+        // 断言结束立刻恢复。
+        unsafe {
+            std::env::set_var(REGISTRY_URL_ENV, "file:///tmp/test-index.json");
+        }
+        assert_eq!(registry_url(), "file:///tmp/test-index.json");
+        let source = builtin_registry_source();
+        assert_eq!(source.name, BUILTIN_SOURCE_NAME);
+        assert_eq!(source.url, "file:///tmp/test-index.json");
+        assert!(source.enabled);
+        unsafe {
+            match old {
+                Some(value) => std::env::set_var(REGISTRY_URL_ENV, value),
+                None => std::env::remove_var(REGISTRY_URL_ENV),
+            }
+        }
+        assert_eq!(registry_url(), DEFAULT_REGISTRY_URL);
+        assert!(DEFAULT_REGISTRY_URL.starts_with("https://"));
     }
 }

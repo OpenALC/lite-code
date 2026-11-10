@@ -14,6 +14,7 @@
 
 mod host;
 mod manifest;
+pub mod marketplace;
 mod mcp;
 mod state;
 mod tools;

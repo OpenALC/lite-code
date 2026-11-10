@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use lc_core::version::Version;
 use lc_proto::{ErrorBody, ErrorCode};
 use serde::{Deserialize, Serialize};
 
@@ -325,131 +326,6 @@ fn is_https_or_loopback(url: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
 }
 
-// ==== SemVer（只实现更新比较需要的部分，不引新 crate） ====
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Version {
-    major: u64,
-    minor: u64,
-    patch: u64,
-    pre: Vec<PreId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PreId {
-    Numeric(u64),
-    Alpha(String),
-}
-
-impl Version {
-    fn parse(raw: &str) -> Option<Self> {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            return None;
-        }
-        // build metadata 不参与比较，但必须语法合法。
-        let (rest, build) = match raw.split_once('+') {
-            Some((rest, build)) => (rest, Some(build)),
-            None => (raw, None),
-        };
-        if let Some(build) = build
-            && (build.is_empty()
-                || !build
-                    .split('.')
-                    .all(|part| !part.is_empty() && is_identifier(part)))
-        {
-            return None;
-        }
-        let (core, pre) = match rest.split_once('-') {
-            Some((core, pre)) => (core, Some(pre)),
-            None => (rest, None),
-        };
-        let mut parts = core.split('.');
-        let major = parse_core(parts.next()?)?;
-        let minor = parse_core(parts.next()?)?;
-        let patch = parse_core(parts.next()?)?;
-        if parts.next().is_some() {
-            return None;
-        }
-        let pre = match pre {
-            Some(pre) => {
-                let mut ids = Vec::new();
-                for part in pre.split('.') {
-                    if part.is_empty() || !is_identifier(part) {
-                        return None;
-                    }
-                    if part.bytes().all(|b| b.is_ascii_digit()) {
-                        if part.len() > 1 && part.starts_with('0') {
-                            return None;
-                        }
-                        ids.push(PreId::Numeric(part.parse().ok()?));
-                    } else {
-                        ids.push(PreId::Alpha(part.to_string()));
-                    }
-                }
-                ids
-            }
-            None => Vec::new(),
-        };
-        Some(Self {
-            major,
-            minor,
-            patch,
-            pre,
-        })
-    }
-}
-
-fn parse_core(raw: &str) -> Option<u64> {
-    if raw.is_empty()
-        || !raw.bytes().all(|b| b.is_ascii_digit())
-        || (raw.len() > 1 && raw.starts_with('0'))
-    {
-        return None;
-    }
-    raw.parse().ok()
-}
-
-fn is_identifier(raw: &str) -> bool {
-    raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-}
-
-impl Ord for Version {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.major
-            .cmp(&other.major)
-            .then_with(|| self.minor.cmp(&other.minor))
-            .then_with(|| self.patch.cmp(&other.patch))
-            .then_with(|| match (self.pre.is_empty(), other.pre.is_empty()) {
-                (true, true) => std::cmp::Ordering::Equal,
-                (true, false) => std::cmp::Ordering::Greater,
-                (false, true) => std::cmp::Ordering::Less,
-                (false, false) => cmp_prerelease(&self.pre, &other.pre),
-            })
-    }
-}
-
-impl PartialOrd for Version {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-fn cmp_prerelease(left: &[PreId], right: &[PreId]) -> std::cmp::Ordering {
-    for (a, b) in left.iter().zip(right) {
-        let ordering = match (a, b) {
-            (PreId::Numeric(a), PreId::Numeric(b)) => a.cmp(b),
-            (PreId::Numeric(_), PreId::Alpha(_)) => std::cmp::Ordering::Less,
-            (PreId::Alpha(_), PreId::Numeric(_)) => std::cmp::Ordering::Greater,
-            (PreId::Alpha(a), PreId::Alpha(b)) => a.cmp(b),
-        };
-        if ordering != std::cmp::Ordering::Equal {
-            return ordering;
-        }
-    }
-    left.len().cmp(&right.len())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -459,7 +335,7 @@ mod tests {
     use lc_proto::ErrorCode;
 
     use super::{
-        PlatformAsset, PreviousRelease, SUPPORTED_PLATFORMS, UpdateError, UpdateManifest, Version,
+        PlatformAsset, PreviousRelease, SUPPORTED_PLATFORMS, UpdateError, UpdateManifest,
         check_manifest, check_url, current_platform_key, is_https_or_loopback, parse_manifest,
     };
 
@@ -488,20 +364,6 @@ mod tests {
             platforms,
             previous: None,
         }
-    }
-
-    #[test]
-    fn semver_ordering_handles_prerelease_and_build_metadata() {
-        let parse = |v: &str| Version::parse(v).unwrap_or_else(|| panic!("parse {v}"));
-        assert!(parse("0.6.1-preview.1") > parse("0.5.1-preview.1"));
-        assert!(parse("0.6.1-preview.2") > parse("0.6.1-preview.1"));
-        assert!(parse("0.6.1") > parse("0.6.1-preview.9"));
-        assert!(parse("0.6.1-preview.10") > parse("0.6.1-preview.9"));
-        assert_eq!(parse("0.6.1-preview.1+build.7"), parse("0.6.1-preview.1"));
-        assert!(parse("1.0.0-alpha") < parse("1.0.0-alpha.1"));
-        assert!(Version::parse("0.6").is_none());
-        assert!(Version::parse("v0.6.1").is_none());
-        assert!(Version::parse("0.6.1-preview.01").is_none());
     }
 
     #[test]

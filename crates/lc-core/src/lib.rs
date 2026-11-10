@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod process;
 pub mod runtime;
 pub mod task;
+pub mod version;
 
 mod untrusted;
 

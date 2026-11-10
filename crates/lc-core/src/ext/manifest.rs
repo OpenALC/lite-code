@@ -829,7 +829,9 @@ fn validate_manifest(
     Ok((manifest, main_path))
 }
 
-fn valid_plugin_id(id: &str) -> bool {
+/// 插件 id 形态（反向域名）：非空、≤128 字符、非 `.`/`..`、不含空白/控制字符
+/// 与路径分隔符。marketplace 索引条目复用同一规则。
+pub(crate) fn valid_plugin_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id != "."
