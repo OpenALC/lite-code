@@ -199,7 +199,7 @@ fn db_integration_postgres_query_execute_schema_explain() {
         .expect("查询大文本");
     let value = cell(&big_result, 0, 0);
     assert!(
-        value.ends_with('…'),
+        value.ends_with("…[truncated]"),
         "大单元格应带省略后缀：{}",
         &value[value.len().saturating_sub(32)..]
     );
@@ -321,7 +321,11 @@ fn db_integration_mysql_query_execute_schema_explain() {
         .query("my", "SELECT name FROM m2_my_items WHERE id = 3", None)
         .expect("查询大文本");
     let value = cell(&big_result, 0, 0);
-    assert!(value.ends_with('…'), "大单元格应带省略后缀");
+    assert!(
+        value.ends_with("…[truncated]"),
+        "大单元格应带省略后缀：{}",
+        &value[value.len().saturating_sub(32)..]
+    );
     assert!(
         value.len() <= 4096,
         "单元格应截断到 4 KiB 内，实际 {} 字节",
