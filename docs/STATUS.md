@@ -350,6 +350,20 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   B 类（soak/审计/签名/Win11）未触碰，按 §6 等待维护者。
 - **发布纪律**：M2/M3a 均未推 tag；preview.65 与 M3b/3c 留审查后。
 
+## 审查回合（2026-11-10 上午，main `30ec40c`）
+
+- **M3b 已按审查合并**（`be84ab6`）：冲突按意见解决（3b 取分支版 lc-core 落点
+  + 三终态语义明示；3c 取主线「不做」版）；合并后 workspace 667 全绿，远端 CI 绿。
+- **preview.65 notes 按审查修正**（`73373f9`）：亮点区分「M2 鸿蒙会话表迁移」与
+  「M3a 两端事件信封复用」；M3c 改「决定不做」；补 M3b 条目与 667 计数。
+- **审查意见文档入库** `docs/reviews/2026-11-10-main-merge.md`。
+- **设置页重做**（`9b8a51d`，用户直接要求）：改为模式无关模态浮层——任何
+  入口（活动栏/状态栏/菜单/Ctrl+,/Agent footer）打开设置不再跳转 VSC 模式；
+  新增「供应商」分区内嵌 ProvidersPanel；Agent 侧栏 footer 供应商/设置直达
+  浮层。桌面 dev 运行时 e2e 全过（Agent 模式开浮层保持模式、Esc 关闭）；
+  web 四件套 + build:ohos 全绿；demo 同步模态化。
+- **待发**：preview.65 tag（notes 已按审查定稿，等发版指令）。
+
 ## main(2)：lc-host M3a 事件出口统一（f8a4cce）
 
 - lc-host envelope 新增 `CoreEventSink` trait（CoreEvent 级，桌面形状）+
