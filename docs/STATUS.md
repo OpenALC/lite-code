@@ -375,6 +375,17 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   立即 Shift+Tab 回绕）；e2e 五项全过（含开/关对照实验与 Agent 模式 Ctrl+F）。
   版本变更 .64→.65 独立提交，`check-version --release --tag v0.6.1-preview.65`
   通过，CI 绿——**打标前置条件全部满足，等「发版」指令**。
+- **lc-host M4 收尾完成**（`bafdd06`）：判定 factory 组合在 M2/M3 修订形态下
+  已自然成立（stub 回退在 turn 层、TCP 预探在 factory 内），无编译死代码
+  （clippy 全绿），孤儿组件扫描唯一命中 `RuntimeSettings.vue`（414 行零引用）
+  已删除——lc-host 抽取计划 M1→M4 全部关闭。
+- **三路子代理进行中**（限额已恢复；约定只实现不提交，主 agent 统一验收）：
+  Track A 插件级 Agent 工具（agent-81）；Track C LSP 补全/悬停/跳转
+  （agent-82，含契约 bump）；Track B MySQL/PG 设计文档（agent-83）。
+- **preview.65 发版中**：tag `v0.6.1-preview.65` 打在 `b69cf33`（final 复审
+  建议提交），release 工作流后台执行（等 draft→发布→updater-manifest）；
+  perf.yml 已在最新 main 触发（run 42858384352），观测 final 复审记录
+  的窗口开关残留计数问题。
 
 ## main(2)：lc-host M3a 事件出口统一（f8a4cce）
 
