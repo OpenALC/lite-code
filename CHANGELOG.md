@@ -132,7 +132,8 @@
 - 插件延迟激活：activationEvents 生效（onCommand 懒激活/幂等/失败 -32601 带 stage，`*` 向后兼容）（agent-86）
 - db lane M3（契约 v0.9）：DbConnectionInfo 携带 port/user/secretRef，远程连接编辑回填全等往返；connect 错误分类引导（Node 缺失/连接类分流）（agent-87）——MySQL/PG 三切片全部关闭
 - 声明式插件主题：contributes.themes 端到端（清单校验/防穿越读取 64KiB 帽/--vars 白名单防注入/设置页 select 含插件 optgroup/失效回落 dark）（agent-88）
-- 声明式插件语言贡献：contributes.languages（跨插件扩展名冲突整插件标记 error/Monarch grammar 白名单防注入/内置语言优先/失效空 tokenizer 清高亮）——EXTENSIONS v0 未实现清单收官（agent-89）
+- 声明式插件语言贡献：contributes.languages（跨插件扩展名冲突整插件标记 error/Monarch grammar 白名单防注入/内置语言优先/失效空 tokenizer 清高亮）（agent-89）
+- 插件依赖声明 extensionDependencies：缺失依赖/Tarjan 环检测标记 error，稳定 Kahn 拓扑加载顺序（agent-90）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
