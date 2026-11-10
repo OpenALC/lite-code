@@ -14,12 +14,16 @@ use serde_json::Value;
 
 use crate::fs::{FsError, RealPathResolver, display_path, ensure_within_root};
 
-use super::{ExtError, ExtPaths, PluginCommand, PluginInfo, PluginRuntime, PluginTheme};
+use super::{
+    ExtError, ExtPaths, PluginCommand, PluginInfo, PluginLanguage, PluginRuntime, PluginTheme,
+};
 
 pub(crate) const MANIFEST_FILE: &str = "plugin.json";
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 /// 主题文件大小上限（docs/EXTENSIONS.md §1）：读取时由 `ext_read_theme` 校验。
 pub(crate) const MAX_THEME_BYTES: u64 = 64 * 1024;
+/// 语法文件大小上限（docs/EXTENSIONS.md §1）：读取时由 `ext_read_grammar` 校验。
+pub(crate) const MAX_GRAMMAR_BYTES: u64 = 64 * 1024;
 
 /// 一个已发现条目。`manifest` 为 `None` 表示该目录的清单无效或 id 冲突，
 /// 只用于列表展示，不能执行命令或参与 MCP 合并。
@@ -65,6 +69,25 @@ pub(crate) struct Contributes {
     /// 配色主题声明（docs/EXTENSIONS.md §1）：UI 经 `ext_read_theme` 拉取 JSON。
     #[serde(default)]
     pub themes: Vec<ThemeDecl>,
+    /// 语言声明（docs/EXTENSIONS.md §1）：UI 注册 Monaco 语言并拉取语法 JSON。
+    #[serde(default)]
+    pub languages: Vec<LanguageDecl>,
+}
+
+/// 语言声明。`id` 是 Monaco language id（小写字母/数字/线，插件内唯一）；
+/// `extensions` 是带点的扩展名列表（插件间去重，冲突方在校验错误中说明）；
+/// `grammar` 是相对插件目录的语法 JSON（校验时须已存在且在目录内，
+/// 读取时另限 64 KiB），缺省表示不提供高亮。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LanguageDecl {
+    pub id: String,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub grammar: Option<String>,
 }
 
 /// 主题声明。`path` 是相对插件目录的主题 JSON（校验时须已存在且在目录内，
@@ -123,12 +146,14 @@ pub(crate) fn discover(
     let mut plugins = Vec::new();
     let mut seen_ids = HashSet::new();
     let mut claimed_commands: HashMap<String, String> = HashMap::new();
+    let mut claimed_extensions: HashMap<String, String> = HashMap::new();
     scan_root(
         &paths.user_dir,
         disabled,
         &mut plugins,
         &mut seen_ids,
         &mut claimed_commands,
+        &mut claimed_extensions,
     )?;
     if allow_project
         && let Some(project_dir) = paths.project_dir.as_deref()
@@ -140,6 +165,7 @@ pub(crate) fn discover(
             &mut plugins,
             &mut seen_ids,
             &mut claimed_commands,
+            &mut claimed_extensions,
         )?;
     }
     Ok(plugins)
@@ -151,6 +177,7 @@ fn scan_root(
     plugins: &mut Vec<DiscoveredPlugin>,
     seen_ids: &mut HashSet<String>,
     claimed_commands: &mut HashMap<String, String>,
+    claimed_extensions: &mut HashMap<String, String>,
 ) -> Result<(), ExtError> {
     let read_dir = match std::fs::read_dir(root) {
         Ok(read_dir) => read_dir,
@@ -261,8 +288,35 @@ fn scan_root(
             continue;
         }
 
+        // 语言扩展名插件间去重（docs/EXTENSIONS.md §1）：先发现者占用，
+        // 冲突扩展名连同语言 id、冲突方一起写进校验错误。
+        if let Some((language_id, extension, other)) =
+            manifest.contributes.languages.iter().find_map(|language| {
+                language.extensions.iter().find_map(|extension| {
+                    claimed_extensions
+                        .get(extension)
+                        .map(|other| (language.id.clone(), extension.clone(), other.clone()))
+                })
+            })
+        {
+            push_error(
+                plugins,
+                seen_ids,
+                Some(&raw_value),
+                &dir_name,
+                &dir,
+                format!("语言 `{language_id}` 的扩展名 `{extension}` 已由插件 `{other}` 声明"),
+            );
+            continue;
+        }
+
         for command in &manifest.contributes.commands {
             claimed_commands.insert(command.command.clone(), id.clone());
+        }
+        for language in &manifest.contributes.languages {
+            for extension in &language.extensions {
+                claimed_extensions.insert(extension.clone(), id.clone());
+            }
         }
 
         let enabled = !disabled.contains(&id);
@@ -427,6 +481,76 @@ fn validate_manifest(
         theme.path = raw_path.to_string();
     }
 
+    // 语言声明校验（docs/EXTENSIONS.md §1）：id 合法（小写字母/数字/线）
+    // 且插件内唯一；extensions 是非空 `.ext` 列表（插件内去重，统一转小写）；
+    // grammar 必须是插件目录内已存在的 .json（复用 themes.path 的模式）。
+    let mut language_ids = HashSet::new();
+    for language in &mut manifest.contributes.languages {
+        language.id = language.id.trim().to_string();
+        if !valid_language_id(&language.id) {
+            return Err(format!(
+                "languages.id 无效：`{}`（仅允许小写字母、数字、线）",
+                language.id
+            ));
+        }
+        if !language_ids.insert(language.id.clone()) {
+            return Err(format!("languages.id 重复：`{}`", language.id));
+        }
+        let mut seen_extensions = HashSet::new();
+        let mut extensions = Vec::new();
+        for extension in &language.extensions {
+            let extension = extension.trim().to_lowercase();
+            if !valid_language_extension(&extension) {
+                return Err(format!(
+                    "languages.extensions 非法：`{extension}`（必须是 `.ext` 形式）"
+                ));
+            }
+            if seen_extensions.insert(extension.clone()) {
+                extensions.push(extension);
+            }
+        }
+        language.extensions = extensions;
+        let mut seen_aliases = HashSet::new();
+        language.aliases = language
+            .aliases
+            .iter()
+            .map(|alias| alias.trim().to_string())
+            .filter(|alias| !alias.is_empty())
+            .filter(|alias| seen_aliases.insert(alias.clone()))
+            .collect();
+        let grammar = language
+            .grammar
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        let grammar = match grammar {
+            Some(raw_path) => {
+                if !raw_path.ends_with(".json") {
+                    return Err(format!("languages.grammar 必须是 .json 文件：`{raw_path}`"));
+                }
+                let candidate = dir.join(raw_path);
+                let resolved =
+                    ensure_within_root(dir, &candidate, &RealPathResolver).map_err(|error| {
+                        match error {
+                            FsError::NotFound { .. } => {
+                                format!("languages.grammar 不存在：`{raw_path}`")
+                            }
+                            FsError::PathOutsideRoot { .. } => {
+                                format!("languages.grammar 必须落在插件目录内：`{raw_path}`")
+                            }
+                            other => format!("languages.grammar 校验失败：{other}"),
+                        }
+                    })?;
+                if !resolved.is_file() {
+                    return Err(format!("languages.grammar 不是文件：`{raw_path}`"));
+                }
+                Some(raw_path.to_string())
+            }
+            None => None,
+        };
+        language.grammar = grammar;
+    }
+
     let mut mcp_names = HashSet::new();
     let mut normalized_mcp = BTreeMap::new();
     for (name, declared) in std::mem::take(&mut manifest.contributes.mcp_servers) {
@@ -496,6 +620,24 @@ fn valid_tool_name(name: &str) -> bool {
         && name
             .chars()
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '-'))
+}
+
+/// 语言 id 即 Monaco language id：小写字母 / 数字 / 线。
+fn valid_language_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+/// 扩展名必须是 `.ext` 形式：点开头、后续不含空白/控制字符。
+fn valid_language_extension(extension: &str) -> bool {
+    extension.len() >= 2
+        && extension.starts_with('.')
+        && !extension[1..]
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '/' | '\\'))
 }
 
 /// parameters 必须是 JSON object；带 `type` 字段时必须声明为 object
@@ -568,6 +710,22 @@ fn info_from_manifest(manifest: &PluginManifest, dir: &Path, enabled: bool) -> P
                 ui_theme: theme.ui_theme.clone(),
             })
             .collect(),
+        languages: manifest
+            .contributes
+            .languages
+            .iter()
+            .map(language_from_decl)
+            .collect(),
+    }
+}
+
+/// 语言声明 → 展示 DTO（`PluginInfo.languages` 元素）。
+fn language_from_decl(language: &LanguageDecl) -> PluginLanguage {
+    PluginLanguage {
+        id: language.id.clone(),
+        extensions: language.extensions.clone(),
+        aliases: language.aliases.clone(),
+        grammar: language.grammar.clone(),
     }
 }
 
@@ -722,6 +880,7 @@ fn error_info(
         mcp_servers,
         language_servers,
         themes: Vec::new(),
+        languages: Vec::new(),
     }
 }
 

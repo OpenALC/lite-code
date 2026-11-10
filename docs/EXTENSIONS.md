@@ -54,6 +54,14 @@
         "path": "./themes/dusk.json",     // 插件目录内的主题 JSON（读取时限 64 KiB）
         "uiTheme": "dark"                 // 基色：dark | light
       }
+    ],
+    "languages": [
+      {
+        "id": "foo-lang",                 // Monaco language id（小写字母/数字/线，插件内唯一）
+        "extensions": [".foo"],           // 带点扩展名（插件间去重，冲突→本插件标记 error）
+        "aliases": ["Foo"],               // 可空；展示别名
+        "grammar": "./grammars/foo.json"  // 可空；插件目录内的语法 JSON（读取时限 64 KiB）
+      }
     ]
   },
   "permissions": ["workspace.read"]    // 提示用；Node 插件本质是可信代码
@@ -77,6 +85,25 @@ UI 侧只白名单 `--` 前缀的合法变量名，其余键一律忽略（防�
 持久化进 `lc.ui.prefs`；所属插件禁用/删除后回落 `dark` 并清理样式标签。
 任何 runtime（含 declarative）均可声明主题。
 
+语法 JSON 形状（Monarch 子集，原样转发，web 侧白名单）：
+
+```jsonc
+{
+  "tokenizer": {
+    "root": [["\\w+", "keyword"], ["\\s+", ""]]
+  }
+}
+```
+
+UI 侧只白名单 `tokenizer` 键且值必须是纯对象，其余键一律忽略（防注入其它
+Monaco 语言定义字段）；形状不符按无高亮处理。语言经
+`monaco.languages.register({id, extensions, aliases})` 注册，语法经
+`setMonarchTokensProvider` 挂上。**内置优先**：扩展名已被内置映射
+（`editorLanguage.ts`）覆盖时插件声明不生效；与内置相同的 language id 不重复
+注册、也不覆盖内置高亮。Monaco 没有语言的 unregister，插件禁用/删除/语法读
+失败时用空 tokenizer（`{ "tokenizer": {} }`）清高亮，语言注册与扩展名映射
+随下一次同步撤掉。任何 runtime（含 declarative）均可声明语言。
+
 校验：`id` 唯一、`version` 非空、`runtime` 合法、`main` 必须落在插件目录内且存在
 （declarative 除外）、命令 id 唯一、清单大小 ≤ 256 KiB。`activationEvents` 另校验：
 每个事件必须是 `*` 或以 `onCommand:` 开头，非法事件只把该插件标记为 `error`
@@ -87,6 +114,11 @@ UI 侧只白名单 `--` 前缀的合法变量名，其余键一律忽略（防�
 `contributes.themes` 另校验：`label` 非空且插件内唯一、`path` 必须落在插件
 目录内且为已存在的 `.json`（复用 main 的 canonicalize 模式）、`uiTheme` 只能
 是 `dark`/`light`；主题文件在 `ext_read_theme` 读取时限 64 KiB。
+`contributes.languages` 另校验：`id` 合法（小写字母/数字/线）且插件内唯一、
+`extensions` 必须是 `.ext` 形式（插件内去重并统一转小写）、`grammar` 必须落在
+插件目录内且为已存在的 `.json`（复用 themes.path 的 canonicalize 模式，可空）；
+扩展名插件间去重——先发现者占用，冲突插件整体标记 `error`，错误信息说明冲突
+扩展名、语言 id 与冲突方插件；语法文件在 `ext_read_grammar` 读取时限 64 KiB。
 任一校验失败只把该插件标记为 `error`，不影响其它插件。
 
 ## 2. 运行形态
@@ -95,7 +127,7 @@ UI 侧只白名单 `--` 前缀的合法变量名，其余键一律忽略（防�
 |---|---|---|
 | `node` | 常驻 Node 扩展宿主（stdio JSON-RPC） | 命令、工作区读写、状态、生态复用 |
 | `wasm` | 每次命令启动一个 WASI 模块（无文件/网络权限） | 不可信工具、算法、跨语言插件 |
-| `declarative` | 不执行代码，只读取 `contributes` | 主题、MCP/LSP 声明、命令占位 |
+| `declarative` | 不执行代码，只读取 `contributes` | 主题、语言、MCP/LSP 声明、命令占位 |
 
 Node 扩展宿主由 Rust 侧按需启动；无 Node 时 node 插件禁用，declarative/MCP 插件仍可用。
 WASM 运行器也依赖 Node，但只使用 `node:wasi`，不把 Node API 暴露给 wasm。
@@ -108,6 +140,7 @@ ext_set_enabled(id, enabled) -> PluginList
 ext_reload() -> PluginList
 ext_execute_command(command, args?) -> { result: any }
 ext_read_theme(plugin_id, path) -> { json }
+ext_read_grammar(plugin_id, path) -> { json }
 ext_open_dir() -> ack
 lsp_start_plugins() -> { servers: [{ id, languageIds }], errors: [] }
 lsp_start_all(configs?) -> { servers, errors }
@@ -144,6 +177,13 @@ lsp_definition(path, line, column) -> Location[]
 插件不存在或已禁用一律 `not_found`（防目录穿越）；文件超过 64 KiB 报
 `invalid_argument`；非法 JSON 同样 `invalid_argument`。
 
+`ext_read_grammar`：读取插件贡献的语言语法 JSON（§1 形状，Monarch 子集
+原样转发，web 侧白名单校验）。`path` 必须是该插件清单
+`contributes.languages` 中声明过的 `grammar` 相对路径——防穿越/未声明/
+插件不存在或已禁用一律 `not_found`；超过 64 KiB 或非法 JSON 报
+`invalid_argument`（语义与 `ext_read_theme` 完全一致）。鸿蒙 shim 未转发
+该命令，web 侧按 reject 的 ErrorBody 走读失败分支（清空该语言高亮）。
+
 `PluginList`：
 
 ```jsonc
@@ -160,7 +200,13 @@ lsp_definition(path, line, column) -> Location[]
     "commands": [{ "command": "example.hello", "title": "Hello" }],
     "mcpServers": ["filesystem"],
     "languageServers": ["typescript"],
-    "themes": [{ "label": "Dusk", "path": "./themes/dusk.json", "uiTheme": "dark" }]
+    "themes": [{ "label": "Dusk", "path": "./themes/dusk.json", "uiTheme": "dark" }],
+    "languages": [{
+      "id": "foo-lang",
+      "extensions": [".foo"],
+      "aliases": ["Foo"],
+      "grammar": "./grammars/foo.json"
+    }]
   }],
   "dir": "C:\\Users\\...\\extensions",
   "nodeAvailable": true
@@ -266,7 +312,9 @@ LSP 补全/悬停/跳转、插件管理页、命令面板入口、插件级 Agen
 `tool/execute` 协议、桌面端 AgentLoop 接线、一律 Risk::Mutating 走既有审批）、
 延迟激活（`activationEvents` 的 `onCommand:` / `*` 两类事件，§4）、
 主题声明（`contributes.themes` 校验、`ext_read_theme` 读取、web 设置页切换、
-插件禁用/删除后回落 dark 并清理）。
+插件禁用/删除后回落 dark 并清理）、
+语言声明（`contributes.languages` 校验与插件间扩展名去重、`ext_read_grammar`
+读取、Monaco 语言注册与 Monarch 高亮、语法白名单防注入、声明消失/读失败降级
+空 tokenizer；内置映射与内置语言 id 优先）。
 
-未实现：VS Code API 兼容、插件市场、Webview UI、树视图、
-插件签名、插件依赖、语言声明。
+未实现：插件市场、Webview UI、树视图、插件签名、插件依赖、VS Code API 兼容。

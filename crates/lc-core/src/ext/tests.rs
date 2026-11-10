@@ -1943,3 +1943,409 @@ fn read_theme_enforces_size_cap_and_valid_json() {
     assert!(matches!(error, ExtError::ThemeInvalid { .. }), "{error:?}");
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
 }
+
+// ---- 语言声明与 ext_read_grammar（docs/EXTENSIONS.md §1/§3）----
+
+fn language_manifest(id: &str, languages: Value) -> Value {
+    let mut manifest = node_manifest(id, "./index.mjs", &[]);
+    manifest["contributes"]["languages"] = languages;
+    manifest
+}
+
+fn write_grammar_file(root: &Path, plugin_dir: &str, rel: &str, content: &[u8]) {
+    let path = root.join(plugin_dir).join(rel);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("创建语法目录");
+    }
+    fs::write(path, content).expect("写语法文件");
+}
+
+#[test]
+fn manifest_languages_are_validated_and_serialized() {
+    // 合法：node 插件携带语言声明（含/不含 grammar），camelCase 序列化进
+    // PluginInfo.languages；extensions 统一转小写、去重，aliases 去空白去重。
+    let temp = TempDir::new("languages-valid");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "lang",
+        language_manifest(
+            "example.lang",
+            json!([
+                {
+                    "id": "foo-lang",
+                    "extensions": [".foo", ".Foo", ".foo"],
+                    "aliases": ["Foo", " foo ", ""],
+                    "grammar": "./grammars/foo.json"
+                },
+                {
+                    "id": "bar",
+                    "extensions": [".bar"],
+                    "aliases": []
+                }
+            ]),
+        ),
+        &["index.mjs"],
+    );
+    write_grammar_file(&paths.user_dir, "lang", "grammars/foo.json", b"{}");
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert!(
+        list.plugins[0].error.is_none(),
+        "{:?}",
+        list.plugins[0].error
+    );
+    assert_eq!(list.plugins[0].languages.len(), 2);
+    assert_eq!(list.plugins[0].languages[0].id, "foo-lang");
+    assert_eq!(list.plugins[0].languages[0].extensions, [".foo"]);
+    // 别名 trim 去空白、去重（大小写敏感：Foo 与 foo 是不同别名）。
+    assert_eq!(list.plugins[0].languages[0].aliases, ["Foo", "foo"]);
+    assert_eq!(
+        list.plugins[0].languages[0].grammar.as_deref(),
+        Some("./grammars/foo.json")
+    );
+    assert_eq!(list.plugins[0].languages[1].grammar, None);
+
+    let serialized = serde_json::to_value(&list).expect("serialize");
+    assert_eq!(serialized["plugins"][0]["languages"][0]["id"], "foo-lang");
+    assert_eq!(
+        serialized["plugins"][0]["languages"][0]["extensions"],
+        json!([".foo"])
+    );
+    assert_eq!(
+        serialized["plugins"][0]["languages"][0]["aliases"],
+        json!(["Foo", "foo"])
+    );
+    assert_eq!(
+        serialized["plugins"][0]["languages"][0]["grammar"],
+        "./grammars/foo.json"
+    );
+    // 无 grammar 声明序列化为 JSON null（web 侧按 string | null 校验）。
+    assert_eq!(
+        serialized["plugins"][0]["languages"][1]["grammar"],
+        Value::Null
+    );
+
+    // 非法项只把该插件标记为 error，不影响列表本身。
+    for (tag, languages_value, files, expected) in [
+        (
+            "bad-id",
+            json!([{ "id": "Foo-Lang", "extensions": [".foo"] }]),
+            &[][..],
+            "languages.id 无效",
+        ),
+        (
+            "dup-id",
+            json!([
+                { "id": "same", "extensions": [".a"] },
+                { "id": "same", "extensions": [".b"] }
+            ]),
+            &[][..],
+            "languages.id 重复",
+        ),
+        (
+            "bad-extension",
+            json!([{ "id": "x", "extensions": ["foo"] }]),
+            &[][..],
+            "languages.extensions 非法",
+        ),
+        (
+            "dot-only-extension",
+            json!([{ "id": "x", "extensions": ["."] }]),
+            &[][..],
+            "languages.extensions 非法",
+        ),
+        (
+            "escape-grammar",
+            json!([{ "id": "x", "extensions": [".x"], "grammar": "../outside.json" }]),
+            &["../outside.json"][..],
+            "插件目录内",
+        ),
+        (
+            "grammar-not-json",
+            json!([{ "id": "x", "extensions": [".x"], "grammar": "grammars/x.txt" }]),
+            &["grammars/x.txt"][..],
+            "必须是 .json 文件",
+        ),
+        (
+            "grammar-missing",
+            json!([{ "id": "x", "extensions": [".x"], "grammar": "grammars/gone.json" }]),
+            &[][..],
+            "languages.grammar 不存在",
+        ),
+    ] {
+        let temp = TempDir::new(&format!("languages-{tag}"));
+        let paths = test_paths(&temp);
+        write_plugin(
+            &paths.user_dir,
+            "bad",
+            language_manifest(&format!("example.bad-{tag}"), languages_value),
+            &[],
+        );
+        for file in files {
+            write_grammar_file(&paths.user_dir, "bad", file, b"{}");
+        }
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let error = list.plugins[0]
+            .error
+            .as_deref()
+            .unwrap_or_else(|| panic!("{tag}: 应标记 error"));
+        assert!(error.contains(expected), "{tag}: {error}");
+        assert!(!list.plugins[0].enabled);
+        assert!(list.plugins[0].languages.is_empty());
+    }
+}
+
+#[test]
+fn language_extension_conflicts_across_plugins_mark_later_plugin_error() {
+    // 扩展名插件间去重：先发现者保留并占用扩展名，后发现的插件整体标记
+    // error，错误信息说明冲突扩展名、语言 id 与冲突方插件。
+    let temp = TempDir::new("languages-conflict");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "a-first",
+        language_manifest(
+            "example.first",
+            json!([{ "id": "foo-lang", "extensions": [".foo", ".first"] }]),
+        ),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "b-second",
+        language_manifest(
+            "example.second",
+            json!([
+                { "id": "own", "extensions": [".own"] },
+                { "id": "other-lang", "extensions": [".other", ".foo"] }
+            ]),
+        ),
+        &["index.mjs"],
+    );
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 2);
+    let first = &list.plugins[0];
+    assert_eq!(first.id, "example.first");
+    assert!(first.error.is_none());
+    assert_eq!(first.languages[0].extensions, [".foo", ".first"]);
+
+    let second = &list.plugins[1];
+    let error = second.error.as_deref().expect("error");
+    assert!(error.contains("已由插件"), "{error}");
+    assert!(error.contains("`.foo`"), "{error}");
+    assert!(error.contains("other-lang"), "{error}");
+    assert!(error.contains("example.first"), "{error}");
+    assert!(!second.enabled);
+    assert!(second.languages.is_empty());
+
+    // 冲突插件被整体拒绝：它的其它扩展名也不占用（与命令冲突语义一致）。
+    let temp = TempDir::new("languages-conflict-free");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "a-first",
+        language_manifest(
+            "example.first",
+            json!([{ "id": "x", "extensions": [".foo"] }]),
+        ),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "b-second",
+        language_manifest(
+            "example.second",
+            json!([{ "id": "y", "extensions": [".foo", ".other"] }]),
+        ),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "c-third",
+        language_manifest(
+            "example.third",
+            json!([{ "id": "z", "extensions": [".other"] }]),
+        ),
+        &["index.mjs"],
+    );
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 3);
+    assert!(list.plugins[0].error.is_none());
+    assert!(list.plugins[1].error.is_some());
+    // .other 未被冲突插件占用，第三个插件照常生效。
+    assert!(list.plugins[2].error.is_none());
+    assert_eq!(list.plugins[2].languages[0].id, "z");
+}
+
+#[test]
+fn read_grammar_round_trips_declared_path() {
+    // declarative 插件也可声明语言（docs/EXTENSIONS.md §1）。
+    let temp = TempDir::new("grammar-read");
+    let paths = test_paths(&temp);
+    let grammar_json = json!({
+        "tokenizer": { "root": [["\\w+", "keyword"]] }
+    });
+    write_plugin(
+        &paths.user_dir,
+        "lang",
+        json!({
+            "id": "example.lang",
+            "name": "Lang",
+            "version": "0.1.0",
+            "runtime": "declarative",
+            "contributes": {
+                "languages": [{
+                    "id": "foo-lang",
+                    "extensions": [".foo"],
+                    "aliases": ["Foo"],
+                    "grammar": "grammars/foo.json"
+                }]
+            }
+        }),
+        &[],
+    );
+    write_grammar_file(
+        &paths.user_dir,
+        "lang",
+        "grammars/foo.json",
+        &serde_json::to_vec_pretty(&grammar_json).expect("serialize grammar"),
+    );
+
+    let value = read_grammar_at(&paths, false, "example.lang", "grammars/foo.json")
+        .expect("read declared grammar");
+    assert_eq!(value, grammar_json);
+
+    // 等价相对写法（带 ./）canonicalize 后同样命中声明。
+    let dot =
+        read_grammar_at(&paths, false, "example.lang", "./grammars/foo.json").expect("read ./");
+    assert_eq!(dot, grammar_json);
+}
+
+#[test]
+fn read_grammar_rejects_traversal_undeclared_disabled_and_unknown() {
+    let temp = TempDir::new("grammar-read-reject");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "lang",
+        language_manifest(
+            "example.lang",
+            json!([{
+                "id": "foo-lang",
+                "extensions": [".foo"],
+                "grammar": "grammars/foo.json"
+            }]),
+        ),
+        &["index.mjs"],
+    );
+    write_grammar_file(&paths.user_dir, "lang", "grammars/foo.json", b"{}");
+    // 磁盘上存在但清单未声明：证明拦截依据是声明匹配而非文件存在性。
+    write_grammar_file(&paths.user_dir, "lang", "grammars/secret.json", b"{}");
+    fs::write(paths.user_dir.join("outside.json"), b"{}").expect("写目录外文件");
+
+    // 路径穿越（解析后落在插件目录外）。
+    let error = read_grammar_at(&paths, false, "example.lang", "../../outside.json")
+        .expect_err("path traversal");
+    assert!(
+        matches!(error, ExtError::GrammarNotFound { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::NotFound);
+
+    // 未声明路径（即使文件真实存在）。
+    let error = read_grammar_at(&paths, false, "example.lang", "grammars/secret.json")
+        .expect_err("undeclared path");
+    assert!(
+        matches!(error, ExtError::GrammarNotFound { .. }),
+        "{error:?}"
+    );
+
+    // 目录内不存在的路径。
+    let error = read_grammar_at(&paths, false, "example.lang", "grammars/nope.json")
+        .expect_err("missing path");
+    assert!(
+        matches!(error, ExtError::GrammarNotFound { .. }),
+        "{error:?}"
+    );
+
+    // 未知插件与已禁用插件同样拒绝。
+    let error = read_grammar_at(&paths, false, "example.unknown", "grammars/foo.json")
+        .expect_err("unknown plugin");
+    assert!(
+        matches!(error, ExtError::GrammarNotFound { .. }),
+        "{error:?}"
+    );
+    set_enabled_at(&paths, false, "example.lang", false, false).expect("disable");
+    let error = read_grammar_at(&paths, false, "example.lang", "grammars/foo.json")
+        .expect_err("disabled plugin");
+    assert!(
+        matches!(error, ExtError::GrammarNotFound { .. }),
+        "{error:?}"
+    );
+    set_enabled_at(&paths, false, "example.lang", true, false).expect("enable");
+    read_grammar_at(&paths, false, "example.lang", "grammars/foo.json")
+        .expect("read after re-enable");
+}
+
+#[test]
+fn read_grammar_enforces_size_cap_and_valid_json() {
+    let temp = TempDir::new("grammar-read-size");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "sized",
+        language_manifest(
+            "example.sized",
+            json!([{
+                "id": "cap",
+                "extensions": [".cap"],
+                "grammar": "grammars/cap.json"
+            }]),
+        ),
+        &["index.mjs"],
+    );
+
+    // 恰好 64 KiB 的合法 JSON 可以读取。
+    let prefix = "{\"tokenizer\":{\"root\":[[\"";
+    let suffix = "\",\"keyword\"]]}}";
+    let pad = (MAX_GRAMMAR_BYTES as usize) - prefix.len() - suffix.len();
+    let exact = format!("{prefix}{}{suffix}", "x".repeat(pad));
+    assert_eq!(exact.len(), MAX_GRAMMAR_BYTES as usize);
+    write_grammar_file(
+        &paths.user_dir,
+        "sized",
+        "grammars/cap.json",
+        exact.as_bytes(),
+    );
+    let value = read_grammar_at(&paths, false, "example.sized", "grammars/cap.json")
+        .expect("read exact cap");
+    assert_eq!(value["tokenizer"]["root"][0][1], json!("keyword"));
+
+    // 超帽 1 字节 → GrammarOversized（invalid_argument）。
+    let over = format!("{prefix}{}{suffix}", "x".repeat(pad + 1));
+    write_grammar_file(
+        &paths.user_dir,
+        "sized",
+        "grammars/cap.json",
+        over.as_bytes(),
+    );
+    let error = read_grammar_at(&paths, false, "example.sized", "grammars/cap.json")
+        .expect_err("oversized grammar");
+    assert!(
+        matches!(error, ExtError::GrammarOversized { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+
+    // 非法 JSON → GrammarInvalid（invalid_argument）。
+    write_grammar_file(&paths.user_dir, "sized", "grammars/cap.json", b"{ not json");
+    let error = read_grammar_at(&paths, false, "example.sized", "grammars/cap.json")
+        .expect_err("invalid grammar json");
+    assert!(
+        matches!(error, ExtError::GrammarInvalid { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+}

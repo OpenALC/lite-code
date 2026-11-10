@@ -103,6 +103,7 @@ function plugin(partial: Partial<PluginInfo> & { id: string }): PluginInfo {
     mcpServers: [],
     languageServers: [],
     themes: [],
+    languages: [],
     ...partial,
   }
 }

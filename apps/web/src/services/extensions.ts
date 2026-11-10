@@ -21,6 +21,17 @@ export interface PluginTheme {
   uiTheme: PluginUiTheme
 }
 
+/** 插件贡献的语言（ext_list 携带，语法 JSON 经 ext_read_grammar 读取）。 */
+export interface PluginLanguage {
+  /** Monaco language id（小写字母/数字/线，插件间由 Rust 校验唯一性）。 */
+  id: string
+  /** 带点扩展名（Rust 侧已转小写、插件间去重）。 */
+  extensions: string[]
+  aliases: string[]
+  /** 清单声明的语法 JSON 相对路径；无声明为 null。 */
+  grammar: string | null
+}
+
 export interface PluginInfo {
   id: string
   name: string
@@ -34,6 +45,7 @@ export interface PluginInfo {
   mcpServers: string[]
   languageServers: string[]
   themes: PluginTheme[]
+  languages: PluginLanguage[]
 }
 
 export interface PluginList {
@@ -107,6 +119,16 @@ function isPluginTheme(value: unknown): value is PluginTheme {
   )
 }
 
+function isPluginLanguage(value: unknown): value is PluginLanguage {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    isStringArray(value.extensions) &&
+    isStringArray(value.aliases) &&
+    (value.grammar === null || typeof value.grammar === 'string')
+  )
+}
+
 function isPluginCommand(value: unknown): value is PluginCommand {
   return (
     isRecord(value) &&
@@ -131,7 +153,9 @@ function isPluginInfo(value: unknown): value is PluginInfo {
     isStringArray(value.mcpServers) &&
     isStringArray(value.languageServers) &&
     Array.isArray(value.themes) &&
-    value.themes.every(isPluginTheme)
+    value.themes.every(isPluginTheme) &&
+    Array.isArray(value.languages) &&
+    value.languages.every(isPluginLanguage)
   )
 }
 
@@ -188,6 +212,14 @@ function demoPluginList(): PluginList {
         themes: [
           { label: 'Demo Dusk', path: './themes/dusk.json', uiTheme: 'dark' },
         ],
+        languages: [
+          {
+            id: 'demo-lang',
+            extensions: ['.demo'],
+            aliases: ['Demo'],
+            grammar: './grammars/demo.json',
+          },
+        ],
       },
       {
         id: 'demo.notes',
@@ -202,6 +234,7 @@ function demoPluginList(): PluginList {
         mcpServers: ['filesystem'],
         languageServers: [],
         themes: [],
+        languages: [],
       },
     ],
     dir: DEMO_EXTENSIONS_DIR,
@@ -218,6 +251,15 @@ const DEMO_THEME_FILES: Record<string, unknown> = {
       '--panel': '#181820',
       '--fg': '#e6e9ef',
       '--accent': '#8ab4ff',
+    },
+  },
+}
+
+// 浏览器 dev 演示语法：形状是 Monarch 子集 { tokenizer }（docs/EXTENSIONS.md §1）。
+const DEMO_GRAMMAR_FILES: Record<string, unknown> = {
+  'demo.hello>./grammars/demo.json': {
+    tokenizer: {
+      root: [[/\w+/, 'keyword']],
     },
   },
 }
@@ -340,6 +382,46 @@ export async function extensionsReadTheme(
       return {
         ok: false,
         error: internalError('ext_read_theme 返回了非预期载荷'),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { json: raw.json }, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
+export interface ExtGrammarResult {
+  json: unknown
+}
+
+/**
+ * 读取插件贡献的语言语法文件（docs/EXTENSIONS.md §3）。Rust 侧只允许插件
+ * 目录内且清单 `contributes.languages` 声明过的 grammar path；浏览器 dev
+ * 返回演示语法 JSON；ohos shim 未转发该命令时按 reject 的 ErrorBody 进入
+ * error 分支（同步逻辑会清掉该语言的高亮并保留语言注册）。
+ */
+export async function extensionsReadGrammar(
+  pluginId: string,
+  path: string,
+): Promise<BridgeResult<ExtGrammarResult>> {
+  if (!isTauri()) {
+    const json = DEMO_GRAMMAR_FILES[`${pluginId}>${path}`]
+    if (json === undefined) {
+      return {
+        ok: false,
+        error: internalError(`演示插件 ${pluginId} 未声明语法 ${path}`),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { json }, fallback: true }
+  }
+  try {
+    const raw = await tauriInvoke<unknown>('ext_read_grammar', { pluginId, path })
+    if (!isRecord(raw) || !('json' in raw)) {
+      return {
+        ok: false,
+        error: internalError('ext_read_grammar 返回了非预期载荷'),
         fallback: false,
       }
     }

@@ -75,6 +75,7 @@ import { loadLayoutPrefs, saveLayoutPrefs } from './services/layoutPrefs'
 import { createTaskController } from './services/taskStore'
 import { extensionsExecuteCommand, extensionsList } from './services/extensions'
 import { syncPluginThemes } from './services/pluginThemes'
+import { syncPluginLanguages } from './services/pluginLanguages'
 import { subscribeAgentContext } from './services/agentContext'
 import { requestReveal } from './services/editorReveal'
 import { resolveEditorStrategy } from './services/largeFile'
@@ -469,6 +470,7 @@ const pluginCommands = ref<PluginCommandItem[]>([])
 function onExtensionsChanged(): void {
   void refreshPluginCommands()
   void syncPluginThemes()
+  void syncPluginLanguages()
   if (projectRoot.value) startLsp()
 }
 
@@ -978,6 +980,7 @@ onMounted(() => {
   void taskSession.refresh()
   void refreshPluginCommands()
   void syncPluginThemes()
+  void syncPluginLanguages()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root

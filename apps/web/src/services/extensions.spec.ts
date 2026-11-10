@@ -4,6 +4,7 @@ import {
   extensionsExecuteCommand,
   extensionsList,
   extensionsOpenDir,
+  extensionsReadGrammar,
   extensionsReadTheme,
   extensionsReload,
   extensionsSetEnabled,
@@ -44,6 +45,14 @@ const sampleList: PluginList = {
       mcpServers: ['filesystem'],
       languageServers: ['typescript'],
       themes: [{ label: 'Dusk', path: './themes/dusk.json', uiTheme: 'dark' }],
+      languages: [
+        {
+          id: 'demo-lang',
+          extensions: ['.demo'],
+          aliases: ['Demo'],
+          grammar: './grammars/demo.json',
+        },
+      ],
     },
   ],
   dir: 'C:\\Users\\demo\\.lite-code\\extensions',
@@ -123,6 +132,17 @@ describe('浏览器 fallback', () => {
       expect(ok.data.json).toMatchObject({ name: 'Demo Dusk' })
     }
     const missing = await extensionsReadTheme('demo.notes', './themes/dusk.json')
+    expect(missing.ok).toBe(false)
+  })
+
+  it('extensionsReadGrammar 返回演示语法 JSON；未声明路径进 error', async () => {
+    const ok = await extensionsReadGrammar('demo.hello', './grammars/demo.json')
+    expect(ok.ok).toBe(true)
+    expect(ok.fallback).toBe(true)
+    if (ok.ok) {
+      expect(ok.data.json).toMatchObject({ tokenizer: { root: expect.anything() } })
+    }
+    const missing = await extensionsReadGrammar('demo.notes', './grammars/demo.json')
     expect(missing.ok).toBe(false)
   })
 })
@@ -217,6 +237,25 @@ describe('Tauri 路径', () => {
     ])
     expect(res.ok).toBe(true)
     if (res.ok) expect(res.data.json).toMatchObject({ name: 'Dusk' })
+  })
+
+  it('ext_read_grammar 传 pluginId 与 path，校验 { json } 载荷', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { json: { tokenizer: { root: [] } } }
+      },
+    })
+    const res = await extensionsReadGrammar('example.hello', './grammars/demo.json')
+    expect(calls).toEqual([
+      {
+        cmd: 'ext_read_grammar',
+        args: { pluginId: 'example.hello', path: './grammars/demo.json' },
+      },
+    ])
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.data.json).toMatchObject({ tokenizer: { root: [] } })
   })
 })
 

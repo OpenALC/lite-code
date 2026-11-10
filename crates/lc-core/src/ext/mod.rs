@@ -49,6 +49,8 @@ pub const PROJECT_EXTENSIONS_REL: &str = ".lite-code/extensions";
 pub const MAX_MANIFEST_BYTES: u64 = manifest::MAX_MANIFEST_BYTES;
 /// 主题文件大小上限（64 KiB，docs/EXTENSIONS.md §1）。
 pub const MAX_THEME_BYTES: u64 = manifest::MAX_THEME_BYTES;
+/// 语法文件大小上限（64 KiB，docs/EXTENSIONS.md §1）。
+pub const MAX_GRAMMAR_BYTES: u64 = manifest::MAX_GRAMMAR_BYTES;
 
 /// 插件运行形态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +79,19 @@ pub struct PluginTheme {
     pub ui_theme: String,
 }
 
+/// 插件贡献的语言（`PluginInfo.languages` 元素，docs/EXTENSIONS.md §1）。
+/// `grammar` 为清单声明的语法 JSON 相对路径（无声明为 `null`），
+/// 经 `ext_read_grammar` 读取；`extensions`/`aliases` 原样进 Monaco 注册。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginLanguage {
+    pub id: String,
+    pub extensions: Vec<String>,
+    pub aliases: Vec<String>,
+    /// 缺省 `null`（camelCase DTO 序列化为 JSON `null`）。
+    pub grammar: Option<String>,
+}
+
 /// 单个插件的展示信息（`PluginList.plugins` 元素）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +111,8 @@ pub struct PluginInfo {
     pub language_servers: Vec<String>,
     /// 贡献的配色主题（无声明为空数组）。
     pub themes: Vec<PluginTheme>,
+    /// 贡献的语言（无声明为空数组）。
+    pub languages: Vec<PluginLanguage>,
 }
 
 /// 插件列表（`ext_list` / `ext_reload` / `ext_set_enabled` 的返回）。
@@ -158,6 +175,16 @@ pub enum ExtError {
         path: String,
         reason: String,
     },
+    #[error("插件 `{plugin}` 的语言语法 `{path}` 不存在、未声明或所属插件已禁用")]
+    GrammarNotFound { plugin: String, path: String },
+    #[error("插件 `{plugin}` 的语言语法 `{path}` 超过 64 KiB 上限")]
+    GrammarOversized { plugin: String, path: String },
+    #[error("插件 `{plugin}` 的语言语法 `{path}` 不是合法 JSON：{reason}")]
+    GrammarInvalid {
+        plugin: String,
+        path: String,
+        reason: String,
+    },
 }
 
 impl ExtError {
@@ -183,6 +210,10 @@ impl ExtError {
             ExtError::DeclarativeNotExecutable => ErrorCode::NotImplemented,
             ExtError::ThemeNotFound { .. } => ErrorCode::NotFound,
             ExtError::ThemeOversized { .. } | ExtError::ThemeInvalid { .. } => {
+                ErrorCode::InvalidArgument
+            }
+            ExtError::GrammarNotFound { .. } => ErrorCode::NotFound,
+            ExtError::GrammarOversized { .. } | ExtError::GrammarInvalid { .. } => {
                 ErrorCode::InvalidArgument
             }
         }
@@ -334,10 +365,104 @@ pub fn read_theme_at(
     plugin_id: &str,
     theme_path: &str,
 ) -> Result<Value, ExtError> {
-    let not_found = || ExtError::ThemeNotFound {
-        plugin: plugin_id.to_string(),
-        path: theme_path.to_string(),
-    };
+    read_declared_plugin_file(
+        paths,
+        allow_project,
+        plugin_id,
+        theme_path,
+        MAX_THEME_BYTES,
+        |manifest| {
+            manifest
+                .contributes
+                .themes
+                .iter()
+                .map(|theme| theme.path.clone())
+                .collect()
+        },
+        || ExtError::ThemeNotFound {
+            plugin: plugin_id.to_string(),
+            path: theme_path.to_string(),
+        },
+        |path, error| ExtError::Io(format!("读取主题 {path} 失败：{error}")),
+        || ExtError::ThemeOversized {
+            plugin: plugin_id.to_string(),
+            path: theme_path.to_string(),
+        },
+        |reason| ExtError::ThemeInvalid {
+            plugin: plugin_id.to_string(),
+            path: theme_path.to_string(),
+            reason,
+        },
+    )
+}
+
+/// 读取插件贡献的语法文件（`ext_read_grammar`，docs/EXTENSIONS.md §3）。
+/// 语义与 [`read_theme`] 一致：`path` 必须是该插件清单
+/// `contributes.languages` 中声明过的 grammar 相对路径，文件 ≤ 64 KiB。
+pub fn read_grammar(
+    workspace_root: Option<&Path>,
+    plugin_id: &str,
+    grammar_path: &str,
+) -> Result<Value, ExtError> {
+    let paths = ExtPaths::default_for(workspace_root)?;
+    read_grammar_at(&paths, project_allowed(), plugin_id, grammar_path)
+}
+
+/// 在指定布局下读取语法文件（测试与嵌入方使用）。
+pub fn read_grammar_at(
+    paths: &ExtPaths,
+    allow_project: bool,
+    plugin_id: &str,
+    grammar_path: &str,
+) -> Result<Value, ExtError> {
+    read_declared_plugin_file(
+        paths,
+        allow_project,
+        plugin_id,
+        grammar_path,
+        MAX_GRAMMAR_BYTES,
+        |manifest| {
+            manifest
+                .contributes
+                .languages
+                .iter()
+                .filter_map(|language| language.grammar.clone())
+                .collect()
+        },
+        || ExtError::GrammarNotFound {
+            plugin: plugin_id.to_string(),
+            path: grammar_path.to_string(),
+        },
+        |path, error| ExtError::Io(format!("读取语言语法 {path} 失败：{error}")),
+        || ExtError::GrammarOversized {
+            plugin: plugin_id.to_string(),
+            path: grammar_path.to_string(),
+        },
+        |reason| ExtError::GrammarInvalid {
+            plugin: plugin_id.to_string(),
+            path: grammar_path.to_string(),
+            reason,
+        },
+    )
+}
+
+/// read_theme_at / read_grammar_at 的公共骨架：定位启用插件 → 按 main 的
+/// canonicalize 模式解析请求路径并逐个比对清单声明（防 `..`/软链逃逸与
+/// 未声明读取）→ 读文件 → 上限校验 → JSON 解析。错误由各调用方的闭包构造
+/// （主题/语法各自的变体与文案）。
+#[allow(clippy::too_many_arguments)]
+fn read_declared_plugin_file(
+    paths: &ExtPaths,
+    allow_project: bool,
+    plugin_id: &str,
+    file_path: &str,
+    max_bytes: u64,
+    declared_paths: impl Fn(&manifest::PluginManifest) -> Vec<String>,
+    not_found: impl Fn() -> ExtError,
+    io_failed: impl Fn(String, std::io::Error) -> ExtError,
+    oversized: impl Fn() -> ExtError,
+    invalid: impl Fn(String) -> ExtError,
+) -> Result<Value, ExtError> {
     let plugins = enabled_plugins(paths, allow_project)?;
     let Some(plugin) = plugins
         .iter()
@@ -346,48 +471,31 @@ pub fn read_theme_at(
     else {
         return Err(not_found());
     };
-    let Some(manifest) = plugin.manifest.as_ref() else {
+    let Some(plugin_manifest) = plugin.manifest.as_ref() else {
         return Err(not_found());
     };
     // 请求路径先按 main 的模式解析：`..`/软链逃逸与目录外路径在此拒绝。
-    let candidate = plugin.dir.join(theme_path);
+    let candidate = plugin.dir.join(file_path);
     let resolved =
         ensure_within_root(&plugin.dir, &candidate, &RealPathResolver).map_err(|_| not_found())?;
     // 再与清单声明逐个比对 canonical 路径：未声明的路径一律拒绝（防穿越）。
-    let declared = manifest.contributes.themes.iter().any(|theme| {
-        let declared_path = plugin.dir.join(&theme.path);
+    let declared = declared_paths(plugin_manifest).iter().any(|declared| {
+        let declared_path = plugin.dir.join(declared);
         ensure_within_root(&plugin.dir, &declared_path, &RealPathResolver)
             .is_ok_and(|canonical| canonical == resolved)
     });
     if !declared {
         return Err(not_found());
     }
-    let file = File::open(&resolved).map_err(|error| {
-        ExtError::Io(format!(
-            "读取主题 {} 失败：{error}",
-            display_path(&resolved)
-        ))
-    })?;
+    let file = File::open(&resolved).map_err(|error| io_failed(display_path(&resolved), error))?;
     let mut bytes = Vec::new();
-    file.take(MAX_THEME_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| {
-            ExtError::Io(format!(
-                "读取主题 {} 失败：{error}",
-                display_path(&resolved)
-            ))
-        })?;
-    if bytes.len() as u64 > MAX_THEME_BYTES {
-        return Err(ExtError::ThemeOversized {
-            plugin: plugin_id.to_string(),
-            path: theme_path.to_string(),
-        });
+        .map_err(|error| io_failed(display_path(&resolved), error))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(oversized());
     }
-    serde_json::from_slice(&bytes).map_err(|error| ExtError::ThemeInvalid {
-        plugin: plugin_id.to_string(),
-        path: theme_path.to_string(),
-        reason: error.to_string(),
-    })
+    serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))
 }
 
 /// 内置 sidecar 的定位/落盘：
