@@ -20,6 +20,7 @@
   "runtime": "node",                   // node | wasm | declarative
   "main": "./index.mjs",               // node: JS 入口；wasm: .wasm；declarative 可省略
   "activationEvents": ["onCommand:example.hello"],
+  "extensionDependencies": ["example.dep"],  // 可空；依赖的其它插件 id，宿主保证依赖先加载
   "contributes": {
     "commands": [
       { "command": "example.hello", "title": "Hello from plugin" }
@@ -119,6 +120,14 @@ Monaco 语言定义字段）；形状不符按无高亮处理。语言经
 插件目录内且为已存在的 `.json`（复用 themes.path 的 canonicalize 模式，可空）；
 扩展名插件间去重——先发现者占用，冲突插件整体标记 `error`，错误信息说明冲突
 扩展名、语言 id 与冲突方插件；语法文件在 `ext_read_grammar` 读取时限 64 KiB。
+`extensionDependencies` 另校验：条目必须是合法插件 id 形态（小写字母/数字/
+点/线），去重、拒绝自依赖；被依赖 id 必须存在于已发现插件中（被禁用但已
+发现算存在），缺失只把声明方插件标记为 `error`，错误信息写明缺失 id。依赖
+成环时环上插件整体标记 `error`（错误信息写明环的构成）且不参与宿主下发。
+宿主按依赖对 initialize 插件列表做拓扑排序（依赖先于被依赖者，无依赖关系
+的插件保持既有顺序），列表顺序即宿主 import+activate 顺序。依赖只约束
+加载顺序：被依赖插件若是延迟激活（§4），不会因为被依赖而提前激活，v1 不
+对此做特殊处理。
 任一校验失败只把该插件标记为 `error`，不影响其它插件。
 
 ## 2. 运行形态
@@ -251,6 +260,9 @@ stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
   失败状态记录到 stderr 且本会话不重试。未激活的延迟插件没有 deactivate；
   已激活插件的 deactivate 语义不变。延迟插件的加载错误不进 `initialize` 的
   `errors`（那时还没加载），经首次调用的 `-32601` 上报。
+- `extensionDependencies` 只约束 initialize 列表顺序（§1），不改动激活时机：
+  被依赖的延迟激活插件不会因此提前 import/activate，依赖方激活时不能假设
+  被依赖插件已运行（v1 不特殊处理该交互）。
 - 单个插件加载失败不阻止其它插件；错误写入 `initialize` 的 `errors`。
 
 ### 4.1 插件级 Agent 工具
@@ -315,6 +327,8 @@ LSP 补全/悬停/跳转、插件管理页、命令面板入口、插件级 Agen
 插件禁用/删除后回落 dark 并清理）、
 语言声明（`contributes.languages` 校验与插件间扩展名去重、`ext_read_grammar`
 读取、Monaco 语言注册与 Monarch 高亮、语法白名单防注入、声明消失/读失败降级
-空 tokenizer；内置映射与内置语言 id 优先）。
+空 tokenizer；内置映射与内置语言 id 优先）、
+插件依赖（`extensionDependencies` 校验：格式/去重/自依赖/缺失依赖、环依赖
+整环报错并退出下发；initialize 插件列表按依赖拓扑排序，依赖先于被依赖者）。
 
-未实现：插件市场、Webview UI、树视图、插件签名、插件依赖、VS Code API 兼容。
+未实现：插件市场、Webview UI、树视图、插件签名、VS Code API 兼容。

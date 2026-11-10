@@ -50,6 +50,10 @@ pub(crate) struct PluginManifest {
     /// 仅 `onCommand:<commandId>` 时延迟到首次命令/工具调用。
     #[serde(default, rename = "activationEvents")]
     pub activation_events: Vec<String>,
+    /// 依赖的其它插件 id（docs/EXTENSIONS.md §1）：宿主保证依赖先于
+    /// 本插件加载。条目格式与插件 id 同规则（小写字母/数字/点/线）。
+    #[serde(default, rename = "extensionDependencies")]
+    pub extension_dependencies: Vec<String>,
     #[serde(default)]
     pub contributes: Contributes,
 }
@@ -168,7 +172,172 @@ pub(crate) fn discover(
             &mut claimed_extensions,
         )?;
     }
+    validate_dependencies(&mut plugins);
     Ok(plugins)
+}
+
+/// 依赖跨插件校验（docs/EXTENSIONS.md §1）：被依赖 id 必须存在于已发现
+/// 插件中；依赖图存在环时环上插件整体标记 error。两者都需要完整插件
+/// 列表，因此在 discover 收尾时统一处理（参考 claimed_extensions 的
+/// 跨插件校验模式）。缺失依赖优先于环报错（一个插件只标一个错误）。
+fn validate_dependencies(plugins: &mut Vec<DiscoveredPlugin>) {
+    let ids: HashSet<&str> = plugins
+        .iter()
+        .filter_map(|plugin| {
+            plugin
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.id.as_str())
+        })
+        .collect();
+
+    let mut missing: HashMap<String, Vec<String>> = HashMap::new();
+    for plugin in plugins.iter() {
+        let Some(manifest) = plugin.manifest.as_ref() else {
+            continue;
+        };
+        let absent: Vec<String> = manifest
+            .extension_dependencies
+            .iter()
+            .filter(|dependency| !ids.contains(dependency.as_str()))
+            .cloned()
+            .collect();
+        if !absent.is_empty() {
+            missing.insert(manifest.id.clone(), absent);
+        }
+    }
+
+    // 环检测只在有效清单的子图上进行（自环已被自依赖校验拒绝）。
+    let graph: HashMap<String, Vec<String>> = plugins
+        .iter()
+        .filter_map(|plugin| plugin.manifest.as_ref())
+        .map(|manifest| {
+            (
+                manifest.id.clone(),
+                manifest
+                    .extension_dependencies
+                    .iter()
+                    .filter(|dependency| ids.contains(dependency.as_str()))
+                    .cloned()
+                    .collect(),
+            )
+        })
+        .collect();
+    // member → 同环成员列表，错误信息里写明环的构成。
+    let mut cycle_members: HashMap<String, Vec<String>> = HashMap::new();
+    for mut group in dependency_cycles(&graph) {
+        group.sort();
+        for member in &group {
+            cycle_members.insert(member.clone(), group.clone());
+        }
+    }
+
+    for plugin in plugins.iter_mut() {
+        let Some(manifest) = plugin.manifest.as_ref() else {
+            continue;
+        };
+        if let Some(absent) = missing.get(&manifest.id) {
+            let listed = absent
+                .iter()
+                .map(|id| format!("`{id}`"))
+                .collect::<Vec<_>>()
+                .join("、");
+            mark_plugin_error(
+                plugin,
+                format!("extensionDependencies 引用的插件不存在：{listed}"),
+            );
+        } else if let Some(group) = cycle_members.get(&manifest.id) {
+            let listed = group
+                .iter()
+                .map(|id| format!("`{id}`"))
+                .collect::<Vec<_>>()
+                .join("、");
+            mark_plugin_error(
+                plugin,
+                format!("extensionDependencies 存在循环依赖：{listed}"),
+            );
+        }
+    }
+}
+
+/// 把已入列的插件标记为 error（跨插件校验后置用）：保留列表展示信息，
+/// 清空 manifest/main，使其不参与命令执行、MCP 合并与宿主下发。
+fn mark_plugin_error(plugin: &mut DiscoveredPlugin, message: String) {
+    plugin.info.error = Some(message);
+    plugin.info.enabled = false;
+    plugin.manifest = None;
+    plugin.main_path = None;
+}
+
+/// Tarjan 强连通分量：返回依赖图中所有大小 > 1 的分量（即环），
+/// 供环上插件整体报错并退出下发。
+fn dependency_cycles(graph: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
+    struct Search<'a> {
+        graph: &'a HashMap<String, Vec<String>>,
+        index_of: HashMap<&'a str, usize>,
+        lowlink: HashMap<&'a str, usize>,
+        on_stack: HashSet<&'a str>,
+        stack: Vec<&'a str>,
+        next: usize,
+        cycles: Vec<Vec<String>>,
+    }
+
+    impl<'a> Search<'a> {
+        fn strong_connect(&mut self, node: &'a str) {
+            let graph = self.graph;
+            self.index_of.insert(node, self.next);
+            self.lowlink.insert(node, self.next);
+            self.next += 1;
+            self.stack.push(node);
+            self.on_stack.insert(node);
+
+            let edges: Vec<&'a str> = graph
+                .get(node)
+                .map(|dependencies| dependencies.iter().map(String::as_str).collect())
+                .unwrap_or_default();
+            for next_node in edges {
+                if !self.index_of.contains_key(next_node) {
+                    self.strong_connect(next_node);
+                    let lowlink = self.lowlink[next_node].min(self.lowlink[node]);
+                    self.lowlink.insert(node, lowlink);
+                } else if self.on_stack.contains(next_node) {
+                    let lowlink = self.index_of[next_node].min(self.lowlink[node]);
+                    self.lowlink.insert(node, lowlink);
+                }
+            }
+
+            if self.lowlink[node] == self.index_of[node] {
+                let mut component = Vec::new();
+                loop {
+                    let member = self.stack.pop().expect("Tarjan 栈非空");
+                    self.on_stack.remove(member);
+                    component.push(member.to_string());
+                    if member == node {
+                        break;
+                    }
+                }
+                if component.len() > 1 {
+                    self.cycles.push(component);
+                }
+            }
+        }
+    }
+
+    let mut search = Search {
+        graph,
+        index_of: HashMap::new(),
+        lowlink: HashMap::new(),
+        on_stack: HashSet::new(),
+        stack: Vec::new(),
+        next: 0,
+        cycles: Vec::new(),
+    };
+    for start in graph.keys() {
+        if !search.index_of.contains_key(start.as_str()) {
+            search.strong_connect(start.as_str());
+        }
+    }
+    search.cycles
 }
 
 fn scan_root(
@@ -364,6 +533,30 @@ fn validate_manifest(
         }
     }
     manifest.activation_events = activation_events;
+
+    // 依赖声明校验（docs/EXTENSIONS.md §1）：条目必须是合法插件 id 形态
+    // （小写字母/数字/点/线，与工具名字符集一致），trim 后去重；
+    // 自依赖直接拒绝。被依赖插件是否存在于插件目录属跨插件校验，
+    // 在 discover 收尾时统一检查（与环检测一起）。
+    let mut seen_dependencies = HashSet::new();
+    let mut extension_dependencies = Vec::new();
+    for dependency in &manifest.extension_dependencies {
+        let dependency = dependency.trim();
+        if !valid_tool_name(dependency) {
+            return Err(format!(
+                "extensionDependencies 无效：`{dependency}`（仅允许小写字母、数字、点、线）"
+            ));
+        }
+        if dependency == manifest.id {
+            return Err(format!(
+                "extensionDependencies 不能依赖自身：`{dependency}`"
+            ));
+        }
+        if seen_dependencies.insert(dependency.to_string()) {
+            extension_dependencies.push(dependency.to_string());
+        }
+    }
+    manifest.extension_dependencies = extension_dependencies;
 
     let mut command_ids = HashSet::new();
     for command in &mut manifest.contributes.commands {

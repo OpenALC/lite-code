@@ -2349,3 +2349,327 @@ fn read_grammar_enforces_size_cap_and_valid_json() {
     );
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
 }
+
+// ---- 插件依赖 extensionDependencies（docs/EXTENSIONS.md §1）----
+
+fn dependency_manifest(id: &str, dependencies: Value) -> Value {
+    let mut manifest = node_manifest(id, "./index.mjs", &[]);
+    manifest["extensionDependencies"] = dependencies;
+    manifest
+}
+
+#[test]
+fn extension_dependencies_are_validated_and_deduplicated() {
+    // 合法：trim 后按声明顺序去重存储，不影响插件本身有效性。
+    let temp = TempDir::new("deps-valid");
+    let paths = test_paths(&temp);
+    write_node_plugin(&paths, "b", "example.b", &["b.run"]);
+    write_node_plugin(&paths, "c", "example.c", &["c.run"]);
+    write_plugin(
+        &paths.user_dir,
+        "valid",
+        dependency_manifest(
+            "example.valid",
+            json!(["example.b", " example.b ", "example.c"]),
+        ),
+        &["index.mjs"],
+    );
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 3);
+    assert!(
+        list.plugins.iter().all(|plugin| plugin.error.is_none()),
+        "{:?}",
+        list.plugins
+    );
+    let discovered = enabled_plugins(&paths, false).expect("enabled");
+    let deps = |id: &str| {
+        discovered
+            .iter()
+            .find(|plugin| plugin.info.id == id)
+            .and_then(|plugin| plugin.manifest.as_ref())
+            .map(|manifest| manifest.extension_dependencies.clone())
+    };
+    assert_eq!(
+        deps("example.valid"),
+        Some(vec!["example.b".to_string(), "example.c".to_string()])
+    );
+
+    // 非法项只把该插件标记为 error。
+    for (tag, dependencies, expected) in [
+        (
+            "self",
+            json!(["example.self"]),
+            "extensionDependencies 不能依赖自身",
+        ),
+        (
+            "self-dup",
+            json!(["example.self-dup", "example.self-dup"]),
+            "不能依赖自身",
+        ),
+        (
+            "uppercase",
+            json!(["Example.Dep"]),
+            "extensionDependencies 无效",
+        ),
+        ("space", json!(["a b"]), "extensionDependencies 无效"),
+        ("empty", json!([""]), "extensionDependencies 无效"),
+        ("slash", json!(["a/b"]), "extensionDependencies 无效"),
+    ] {
+        let temp = TempDir::new(&format!("deps-{tag}"));
+        let paths = test_paths(&temp);
+        write_plugin(
+            &paths.user_dir,
+            "bad",
+            dependency_manifest(&format!("example.{tag}"), dependencies),
+            &["index.mjs"],
+        );
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let error = list.plugins[0]
+            .error
+            .as_deref()
+            .unwrap_or_else(|| panic!("{tag}: 应标记 error"));
+        assert!(error.contains(expected), "{tag}: {error}");
+        assert!(!list.plugins[0].enabled);
+    }
+}
+
+#[test]
+fn missing_extension_dependency_marks_declaring_plugin_error() {
+    let temp = TempDir::new("deps-missing");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "needs",
+        dependency_manifest(
+            "example.needs",
+            json!(["example.base", "missing.one", "missing.two"]),
+        ),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "uses-base",
+        dependency_manifest("example.uses-base", json!(["example.base"])),
+        &["index.mjs"],
+    );
+    write_node_plugin(&paths, "base", "example.base", &["base.run"]);
+    write_node_plugin(&paths, "plain", "example.plain", &["plain.run"]);
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 4);
+    let needs = list
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == "example.needs")
+        .expect("needs");
+    let error = needs.error.as_deref().expect("error");
+    // 错误写明缺谁；已存在的依赖不列入。
+    assert!(error.contains("不存在"), "{error}");
+    assert!(error.contains("`missing.one`"), "{error}");
+    assert!(error.contains("`missing.two`"), "{error}");
+    assert!(!error.contains("example.base"), "{error}");
+    assert!(!needs.enabled);
+    // 缺失依赖只标记声明方，不影响其它插件。
+    assert!(
+        list.plugins
+            .iter()
+            .filter(|plugin| plugin.id != "example.needs")
+            .all(|plugin| plugin.error.is_none())
+    );
+
+    // 被禁用但已发现的插件算存在：依赖方保持有效（v1 不检查启用状态）。
+    set_enabled_at(&paths, false, "example.base", false, false).expect("disable base");
+    let list = list_plugins_at(&paths, false, false).expect("list after disable");
+    assert!(
+        list.plugins
+            .iter()
+            .find(|plugin| plugin.id == "example.uses-base")
+            .expect("uses-base")
+            .error
+            .is_none()
+    );
+}
+
+#[test]
+fn cyclic_extension_dependencies_mark_all_cycle_members_error() {
+    // 两插件互依：环上插件全部标记 error，错误写明环的构成。
+    let temp = TempDir::new("deps-cycle-pair");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "cyc-a",
+        dependency_manifest("example.cyc-a", json!(["example.cyc-b"])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "cyc-b",
+        dependency_manifest("example.cyc-b", json!(["example.cyc-a"])),
+        &["index.mjs"],
+    );
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 2);
+    for plugin in &list.plugins {
+        let error = plugin.error.as_deref().expect("error");
+        assert!(error.contains("循环依赖"), "{error}");
+        assert!(error.contains("example.cyc-a"), "{error}");
+        assert!(error.contains("example.cyc-b"), "{error}");
+        assert!(!plugin.enabled);
+    }
+
+    // 三插件成环：a → b → c → a，全部标记 error（自环已被自依赖校验拒绝）。
+    let temp = TempDir::new("deps-cycle-triple");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "a",
+        dependency_manifest("example.a", json!(["example.b"])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "b",
+        dependency_manifest("example.b", json!(["example.c"])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "c",
+        dependency_manifest("example.c", json!(["example.a"])),
+        &["index.mjs"],
+    );
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 3);
+    assert!(
+        list.plugins
+            .iter()
+            .all(|plugin| plugin.error.is_some() && !plugin.enabled)
+    );
+
+    // 环外插件只依赖环成员而不在环上：保持有效（v1 只拒绝环上插件）。
+    let temp = TempDir::new("deps-cycle-outside");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "cyc-a",
+        dependency_manifest("example.cyc-a", json!(["example.cyc-b"])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "cyc-b",
+        dependency_manifest("example.cyc-b", json!(["example.cyc-a"])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "outside",
+        dependency_manifest("example.outside", json!(["example.cyc-a"])),
+        &["index.mjs"],
+    );
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert!(
+        list.plugins
+            .iter()
+            .find(|plugin| plugin.id == "example.outside")
+            .expect("outside")
+            .error
+            .is_none()
+    );
+
+    // 环上插件不参与 initialize 下发（node 可用时验证端到端）。
+    let Some(node) = test_node() else {
+        return;
+    };
+    let temp = TempDir::new("deps-cycle-host");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "cyc-a",
+        dependency_manifest("example.cyc-a", json!(["example.cyc-b"])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "cyc-b",
+        dependency_manifest("example.cyc-b", json!(["example.cyc-a"])),
+        &["index.mjs"],
+    );
+    write_node_plugin(&paths, "solo", "example.solo", &["test.echo"]);
+    let workspace = temp.path.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let marker = temp.path.join("init-marker.txt");
+    let script = write_fake_host(&temp, &marker);
+
+    let mut host = ExtHost::new(Some(node));
+    host.set_host_script(Some(script));
+    let result = host
+        .execute_with_paths(&paths, false, &workspace, "test.echo", json!({}))
+        .expect("execute");
+    let ids = result["plugins"]
+        .as_array()
+        .expect("plugins")
+        .iter()
+        .map(|plugin| plugin["id"].as_str().expect("id"))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["example.solo"]);
+    host.shutdown();
+}
+
+#[test]
+fn initialize_orders_plugins_by_dependencies_stably() {
+    let Some(node) = test_node() else {
+        return;
+    };
+    // 链式依赖：app → mid → base；另有 base、alpha、zeta 三个无依赖插件。
+    // 目录名（发现顺序）刻意与 id 顺序错开，initialize 顺序必须按依赖
+    // 拓扑重排，而无依赖插件保持既有 id 相对顺序（回归保证）。
+    let temp = TempDir::new("deps-order");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "zzz-app",
+        dependency_manifest("example.app", json!(["example.mid"])),
+        &["index.mjs"],
+    );
+    let mut mid = dependency_manifest("example.mid", json!(["example.base"]));
+    mid["contributes"]["commands"] = json!([{ "command": "test.mid", "title": "mid" }]);
+    write_plugin(&paths.user_dir, "mmm-mid", mid, &["index.mjs"]);
+    let mut base = dependency_manifest("example.base", json!([]));
+    base["contributes"]["commands"] = json!([{ "command": "test.base", "title": "base" }]);
+    write_plugin(&paths.user_dir, "bbb-base", base, &["index.mjs"]);
+    write_node_plugin(&paths, "aaa-alpha", "example.alpha", &["test.alpha"]);
+    write_node_plugin(&paths, "eee-zeta", "example.zeta", &["test.echo"]);
+
+    let workspace = temp.path.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let marker = temp.path.join("init-marker.txt");
+    let script = write_fake_host(&temp, &marker);
+
+    let mut host = ExtHost::new(Some(node));
+    host.set_host_script(Some(script));
+    let result = host
+        .execute_with_paths(&paths, false, &workspace, "test.echo", json!({}))
+        .expect("execute");
+    let ids = result["plugins"]
+        .as_array()
+        .expect("plugins")
+        .iter()
+        .map(|plugin| plugin["id"].as_str().expect("id"))
+        .collect::<Vec<_>>();
+    // 依赖先于被依赖者；无依赖插件（alpha/zeta）保持 id 序，与无依赖
+    // 声明时的既有下发顺序完全一致。
+    assert_eq!(
+        ids,
+        [
+            "example.alpha",
+            "example.base",
+            "example.mid",
+            "example.app",
+            "example.zeta"
+        ]
+    );
+    host.shutdown();
+}

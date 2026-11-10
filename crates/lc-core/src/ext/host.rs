@@ -52,6 +52,9 @@ struct HostPlugin {
     /// 激活事件（docs/EXTENSIONS.md §4 延迟激活）：空数组或含 `*` 表示
     /// 立即激活，否则宿主延迟到首次命令/工具调用。
     activation_events: Vec<String>,
+    /// 清单声明的插件依赖（docs/EXTENSIONS.md §1）：仅用于拓扑排序，
+    /// 不下发 initialize 载荷。
+    dependencies: Vec<String>,
 }
 
 /// Node 扩展宿主句柄。`execute` 在需要时启动宿主；`reset` 强制下次重启。
@@ -414,11 +417,68 @@ fn host_plugins(plugins: &[DiscoveredPlugin]) -> Vec<HostPlugin> {
                     })
                     .collect(),
                 activation_events: manifest.activation_events.clone(),
+                dependencies: manifest.extension_dependencies.clone(),
             })
         })
         .collect();
     host_plugins.sort_by(|left, right| left.id.cmp(&right.id));
+    // 依赖拓扑排序（docs/EXTENSIONS.md §1）：initialize 列表顺序即宿主
+    // import+activate 顺序，依赖必须先于被依赖插件。排序在既有 id 有序
+    // 基础上稳定进行：无依赖关系的插件（含全部无依赖插件）相对顺序
+    // 与之前完全一致；只统计同在下发列表内的依赖。
+    sort_by_dependencies(&mut host_plugins);
     host_plugins
+}
+
+/// 稳定拓扑排序（Kahn，就绪集合按输入序取最小）：initialize 列表顺序
+/// 即宿主 import+activate 顺序，依赖必须先于被依赖插件输出；就绪插件
+/// 多于一个时取输入序最前者，因此无依赖关系的插件（含全部无依赖插件）
+/// 相对顺序与排序前完全一致。依赖不在下发列表内（被禁用/非 node/
+/// 校验失败）时不构成约束。环上插件在 discover 期已被整体标记 error、
+/// manifest 清空，正常不会进入这里；仍防御性地把残留节点按原序补齐。
+fn sort_by_dependencies(plugins: &mut Vec<HostPlugin>) {
+    let len = plugins.len();
+    let position: std::collections::HashMap<&str, usize> = plugins
+        .iter()
+        .enumerate()
+        .map(|(index, plugin)| (plugin.id.as_str(), index))
+        .collect();
+    let mut unmet = vec![0usize; len];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); len];
+    for (index, plugin) in plugins.iter().enumerate() {
+        for dependency in &plugin.dependencies {
+            if let Some(&dependency_index) = position.get(dependency.as_str()) {
+                unmet[index] += 1;
+                dependents[dependency_index].push(index);
+            }
+        }
+    }
+    let mut ready: std::collections::BTreeSet<usize> =
+        (0..len).filter(|&i| unmet[i] == 0).collect();
+    let mut order = Vec::with_capacity(len);
+    while let Some(&index) = ready.iter().next() {
+        ready.remove(&index);
+        order.push(index);
+        for &next in &dependents[index] {
+            unmet[next] -= 1;
+            if unmet[next] == 0 {
+                ready.insert(next);
+            }
+        }
+    }
+    if order.len() < len {
+        // 环残留：按原序补齐，保证不丢插件。
+        for index in 0..len {
+            if !order.contains(&index) {
+                order.push(index);
+            }
+        }
+    }
+    let taken = std::mem::take(plugins);
+    *plugins = order
+        .into_iter()
+        .map(|index| taken[index].clone())
+        .collect();
 }
 
 fn parse_load_errors(result: &Value) -> Vec<String> {
