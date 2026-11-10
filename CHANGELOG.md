@@ -131,6 +131,7 @@
 - LSP 编辑器智能三件套（契约 v0.8）：completion/hover/definition 按路径请求 + Monaco 异步 provider + 跨文件跳转 registerEditorOpener（agent-82）
 - 插件延迟激活：activationEvents 生效（onCommand 懒激活/幂等/失败 -32601 带 stage，`*` 向后兼容）（agent-86）
 - db lane M3（契约 v0.9）：DbConnectionInfo 携带 port/user/secretRef，远程连接编辑回填全等往返；connect 错误分类引导（Node 缺失/连接类分流）（agent-87）——MySQL/PG 三切片全部关闭
+- 声明式插件主题：contributes.themes 端到端（清单校验/防穿越读取 64KiB 帽/--vars 白名单防注入/设置页 select 含插件 optgroup/失效回落 dark）（agent-88）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
