@@ -183,7 +183,8 @@ function isPluginInfo(value: unknown): value is PluginInfo {
   )
 }
 
-function asPluginList(raw: unknown): PluginList | null {
+/** PluginList 载荷校验；marketplace.ts 的 install/update/uninstall 复用。 */
+export function asPluginList(raw: unknown): PluginList | null {
   if (!isRecord(raw)) return null
   if (typeof raw.dir !== 'string' || typeof raw.nodeAvailable !== 'boolean') return null
   const plugins = raw.plugins
