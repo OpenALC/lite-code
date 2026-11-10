@@ -134,6 +134,7 @@
 - 声明式插件主题：contributes.themes 端到端（清单校验/防穿越读取 64KiB 帽/--vars 白名单防注入/设置页 select 含插件 optgroup/失效回落 dark）（agent-88）
 - 声明式插件语言贡献：contributes.languages（跨插件扩展名冲突整插件标记 error/Monarch grammar 白名单防注入/内置语言优先/失效空 tokenizer 清高亮）（agent-89）
 - 插件依赖声明 extensionDependencies：缺失依赖/Tarjan 环检测标记 error，稳定 Kahn 拓扑加载顺序（agent-90）
+- 插件树视图 v1：contributes.views 端到端（view/children 协议 + onView 懒激活 + 侧栏可折叠分区 + 节点命令路由）（agent-91）
 
 ## [0.6.1-preview.64] - 2026-11-10
 

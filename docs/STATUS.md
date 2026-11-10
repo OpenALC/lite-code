@@ -408,8 +408,8 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   （label 唯一/目录内 .json/64KiB）、ext_read_theme 防穿越、主题 JSON
   --vars 白名单防注入、设置页 select（暗/亮+插件 optgroup）、失效回落
   dark；web 502 项全绿。EXTENSIONS §8 语言声明已随 `f29d86a` 收官——v0 未实现仅剩
-  市场/Webview/树视图/签名/API 兼容；扩展 lane 累计：工具/延迟激活/
-  主题/语言/依赖五块全落地（lc-core 500 项）。
+  市场/Webview/签名/API 兼容；扩展 lane 累计六块全落地（工具/延迟激活/
+  主题/语言/依赖/树视图，lc-core 504 项，web 532）。
 - **流程教训**（依赖切片 CI 曾红）：Rust 切片 brief 与验收必须含
   `clippy --all-targets -D warnings`（agent-90 brief 只要求 fmt+test，
   漏 ptr_arg；已修 `c2e5866`）——后续子代理 brief 已 implicit 此要求，
