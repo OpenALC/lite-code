@@ -118,7 +118,9 @@
 - 编辑器面包屑可点击：弹出目录内容、下钻目录或打开文件
 - 文件树支持 type-ahead 快速定位：连续输入字母/数字跳到下一个匹配项
 - lc-host M2：会话编排骨架下沉共享 crate（`SessionHandle`/`SessionEntry<P>`/`Sessions`，鸿蒙删 194 行本地实现，36 项测试语义不变全过；lc-host +9 会话单测）
-- lc-host M3a：事件出口统一（`CoreEventSink`/`envelope`/`Seq::from_u64` 下沉，桌面 seq 统一 1 起；lc-core M3b（分支待发）：`completion_events` 完成事件组合共享）
+- lc-host M3a：事件出口统一（`CoreEventSink`/`envelope`/`Seq::from_u64` 下沉，桌面 seq 统一 1 起）
+- lc-core M3b：`completion_events` 完成事件排序契约共享（三终态区分 end_turn/approval_required/permission_denied），桌面删私有实现
+- 设置页改为模式无关模态浮层（Kimi Code/Zcode 行为）：任何模式打开设置不再跳转 VSC；新增「供应商」分区内嵌供应商管理；Agent 侧栏 footer 入口直达浮层
 
 ## [0.6.1-preview.64] - 2026-11-10
 
