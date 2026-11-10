@@ -135,7 +135,7 @@
 - 声明式插件语言贡献：contributes.languages（跨插件扩展名冲突整插件标记 error/Monarch grammar 白名单防注入/内置语言优先/失效空 tokenizer 清高亮）（agent-89）
 - 插件依赖声明 extensionDependencies：缺失依赖/Tarjan 环检测标记 error，稳定 Kahn 拓扑加载顺序（agent-90）
 - 插件树视图 v1：contributes.views 端到端（view/children 协议 + onView 懒激活 + 侧栏可折叠分区 + 节点命令路由）（agent-91）
-- 插件市场 M1 核心：静态 index/多源/原子安装 Rust 层（version.rs 迁入 lc-core 单一语义来源；~3700 行；lc-core 551 项）（agent-93）——市场设计见 `docs/plans/plugin-marketplace.md`
+- 插件市场 M1+M2：静态 index/多源/原子安装/GC 挂启动/deps 自动安装（同源优先/深度 8/Tarjan 环复用）；浏览 tab+§3.7 确认对话框（web 563 项）——市场设计见 `docs/plans/plugin-marketplace.md`（agent-93/94/95）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
