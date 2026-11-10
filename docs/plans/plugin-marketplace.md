@@ -195,7 +195,7 @@
 | 切片 | 内容 | 估点 | 独立发布条件 |
 |---|---|---|---|
 | **M1 index+安装** | index 线格式+解析；`version.rs` 移入 lc-core；`plugin-registries.json`+3 个 registry 命令；`ext_search`；`ext_install`（下载/sha256/一致性/防穿越/tmp+rename/GC/配额）；ExtensionsPanel 浏览 tab+确认 UI；`gen-plugin-index.mjs` | 6 | file:// 与 https（loopback 集成测试）源可搜索并安装，中断恢复无残留；已安装页零回归 |
-| **M2 更新与卸载** | `ext_update`（单个/全部、semver 严格大于、disabled 保留）；`ext_uninstall`（白名单+disabled 清理）；deps 自动安装（深度/环护栏）；更新角标 | 3 | 装旧版→可更新→状态保留；卸载后目录与 `extensions.json` 干净 |
+| **~~M2 更新与卸载~~（已完成）** | ~~`ext_update`（单个/全部、semver 严格大于、disabled 保留）；`ext_uninstall`（白名单+disabled 清理）；deps 自动安装（深度/环护栏）；更新角标~~ | 3 | 装旧版→可更新→状态保留；卸载后目录与 `extensions.json` 干净 |
 | **M3 签名与多镜像** | `minisign-verify` 接入（过 deny.toml）；per-source `require_signatures`+pubkey；强制档拒绝路径与徽标；多源回退排序；官方 marketplace 仓库+CI+镜像发布文档 | 4 | 未签名包在强制源被拒；多源 fail-over 集成测试过；发布链文档化 |
 
 估点单位：1 点 ≈ 一个 agent 半天；含测试与文档。

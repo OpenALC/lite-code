@@ -1,7 +1,8 @@
 //! 安装 / 更新 / 卸载 / GC（docs/plans/plugin-marketplace.md §3.2/§3.5/§3.6）。
 //!
 //! 安装主链：条目定位（version 缺省取 semver 最高，source 缺省取源序第一）
-//! → engines/deps 预检（force 跳过）→ 下载到 `<user_dir>/.tmp/`（64 MiB 帽）
+//! → engines 预检（force 跳过）→ deps 解析自动装（M2：同源优先/深度 8/环检测）
+//! → 下载到 `<user_dir>/.tmp/`（64 MiB 帽）
 //! → sha256 校验 → zip 解压（单一顶层 `<id>/`、zip-slip 防御、stored/deflate
 //! 白名单、256 MiB 解压帽、4096 条目帽）→ 包内 plugin.json 与 index 条目比对
 //! （不一致 `contract_mismatch`）→ 三级配额核算 → tmp+rename 原子落位
@@ -10,7 +11,7 @@
 //! 半安装恢复：任何中断点只剩 `.tmp/` 或 `*.uninstall-bak` 垃圾，
 //! `gc_stale` 惰性清理（.tmp 超 24h、*.uninstall-bak 一律清）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -97,7 +98,15 @@ pub(crate) fn install_at(
     let merged = merge_indexes(&collected);
     let resolved = resolve_entry(&merged, id, version, source_name)?;
     if !force {
-        preflight(paths, &resolved.entry, node_available, &merged)?;
+        preflight_engines(&resolved.entry)?;
+        resolve_deps(
+            paths,
+            resolved,
+            &collected,
+            &merged,
+            node_available,
+            quota_mb,
+        )?;
     }
     install_package(paths, &resolved.entry, quota_mb)?;
     list(paths, node_available)
@@ -169,7 +178,8 @@ fn update_at(
         let Some(best) = candidate else { continue };
         if best.entry.parsed_version > local_parsed {
             if !force {
-                preflight(paths, &best.entry, node_available, &merged)?;
+                preflight_engines(&best.entry)?;
+                resolve_deps(paths, best, &collected, &merged, node_available, quota_mb)?;
             }
             install_package(paths, &best.entry, quota_mb)?;
         }
@@ -316,14 +326,10 @@ pub(crate) fn resolve_entry<'a>(
     }
 }
 
-/// 安装前预检（§3.5 步骤 2）：engines fail-closed；deps 在本地与所有源
-/// 都缺失 → 报错并列出缺失 id（M1 不自动安装，M2 起自动装）。
-fn preflight(
-    paths: &ExtPaths,
-    entry: &IndexEntry,
-    node_available: bool,
-    merged: &[MergedEntry],
-) -> Result<(), MarketError> {
+/// 安装前预检（§3.5 步骤 2）：engines fail-closed（force 跳过）。
+/// deps 不在此预检——M2 起缺失自动安装（见 `resolve_deps`），本地与所有
+/// 启用源都缺失时报错并列出缺失 id。
+fn preflight_engines(entry: &IndexEntry) -> Result<(), MarketError> {
     let engines = entry.effective_engines();
     if let Some(constraint) = engines.get("lite-code")
         && !satisfies_range(crate::version(), constraint)
@@ -334,27 +340,192 @@ fn preflight(
             crate::version()
         )));
     }
+    Ok(())
+}
 
+/// 依赖自动安装深度上限（§3.5 M2）：主插件计第 1 层，依赖链最深 8 层。
+const MAX_DEP_DEPTH: usize = 8;
+
+/// 依赖解析与自动安装（§3.5 M2）：
+/// - 本地已满足（合法安装）的依赖直接跳过，零下载；已安装版本更低也不
+///   自动升级（M2 最小语义，升级走 `ext_update`）；
+/// - 缺失依赖按「同源优先」解析条目：先取要求方命中源（`RegistrySource`）
+///   内的同 id 条目，未命中再以任意启用源兜底——取跨源去重后的 semver
+///   最高版本（`merged` 按 id 去重保留的即最高版本条目）；
+/// - 深度上限 [`MAX_DEP_DEPTH`]，超限 `invalid_argument` 并列出从主插件
+///   到越界节点的链；环检测复用 §1 的 Tarjan 语义与报错文案
+///   （`manifest::dependency_cycles` / `dependency_cycle_message`）；
+/// - 链中任一依赖安装失败：已装依赖保留（每个依赖本身是合法插件），
+///   主插件不落位，报错点名失败节点（错误变体保留，命令层错误码不变）。
+fn resolve_deps<'a>(
+    paths: &ExtPaths,
+    root: &'a MergedEntry,
+    collected: &'a [SourceIndex],
+    merged: &'a [MergedEntry],
+    node_available: bool,
+    quota_mb: u64,
+) -> Result<(), MarketError> {
     let installed = super::source::installed_versions(paths, node_available)?;
-    let available: HashSet<&str> = merged
-        .iter()
-        .map(|merged_entry| merged_entry.entry.id.as_str())
-        .chain(installed.keys().map(String::as_str))
-        .collect();
-    let deps = entry.effective_deps();
-    let missing: Vec<&str> = deps
-        .iter()
-        .map(String::as_str)
-        .filter(|dep| !available.contains(dep))
-        .collect();
+    let mut planner = DepPlanner {
+        collected,
+        merged,
+        visited: installed.keys().cloned().collect(),
+        raw_deps: HashMap::new(),
+        plan: Vec::new(),
+    };
+    let mut missing: Vec<String> = Vec::new();
+    let mut chain: Vec<String> = Vec::new();
+    planner.visit(&root.entry, &root.source, 1, &mut chain, &mut missing)?;
+    // post-order 最后入列的是主插件本身，安装计划只含依赖（依赖在前）。
+    planner.plan.pop();
+
+    // §1 语义：缺失依赖优先于环报错。
     if !missing.is_empty() {
+        let listed = missing
+            .iter()
+            .map(|id| format!("`{id}`"))
+            .collect::<Vec<_>>()
+            .join("、");
         return Err(MarketError::InvalidArgument(format!(
-            "插件 `{}` 依赖缺失：{}（M1 不自动安装依赖，请先手动安装或 force 跳过）",
-            entry.id,
-            missing.join(", ")
+            "插件 `{}` 依赖缺失:{listed}（本地与所有启用源均不存在，无法自动安装）",
+            root.entry.id
         )));
     }
+
+    // 环检测图：节点 = 主插件 + 待装依赖（本地已满足的是链终点，不进图），
+    // 边 = 声明 deps 落在节点集内的部分——与 §1 磁盘校验同一构图语义。
+    let graph: HashMap<String, Vec<String>> = planner
+        .raw_deps
+        .iter()
+        .map(|(id, deps)| {
+            let edges: Vec<String> = deps
+                .iter()
+                .filter(|dep| planner.raw_deps.contains_key(dep.as_str()))
+                .cloned()
+                .collect();
+            (id.clone(), edges)
+        })
+        .collect();
+    let mut cycles = crate::ext::manifest::dependency_cycles(&graph);
+    if !cycles.is_empty() {
+        cycles.sort();
+        let mut group = cycles.remove(0);
+        group.sort();
+        return Err(MarketError::InvalidArgument(
+            crate::ext::manifest::dependency_cycle_message(&group),
+        ));
+    }
+
+    // deps 各自独立走完整安装流程（共享 tmp+rename 原子落位），
+    // 主插件最后落位；任一失败即中止，已装依赖保留。
+    for entry in &planner.plan {
+        preflight_engines(entry)?;
+        install_package(paths, entry, quota_mb)
+            .map_err(|error| dep_install_error(&entry.id, &entry.version, error))?;
+    }
     Ok(())
+}
+
+/// 依赖安装失败的上下文包装：保留原错误变体（命令层错误码不变），
+/// 前缀点名失败节点（§3.5 M2「报错说明失败节点」）。
+fn dep_install_error(id: &str, version: &str, error: MarketError) -> MarketError {
+    let context = format!("依赖 `{id}`（{version}）安装失败");
+    match error {
+        MarketError::Io(message) => MarketError::Io(format!("{context}:{message}")),
+        MarketError::Http(message) => MarketError::Http(format!("{context}:{message}")),
+        MarketError::InvalidIndex(message) => {
+            MarketError::InvalidIndex(format!("{context}:{message}"))
+        }
+        MarketError::NotFound(message) => MarketError::NotFound(format!("{context}:{message}")),
+        MarketError::InvalidArgument(message) => {
+            MarketError::InvalidArgument(format!("{context}:{message}"))
+        }
+        MarketError::ContractMismatch(message) => {
+            MarketError::ContractMismatch(format!("{context}:{message}"))
+        }
+        MarketError::QuotaExceeded(message) => {
+            MarketError::QuotaExceeded(format!("{context}:{message}"))
+        }
+        MarketError::NoHomeDir | MarketError::Config(_) => error,
+    }
+}
+
+/// 依赖条目定位（§3.5 M2 同源优先）：先取要求方命中源内的同 id 条目；
+/// 未命中再兜底跨源合并的最高 semver 版本。
+fn pick_dep_entry<'a>(
+    dep_id: &str,
+    source: &'a str,
+    collected: &'a [SourceIndex],
+    merged: &'a [MergedEntry],
+) -> Option<(&'a IndexEntry, &'a str)> {
+    for source_index in collected {
+        if source_index.source.name != source {
+            continue;
+        }
+        let Ok(index) = &source_index.result else {
+            continue;
+        };
+        if let Some(entry) = index.entries.iter().find(|entry| entry.id == dep_id) {
+            return Some((entry, source));
+        }
+    }
+    merged
+        .iter()
+        .find(|merged_entry| merged_entry.entry.id == dep_id)
+        .map(|merged_entry| (&merged_entry.entry, merged_entry.source.as_str()))
+}
+
+struct DepPlanner<'a> {
+    collected: &'a [SourceIndex],
+    merged: &'a [MergedEntry],
+    /// 本地已满足或已入计划的 id：DFS visited，防重复展开（零重复下载）。
+    visited: HashSet<String>,
+    /// 节点 → 声明的 deps（建环检测图用；边在构图时过滤到节点集）。
+    raw_deps: HashMap<String, Vec<String>>,
+    /// post-order 安装计划（依赖在前）；根（主插件）也在其中，调用方弹出。
+    plan: Vec<IndexEntry>,
+}
+
+impl<'a> DepPlanner<'a> {
+    /// DFS 展开单个节点。深度超限即报错（列出从主插件到越界节点的链）；
+    /// 缺失（本地与所有源都没有）记入 `missing`；已 visited 的 id 是链终点。
+    fn visit(
+        &mut self,
+        entry: &IndexEntry,
+        source: &'a str,
+        depth: usize,
+        chain: &mut Vec<String>,
+        missing: &mut Vec<String>,
+    ) -> Result<(), MarketError> {
+        chain.push(entry.id.clone());
+        if depth > MAX_DEP_DEPTH {
+            return Err(MarketError::InvalidArgument(format!(
+                "依赖链深度超过 {MAX_DEP_DEPTH} 层上限:{}",
+                chain.join(" -> ")
+            )));
+        }
+        self.visited.insert(entry.id.clone());
+        let deps = entry.effective_deps();
+        self.raw_deps.insert(entry.id.clone(), deps.clone());
+        for dep in deps {
+            if self.visited.contains(&dep) {
+                continue;
+            }
+            match pick_dep_entry(&dep, source, self.collected, self.merged) {
+                Some((dep_entry, dep_source)) => {
+                    self.visit(dep_entry, dep_source, depth + 1, chain, missing)?;
+                }
+                None => {
+                    if !missing.contains(&dep) {
+                        missing.push(dep);
+                    }
+                }
+            }
+        }
+        chain.pop();
+        self.plan.push(entry.clone());
+        Ok(())
+    }
 }
 
 /// 包安装主链（下载 → sha256 → 解压 → 一致性 → 配额 → 落位），
@@ -1427,5 +1598,418 @@ mod tests {
         )
         .expect("install over loopback http");
         assert!(paths.user_dir.join("demo.net/plugin.json").is_file());
+    }
+
+    // ==== M2：deps 自动安装（§3.5） ====
+
+    /// 多插件夹具描述：id/version/deps + 可自定义的包字节（坏包失败用例）。
+    struct MultiPlugin {
+        id: String,
+        version: String,
+        deps: Vec<String>,
+        dist: Option<Vec<u8>>,
+    }
+
+    fn mp(id: &str, version: &str, deps: &[&str]) -> MultiPlugin {
+        MultiPlugin {
+            id: id.to_string(),
+            version: version.to_string(),
+            deps: deps.iter().map(|dep| (*dep).to_string()).collect(),
+            dist: None,
+        }
+    }
+
+    /// 多插件 file:// 夹具：一份 index + 每插件一个包，可再注册镜像源。
+    struct MultiFixture {
+        _temp: TempDir,
+        paths: ExtPaths,
+        reg_path: PathBuf,
+        builtin: RegistrySource,
+        index_file: PathBuf,
+    }
+
+    impl MultiFixture {
+        fn new(tag: &str, plugins: &[MultiPlugin]) -> Self {
+            let temp = TempDir::new(tag);
+            let paths = ExtPaths::new(
+                temp.path().join("extensions"),
+                None,
+                temp.path().join("extensions.json"),
+            );
+            let index_file = temp.path().join("index.json");
+            write_index(&index_file, temp.path(), plugins);
+            MultiFixture {
+                builtin: RegistrySource::new("official", file_url(&index_file)),
+                reg_path: temp.path().join("reg.json"),
+                _temp: temp,
+                paths,
+                index_file,
+            }
+        }
+
+        /// 追加一份镜像源 index（多源用例），返回其路径。
+        fn add_index(&self, tag: &str, plugins: &[MultiPlugin]) -> PathBuf {
+            let file = self._temp.path().join(format!("index-{tag}.json"));
+            write_index(&file, self._temp.path(), plugins);
+            file
+        }
+
+        /// 覆写主 index（源升级用例）。
+        fn rewrite_index(&self, plugins: &[MultiPlugin]) {
+            write_index(&self.index_file, self._temp.path(), plugins);
+        }
+
+        fn install(&self, id: &str) -> Result<PluginList, MarketError> {
+            install_at(
+                &self.paths,
+                &self.builtin,
+                &self.reg_path,
+                &Mutex::new(IndexCache::new()),
+                FetchLimits::default(),
+                id,
+                None,
+                None,
+                false,
+                false,
+                DEFAULT_QUOTA_MB,
+            )
+        }
+
+        fn update_all(&self) -> Result<PluginList, MarketError> {
+            update_at(
+                &self.paths,
+                &self.builtin,
+                &self.reg_path,
+                &Mutex::new(IndexCache::new()),
+                FetchLimits::default(),
+                None,
+                false,
+                false,
+                DEFAULT_QUOTA_MB,
+            )
+        }
+
+        fn installed(&self, id: &str) -> Option<crate::ext::PluginInfo> {
+            list(&self.paths, false)
+                .ok()?
+                .plugins
+                .into_iter()
+                .find(|plugin| plugin.id == id)
+        }
+    }
+
+    /// 写源清单文件（多源用例注册镜像源）。
+    fn write_sources(reg_path: &Path, sources: &[RegistrySource]) {
+        std::fs::write(reg_path, json!({"sources": sources}).to_string())
+            .expect("write registries");
+    }
+
+    /// 写 index + 每个插件的 file:// 包；deps 同时写进 manifest 的
+    /// extensionDependencies（§1 权威位置）与条目级 deps（§3.1 冗余字段）。
+    fn write_index(index_file: &Path, root: &Path, plugins: &[MultiPlugin]) {
+        let mut entries = Vec::new();
+        for plugin in plugins {
+            let mut manifest = plugin_manifest(&plugin.id, &plugin.version);
+            if !plugin.deps.is_empty() {
+                manifest["extensionDependencies"] = json!(plugin.deps);
+            }
+            let zip = plugin.dist.clone().unwrap_or_else(|| {
+                build_zip(&[(
+                    format!("{}/plugin.json", plugin.id),
+                    manifest.to_string().into_bytes(),
+                )])
+            });
+            let package_file = root.join(format!("{}-{}.zip", plugin.id, plugin.version));
+            std::fs::write(&package_file, &zip).expect("write package");
+            let mut entry = json!({
+                "id": plugin.id,
+                "version": plugin.version,
+                "manifest": manifest,
+                "dist": {"url": file_url(&package_file), "sha256": sha256_hex(&zip)}
+            });
+            if !plugin.deps.is_empty() {
+                entry["deps"] = json!(plugin.deps);
+            }
+            entries.push(entry);
+        }
+        std::fs::write(
+            index_file,
+            json!({"version": 1, "plugins": entries}).to_string(),
+        )
+        .expect("write index");
+    }
+
+    /// 生成 n 级依赖链 chain.1 → chain.2 → … → chain.n。
+    fn chain_plugins(prefix: &str, count: usize) -> Vec<MultiPlugin> {
+        (1..=count)
+            .map(|index| MultiPlugin {
+                id: format!("{prefix}.{index}"),
+                version: "1.0.0".to_string(),
+                deps: if index < count {
+                    vec![format!("{prefix}.{}", index + 1)]
+                } else {
+                    Vec::new()
+                },
+                dist: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn deps_chain_installs_transitively() {
+        let fx = MultiFixture::new(
+            "m2-chain",
+            &[
+                mp("chain.a", "1.0.0", &["chain.b"]),
+                mp("chain.b", "1.0.0", &["chain.c"]),
+                mp("chain.c", "1.0.0", &[]),
+            ],
+        );
+        let list = fx.install("chain.a").expect("install a");
+        for id in ["chain.a", "chain.b", "chain.c"] {
+            let plugin = list
+                .plugins
+                .iter()
+                .find(|plugin| plugin.id == id)
+                .expect("listed");
+            assert!(plugin.error.is_none(), "{id} 应通过校验:{:?}", plugin.error);
+        }
+        assert!(fx.paths.user_dir.join("chain.c/plugin.json").is_file());
+    }
+
+    #[test]
+    fn deps_prefer_same_source_over_higher_version_elsewhere() {
+        let fx = MultiFixture::new(
+            "m2-same-src",
+            &[
+                mp("demo.app", "1.0.0", &["demo.dep"]),
+                mp("demo.dep", "1.0.0", &[]),
+            ],
+        );
+        // 镜像源有更高版本，但非同源 → 不应被选中。
+        let mirror_index = fx.add_index("mirror", &[mp("demo.dep", "2.0.0", &[])]);
+        write_sources(
+            &fx.reg_path,
+            &[RegistrySource::new("mirror", file_url(&mirror_index))],
+        );
+
+        fx.install("demo.app").expect("install app");
+        let dep = fx.installed("demo.dep").expect("dep installed");
+        assert_eq!(
+            dep.version, "1.0.0",
+            "同源优先：装命中源内的版本，而非跨源最高 2.0.0"
+        );
+    }
+
+    #[test]
+    fn deps_fall_back_to_highest_version_across_sources() {
+        let fx = MultiFixture::new("m2-fallback", &[mp("demo.app", "1.0.0", &["demo.dep"])]);
+        let mirror_index = fx.add_index("mirror", &[mp("demo.dep", "2.0.0", &[])]);
+        write_sources(
+            &fx.reg_path,
+            &[RegistrySource::new("mirror", file_url(&mirror_index))],
+        );
+
+        fx.install("demo.app").expect("install app");
+        let dep = fx.installed("demo.dep").expect("dep installed");
+        assert_eq!(
+            dep.version, "2.0.0",
+            "命中源未命中 → 兜底任意启用源的跨源最高版本"
+        );
+    }
+
+    #[test]
+    fn deps_already_installed_lower_version_not_upgraded() {
+        let fx = MultiFixture::new(
+            "m2-noupgrade",
+            &[
+                mp("demo.app", "1.0.0", &["demo.dep"]),
+                mp("demo.dep", "2.0.0", &[]),
+            ],
+        );
+        // 本地预置更低版本（合法 declarative 清单）→ 视为已满足。
+        let dep_dir = fx.paths.user_dir.join("demo.dep");
+        std::fs::create_dir_all(&dep_dir).expect("dep dir");
+        std::fs::write(
+            dep_dir.join("plugin.json"),
+            plugin_manifest("demo.dep", "1.0.0").to_string(),
+        )
+        .expect("dep manifest");
+
+        fx.install("demo.app").expect("install app");
+        let dep = fx.installed("demo.dep").expect("dep listed");
+        assert_eq!(
+            dep.version, "1.0.0",
+            "M2 不自动升级已安装依赖（升级走 ext_update）"
+        );
+        assert!(fx.installed("demo.app").is_some());
+    }
+
+    #[test]
+    fn deps_depth_nine_rejected_listing_chain() {
+        let fx = MultiFixture::new("m2-depth9", &chain_plugins("deep", 9));
+        let err = fx.install("deep.1").expect_err("depth 9 rejected");
+        assert!(matches!(err, MarketError::InvalidArgument(_)));
+        let message = err.to_string();
+        assert!(message.contains("深度"), "{message}");
+        assert!(message.contains("deep.1"), "{message}");
+        assert!(message.contains("deep.9"), "{message}");
+        // 规划期即拒绝：链上任何插件都不落位。
+        assert!(!fx.paths.user_dir.join("deep.1").exists());
+        assert!(!fx.paths.user_dir.join("deep.9").exists());
+    }
+
+    #[test]
+    fn deps_depth_eight_allowed() {
+        let fx = MultiFixture::new("m2-depth8", &chain_plugins("deep", 8));
+        let list = fx.install("deep.1").expect("depth 8 ok");
+        assert_eq!(list.plugins.len(), 8, "8 层链全部装齐");
+        for plugin in &list.plugins {
+            assert!(plugin.error.is_none(), "{:?}", plugin.error);
+        }
+    }
+
+    #[test]
+    fn deps_cycle_rejected_with_ring_members() {
+        let fx = MultiFixture::new(
+            "m2-cycle",
+            &[
+                mp("loop.a", "1.0.0", &["loop.b"]),
+                mp("loop.b", "1.0.0", &["loop.a"]),
+            ],
+        );
+        let err = fx.install("loop.a").expect_err("cycle rejected");
+        assert!(matches!(err, MarketError::InvalidArgument(_)));
+        let message = err.to_string();
+        assert!(message.contains("循环依赖"), "{message}");
+        assert!(message.contains("`loop.a`"), "{message}");
+        assert!(message.contains("`loop.b`"), "{message}");
+        assert!(!fx.paths.user_dir.join("loop.a").exists(), "环上插件不落位");
+        assert!(!fx.paths.user_dir.join("loop.b").exists());
+    }
+
+    #[test]
+    fn deps_failure_keeps_installed_siblings_and_skips_main() {
+        let bad = MultiPlugin {
+            id: "demo.bad".to_string(),
+            version: "1.0.0".to_string(),
+            deps: Vec::new(),
+            dist: Some(b"not a zip at all".to_vec()),
+        };
+        let fx = MultiFixture::new(
+            "m2-fail",
+            &[
+                mp("demo.main", "1.0.0", &["demo.good", "demo.bad"]),
+                mp("demo.good", "1.0.0", &[]),
+                bad,
+            ],
+        );
+        let err = fx.install("demo.main").expect_err("bad dep fails");
+        let message = err.to_string();
+        assert!(message.contains("demo.bad"), "报错说明失败节点:{message}");
+        assert!(fx.installed("demo.good").is_some(), "先装成功的依赖保留");
+        assert!(
+            !fx.paths.user_dir.join("demo.bad").exists(),
+            "失败依赖不落位"
+        );
+        assert!(
+            !fx.paths.user_dir.join("demo.main").exists(),
+            "主插件不落位"
+        );
+    }
+
+    #[test]
+    fn deps_satisfied_locally_skips_package_download() {
+        let temp = TempDir::new("m2-zero-dl");
+        let paths = ExtPaths::new(
+            temp.path().join("extensions"),
+            None,
+            temp.path().join("extensions.json"),
+        );
+        let dep_manifest = plugin_manifest("demo.dep", "1.0.0");
+        let dep_zip = build_zip(&[("demo.dep/plugin.json", dep_manifest.to_string().as_bytes())]);
+        let mut app_manifest = plugin_manifest("demo.app", "1.0.0");
+        app_manifest["extensionDependencies"] = json!(["demo.dep"]);
+        let app_zip = build_zip(&[("demo.app/plugin.json", app_manifest.to_string().as_bytes())]);
+
+        // 每插件一个 loopback server：hits 即包下载次数（index 走 file://）。
+        let dep_server = serve_fn({
+            let dep_zip = dep_zip.clone();
+            move |_, _| http_ok_bytes(&dep_zip)
+        });
+        let app_server = serve_fn({
+            let app_zip = app_zip.clone();
+            move |_, _| http_ok_bytes(&app_zip)
+        });
+        let index_file = temp.path().join("index.json");
+        std::fs::write(
+            &index_file,
+            json!({"version": 1, "plugins": [
+                {"id": "demo.app", "version": "1.0.0", "manifest": app_manifest,
+                 "deps": ["demo.dep"],
+                 "dist": {"url": format!("{}/pkg.zip", app_server.url),
+                          "sha256": sha256_hex(&app_zip)}},
+                {"id": "demo.dep", "version": "1.0.0", "manifest": dep_manifest,
+                 "dist": {"url": format!("{}/pkg.zip", dep_server.url),
+                          "sha256": sha256_hex(&dep_zip)}}
+            ]})
+            .to_string(),
+        )
+        .expect("index");
+        let builtin = RegistrySource::new("official", file_url(&index_file));
+        let reg_path = temp.path().join("reg.json");
+        let install = |id: &str| {
+            install_at(
+                &paths,
+                &builtin,
+                &reg_path,
+                &Mutex::new(IndexCache::new()),
+                FetchLimits::default(),
+                id,
+                None,
+                None,
+                false,
+                false,
+                DEFAULT_QUOTA_MB,
+            )
+        };
+
+        install("demo.dep").expect("install dep");
+        assert_eq!(dep_server.hits.load(Ordering::Relaxed), 1, "dep 首次下载");
+        install("demo.app").expect("install app");
+        assert_eq!(
+            dep_server.hits.load(Ordering::Relaxed),
+            1,
+            "本地已满足 → dep 零下载"
+        );
+        assert_eq!(app_server.hits.load(Ordering::Relaxed), 1, "app 下载一次");
+        assert!(paths.user_dir.join("demo.app/plugin.json").is_file());
+    }
+
+    #[test]
+    fn update_backfills_missing_deps() {
+        let fx = MultiFixture::new(
+            "m2-update",
+            &[mp("demo.app", "0.1.0", &[]), mp("demo.dep", "1.0.0", &[])],
+        );
+        fx.install("demo.app").expect("install 0.1.0");
+        assert!(fx.installed("demo.dep").is_none());
+        // 源升级：0.2.0 新增依赖 demo.dep（本地缺失）→ update 补装。
+        fx.rewrite_index(&[
+            mp("demo.app", "0.2.0", &["demo.dep"]),
+            mp("demo.dep", "1.0.0", &[]),
+        ]);
+
+        let list = fx.update_all().expect("update");
+        let app = list
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "demo.app")
+            .expect("app listed");
+        assert_eq!(app.version, "0.2.0");
+        assert!(
+            fx.installed("demo.dep").is_some(),
+            "update 路径同样补装缺失依赖"
+        );
     }
 }

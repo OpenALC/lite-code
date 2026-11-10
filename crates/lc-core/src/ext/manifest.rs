@@ -263,15 +263,7 @@ fn validate_dependencies(plugins: &mut [DiscoveredPlugin]) {
                 format!("extensionDependencies 引用的插件不存在：{listed}"),
             );
         } else if let Some(group) = cycle_members.get(&manifest.id) {
-            let listed = group
-                .iter()
-                .map(|id| format!("`{id}`"))
-                .collect::<Vec<_>>()
-                .join("、");
-            mark_plugin_error(
-                plugin,
-                format!("extensionDependencies 存在循环依赖：{listed}"),
-            );
+            mark_plugin_error(plugin, dependency_cycle_message(group));
         }
     }
 }
@@ -285,9 +277,20 @@ fn mark_plugin_error(plugin: &mut DiscoveredPlugin, message: String) {
     plugin.main_path = None;
 }
 
+/// 依赖环报错文案（§1 语义）。marketplace 安装链的环检测复用同一格式
+/// （docs/plans/plugin-marketplace.md §3.5 M2）。
+pub(crate) fn dependency_cycle_message(group: &[String]) -> String {
+    let listed = group
+        .iter()
+        .map(|id| format!("`{id}`"))
+        .collect::<Vec<_>>()
+        .join("、");
+    format!("extensionDependencies 存在循环依赖：{listed}")
+}
+
 /// Tarjan 强连通分量：返回依赖图中所有大小 > 1 的分量（即环），
-/// 供环上插件整体报错并退出下发。
-fn dependency_cycles(graph: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
+/// 供环上插件整体报错并退出下发。marketplace 依赖解析（M2）复用。
+pub(crate) fn dependency_cycles(graph: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
     struct Search<'a> {
         graph: &'a HashMap<String, Vec<String>>,
         index_of: HashMap<&'a str, usize>,

@@ -5,7 +5,8 @@
 //! - `source`：`~/.lite-code/plugin-registries.json` 源清单读写、多源并行拉取、
 //!   TTL 内存缓存、按 id 去重取 semver 最高（§3.3）；
 //! - `install`：包下载 / sha256 / zip 防穿越解压 / index-包一致性比对 /
-//!   tmp+rename 原子落位 / 三级配额 / GC / 卸载 / 更新（§3.2/§3.5/§3.6）。
+//!   tmp+rename 原子落位 / 三级配额 / GC / deps 自动安装（M2）/ 卸载 / 更新
+//!   （§3.2/§3.5/§3.6）。
 //!
 //! 安全模型（§3.7）：M1 为警告档——HTTPS + sha256 完整性，签名强制档（M3）
 //! 落地前 `signature` 只透传状态不做密码学校验。

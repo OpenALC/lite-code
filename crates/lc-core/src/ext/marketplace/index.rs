@@ -45,7 +45,7 @@ pub struct MarketPlugin {
     /// `engines` 冗余字段（安装前 fail-closed 预检用；与 manifest 不一致时
     /// 以 manifest 为准，见 `IndexEntry::effective_engines`）。
     pub engines: BTreeMap<String, String>,
-    /// 依赖插件 id 列表（M1 只预检不自动安装）。
+    /// 依赖插件 id 列表（M2 起安装时按此自动补装缺失依赖，见 install.rs）。
     pub deps: Vec<String>,
     /// 提示用权限列表（Node 插件本质是可信代码，§7）。
     pub permissions: Vec<String>,
