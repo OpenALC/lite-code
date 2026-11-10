@@ -1,5 +1,6 @@
 //! 真实 stdio LSP 端到端测试：Node fake server 验证 initialize、didOpen、
-//! publishDiagnostics、didChange、didClose 与 stop。
+//! publishDiagnostics、didChange、didClose 与 stop，以及补全 / 悬停 / 跳转
+//! 请求-响应（成功、server 返回 error、超时三条路径）。
 //!
 //! 无 Node 时用例跳过（打印原因），不标记失败；CI 未装 Node 仍可跑其余测试。
 
@@ -10,7 +11,10 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use lc_core::lsp::{Diagnostic, DiagnosticSink, LspManager, LspServerConfig, LspStartReport};
+use lc_core::lsp::{
+    Diagnostic, DiagnosticSink, LspError, LspManager, LspServerConfig, LspStartReport,
+};
+use lc_proto::{LspCompletionItem, LspHoverContent, LspTextEdit};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -111,15 +115,23 @@ fn fixture_path() -> PathBuf {
 }
 
 fn fake_config(id: &str, log: &Path) -> LspServerConfig {
+    fake_config_with_flags(id, log, &[])
+}
+
+fn fake_config_with_flags(id: &str, log: &Path, flags: &[&str]) -> LspServerConfig {
+    let mut args = vec![
+        fixture_path().to_string_lossy().into_owned(),
+        "--log".to_string(),
+        log.to_string_lossy().into_owned(),
+    ];
+    for flag in flags {
+        args.push((*flag).to_string());
+    }
     LspServerConfig {
         id: id.to_string(),
         language_ids: vec!["plaintext".to_string()],
         command: "node".to_string(),
-        args: vec![
-            fixture_path().to_string_lossy().into_owned(),
-            "--log".to_string(),
-            log.to_string_lossy().into_owned(),
-        ],
+        args,
         env: BTreeMap::new(),
     }
 }
@@ -145,7 +157,7 @@ fn start_fake(
     manager: &mut LspManager,
     root: &Path,
     log: &Path,
-    sink: Arc<RecordingSink>,
+    sink: Arc<dyn DiagnosticSink>,
 ) -> LspStartReport {
     manager.start_all(vec![fake_config("fake", log)], root, sink)
 }
@@ -165,7 +177,7 @@ fn lsp_stdio_initialize_open_change_close_and_stop() {
 
     let sink = Arc::new(RecordingSink::default());
     let mut manager = LspManager::default();
-    let report = start_fake(&mut manager, dir.path(), &log, Arc::clone(&sink));
+    let report = start_fake(&mut manager, dir.path(), &log, sink.clone());
     assert!(report.is_ok(), "start errors: {:?}", report.errors);
     assert_eq!(report.servers.len(), 1);
     assert_eq!(report.servers[0].id, "fake");
@@ -264,6 +276,221 @@ fn lsp_stdio_initialize_open_change_close_and_stop() {
 }
 
 #[test]
+fn lsp_completion_hover_definition_roundtrip() {
+    if !node_available() {
+        eprintln!("skipping lsp request test: node not found in PATH");
+        return;
+    }
+
+    let dir = TempDir::new("requests");
+    let log = dir.path().join("fake-lsp.log");
+    let document_path = dir.path().join("sample.txt");
+    fs::write(&document_path, "alpha").expect("write sample");
+    let document_path = document_path.to_string_lossy().into_owned();
+
+    let sink: Arc<dyn DiagnosticSink> = Arc::new(RecordingSink::default());
+    let mut manager = LspManager::default();
+    let report = start_fake(&mut manager, dir.path(), &log, Arc::clone(&sink));
+    assert!(report.is_ok(), "start errors: {:?}", report.errors);
+    manager
+        .did_open(&document_path, "plaintext", "alpha")
+        .expect("didOpen");
+
+    // completion：1-based (2,3) → LSP 0-based (1,2)；三种 item 形态都覆盖。
+    let items = manager
+        .completion(&document_path, 2, 3)
+        .expect("completion");
+    assert_eq!(
+        items,
+        vec![
+            LspCompletionItem {
+                label: "alpha".into(),
+                kind: Some(6),
+                detail: Some("first item".into()),
+                insert_text: None,
+                text_edit: None,
+            },
+            LspCompletionItem {
+                label: "beta".into(),
+                kind: Some(3),
+                detail: None,
+                insert_text: Some("beta()".into()),
+                text_edit: None,
+            },
+            LspCompletionItem {
+                label: "gamma".into(),
+                kind: Some(14),
+                detail: None,
+                insert_text: None,
+                text_edit: Some(LspTextEdit {
+                    new_text: "gamma!".into(),
+                }),
+            },
+        ]
+    );
+    assert!(
+        wait_for_log(&log, "\"textDocument/completion\"", WAIT),
+        "completion was not sent: {}",
+        read_log(&log)
+    );
+    assert!(
+        wait_for_log(&log, "\"line\":1,\"character\":2", WAIT),
+        "completion position 应是 0-based UTF-16 (1,2)：{}",
+        read_log(&log)
+    );
+
+    // hover：1-based (4,5) → LSP (3,4)。
+    let hover = manager.hover(&document_path, 4, 5).expect("hover");
+    assert_eq!(
+        hover.contents,
+        vec![LspHoverContent {
+            value: "**fake** hover".into(),
+            is_markdown: true,
+        }]
+    );
+    assert!(
+        wait_for_log(&log, "\"textDocument/hover\"", WAIT),
+        "hover was not sent: {}",
+        read_log(&log)
+    );
+
+    // definition：Location 与 LocationLink 拍平；link 取 targetSelectionRange。
+    let locations = manager
+        .definition(&document_path, 6, 1)
+        .expect("definition");
+    assert_eq!(locations.len(), 2);
+    assert_eq!(locations[0].path, document_path);
+    assert_eq!((locations[0].line, locations[0].column), (1, 1));
+    assert_eq!(
+        (locations[1].line, locations[1].column),
+        (3, 2),
+        "LocationLink 应取 targetSelectionRange 起点（2,1）→ 1-based (3,2)"
+    );
+    assert!(
+        wait_for_log(&log, "\"textDocument/definition\"", WAIT),
+        "definition was not sent: {}",
+        read_log(&log)
+    );
+
+    manager.stop_all();
+}
+
+#[test]
+fn lsp_request_error_paths_are_structured() {
+    if !node_available() {
+        eprintln!("skipping lsp request error test: node not found in PATH");
+        return;
+    }
+
+    let dir = TempDir::new("request-errors");
+    let log = dir.path().join("fake-lsp.log");
+    let sink: Arc<dyn DiagnosticSink> = Arc::new(RecordingSink::default());
+    let mut manager = LspManager::default();
+
+    // 文件未 didOpen（含服务器未启动的场景）：结构化 DocumentNotOpen，不 panic。
+    let missing = dir.path().join("missing.txt");
+    let missing = missing.to_string_lossy().into_owned();
+    let error = manager
+        .completion(&missing, 1, 1)
+        .expect_err("未打开的文档应返回错误");
+    assert!(
+        matches!(error, LspError::DocumentNotOpen { .. }),
+        "应得到 DocumentNotOpen，实际 {error:?}"
+    );
+
+    // server 对 hover 返回 JSON-RPC error：原样映射为 LspError::Rpc。
+    let report = manager.start_all(
+        vec![fake_config_with_flags(
+            "fake",
+            &log,
+            &["--rpc-error", "textDocument/hover"],
+        )],
+        dir.path(),
+        Arc::clone(&sink),
+    );
+    assert!(report.is_ok(), "start errors: {:?}", report.errors);
+
+    let document_path = dir.path().join("sample.txt");
+    fs::write(&document_path, "alpha").expect("write sample");
+    let document_path = document_path.to_string_lossy().into_owned();
+    manager
+        .did_open(&document_path, "plaintext", "alpha")
+        .expect("didOpen");
+
+    let error = manager
+        .hover(&document_path, 1, 1)
+        .expect_err("hover 应得到 Rpc 错误");
+    match error {
+        LspError::Rpc { code, message, .. } => {
+            assert_eq!(code, -32603);
+            assert!(message.contains("fake"), "message: {message}");
+        }
+        other => panic!("应得到 Rpc 错误，实际 {other:?}"),
+    }
+
+    // Rpc 错误不杀进程：同 server 的 completion 仍可用。
+    let items = manager
+        .completion(&document_path, 1, 1)
+        .expect("completion");
+    assert_eq!(items.len(), 3);
+
+    manager.stop_all();
+}
+
+#[test]
+fn lsp_request_timeout_terminates_server() {
+    if !node_available() {
+        eprintln!("skipping lsp request timeout test: node not found in PATH");
+        return;
+    }
+
+    let dir = TempDir::new("request-timeout");
+    let log = dir.path().join("fake-lsp.log");
+    let sink: Arc<dyn DiagnosticSink> = Arc::new(RecordingSink::default());
+    let mut manager = LspManager::default();
+    let report = manager.start_all(
+        vec![fake_config_with_flags(
+            "fake",
+            &log,
+            &["--hang", "textDocument/completion"],
+        )],
+        dir.path(),
+        Arc::clone(&sink),
+    );
+    assert!(report.is_ok(), "start errors: {:?}", report.errors);
+
+    let document_path = dir.path().join("sample.txt");
+    fs::write(&document_path, "alpha").expect("write sample");
+    let document_path = document_path.to_string_lossy().into_owned();
+    manager
+        .did_open(&document_path, "plaintext", "alpha")
+        .expect("didOpen");
+
+    let started = Instant::now();
+    let error = manager
+        .completion(&document_path, 1, 1)
+        .expect_err("挂起的 server 应超时");
+    assert!(
+        started.elapsed() >= Duration::from_secs(10),
+        "应等待完整超时时长，实际 {:?}",
+        started.elapsed()
+    );
+    match error {
+        LspError::Timeout { timeout_ms, .. } => assert_eq!(timeout_ms, 10_000),
+        other => panic!("应得到 Timeout 错误，实际 {other:?}"),
+    }
+    assert!(
+        wait_for_log(&log, "\"hang\":true", WAIT),
+        "fake server 未收到挂起请求: {}",
+        read_log(&log)
+    );
+    // 超时按既有语义终止子进程。
+    assert!(!manager.is_running("fake"));
+
+    manager.stop_all();
+}
+
+#[test]
 fn lsp_start_failure_is_isolated_from_other_servers() {
     if !node_available() {
         eprintln!("skipping lsp isolation test: node not found in PATH");
@@ -272,7 +499,7 @@ fn lsp_start_failure_is_isolated_from_other_servers() {
 
     let dir = TempDir::new("isolation");
     let log = dir.path().join("fake-lsp.log");
-    let sink = Arc::new(RecordingSink::default());
+    let sink: Arc<dyn DiagnosticSink> = Arc::new(RecordingSink::default());
     let mut manager = LspManager::default();
 
     let mut missing = LspServerConfig::new("missing", "lc-lsp-command-that-does-not-exist-7f4a1c");

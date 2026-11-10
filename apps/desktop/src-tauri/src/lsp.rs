@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use lc_core::lsp::{
     Diagnostic, DiagnosticSink, LspError, LspManager, LspServerConfig, LspStartReport,
 };
-use lc_proto::{CommandResult, ErrorBody, ErrorCode};
+use lc_proto::{CommandResult, ErrorBody, ErrorCode, LspCompletionItem, LspHover, LspLocation};
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -112,6 +112,40 @@ impl LspState {
 
     fn did_close(&self, path: &str) -> Result<usize, ErrorBody> {
         self.lock()?.manager.did_close(path).map_err(lsp_error)
+    }
+
+    /// 补全；文档未 didOpen / 无 server / 超时 / server 错误都归一为 ErrorBody。
+    fn completion(
+        &self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LspCompletionItem>, ErrorBody> {
+        self.lock()?
+            .manager
+            .completion(path, line, column)
+            .map_err(lsp_error)
+    }
+
+    /// 悬停；该位置无悬停时 `contents` 为空数组。
+    fn hover(&self, path: &str, line: u32, column: u32) -> Result<LspHover, ErrorBody> {
+        self.lock()?
+            .manager
+            .hover(path, line, column)
+            .map_err(lsp_error)
+    }
+
+    /// 跳转；空数组表示无定义。
+    fn definition(
+        &self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LspLocation>, ErrorBody> {
+        self.lock()?
+            .manager
+            .definition(path, line, column)
+            .map_err(lsp_error)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, LspStateInner>, ErrorBody> {
@@ -218,4 +252,52 @@ pub(crate) async fn lsp_stop_all(
         .await
         .map_err(|error| ErrorBody::new(ErrorCode::Internal, format!("LSP 停止任务失败：{error}")))?
         .map(|()| CommandResult::Ack)
+}
+
+/// `textDocument/completion`；`line` / `column` 为 1-based（与 Monaco 一致）。
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn lsp_completion(
+    path: String,
+    line: u32,
+    column: u32,
+    state: tauri::State<'_, LspState>,
+) -> Result<Vec<LspCompletionItem>, ErrorBody> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.completion(&path, line, column))
+        .await
+        .map_err(|error| {
+            ErrorBody::new(ErrorCode::Internal, format!("LSP 补全任务失败：{error}"))
+        })?
+}
+
+/// `textDocument/hover`；该位置无悬停时 `contents` 为空数组。
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn lsp_hover(
+    path: String,
+    line: u32,
+    column: u32,
+    state: tauri::State<'_, LspState>,
+) -> Result<LspHover, ErrorBody> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.hover(&path, line, column))
+        .await
+        .map_err(|error| {
+            ErrorBody::new(ErrorCode::Internal, format!("LSP 悬停任务失败：{error}"))
+        })?
+}
+
+/// `textDocument/definition`；空数组表示无定义。
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn lsp_definition(
+    path: String,
+    line: u32,
+    column: u32,
+    state: tauri::State<'_, LspState>,
+) -> Result<Vec<LspLocation>, ErrorBody> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.definition(&path, line, column))
+        .await
+        .map_err(|error| {
+            ErrorBody::new(ErrorCode::Internal, format!("LSP 跳转任务失败：{error}"))
+        })?
 }

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use lc_proto::{LspCompletionItem, LspHover, LspLocation};
 use serde::{Deserialize, Serialize};
 
 use super::LspError;
@@ -152,6 +153,34 @@ impl LspManager {
         self.dispatch("didClose", ids, |client| client.did_close(path))
     }
 
+    /// `textDocument/completion`：对打开过该路径的第一个可用 server 请求。
+    ///
+    /// 全部失败返回第一个错误；没有 server 打开过该路径时返回
+    /// [`LspError::DocumentNotOpen`]（含服务器未启动的场景）。
+    pub fn completion(
+        &mut self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LspCompletionItem>, LspError> {
+        self.request_first(path, |client| client.completion(path, line, column))
+    }
+
+    /// `textDocument/hover`；无悬停时 `contents` 为空数组。
+    pub fn hover(&mut self, path: &str, line: u32, column: u32) -> Result<LspHover, LspError> {
+        self.request_first(path, |client| client.hover(path, line, column))
+    }
+
+    /// `textDocument/definition`；空数组表示无定义。
+    pub fn definition(
+        &mut self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LspLocation>, LspError> {
+        self.request_first(path, |client| client.definition(path, line, column))
+    }
+
     pub fn is_running(&self, id: &str) -> bool {
         self.clients.get(id).is_some_and(LspClient::is_running)
     }
@@ -174,6 +203,35 @@ impl LspManager {
             .filter(|(_, client)| client.is_open(path))
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// 请求-响应路由：结果只取一个 server（第一个成功响应的）。单个 server
+    /// 的 Rpc / 协议错误不级联，继续尝试下一个；请求内部的超时 / 关闭错误
+    /// 已自行终止该子进程。无可用 server 时归一为 DocumentNotOpen。
+    fn request_first<T>(
+        &mut self,
+        path: &str,
+        mut action: impl FnMut(&mut LspClient) -> Result<T, LspError>,
+    ) -> Result<T, LspError> {
+        let ids = self.open_servers(path);
+        let mut first_error = None;
+        for id in ids {
+            let Some(client) = self.clients.get_mut(&id) else {
+                continue;
+            };
+            match action(client) {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    eprintln!("lsp: request 失败（{id}）：{error}");
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        Err(first_error.unwrap_or_else(|| LspError::DocumentNotOpen {
+            path: path.to_string(),
+        }))
     }
 
     fn dispatch(

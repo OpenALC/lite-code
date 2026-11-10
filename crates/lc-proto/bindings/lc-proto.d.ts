@@ -1,6 +1,6 @@
 // 由 lc-proto codegen 生成，请勿手改。
 // 重新生成：cargo run --locked -p lc-proto --features codegen --bin codegen
-// 契约版本：0.7.0
+// 契约版本：0.8.0
 
 // ---- lc_proto::ErrorCode ----
 export type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch" | "permission_denied" | "db_unavailable" | "db_rejected" | "db_read_only" | "git_unavailable" | "git_rejected";
@@ -146,6 +146,34 @@ message: string,
  * Unix 秒。
  */
 timestamp: number, };
+
+// ---- lc_proto::LspCompletionItem ----
+export type LspCompletionItem = { label: string, 
+/**
+ * LSP CompletionItemKind（1–25）；缺省或越界时前端按 Text 处理。
+ */
+kind?: number | null, detail?: string | null, 
+/**
+ * 缺省时前端用 label 作为插入文本。
+ */
+insertText?: string | null, 
+/**
+ * plain insert 文本编辑。v0 只取 `newText`；编辑范围由编辑器按当前词
+ * 计算（textEdit 存在时优先于 insertText）。
+ */
+textEdit?: LspTextEdit | null, };
+
+// ---- lc_proto::LspTextEdit ----
+export type LspTextEdit = { newText: string, };
+
+// ---- lc_proto::LspHover ----
+export type LspHover = { contents: Array<LspHoverContent>, };
+
+// ---- lc_proto::LspHoverContent ----
+export type LspHoverContent = { value: string, isMarkdown: boolean, };
+
+// ---- lc_proto::LspLocation ----
+export type LspLocation = { path: string, line: number, column: number, };
 
 // ---- lc_proto::CoreCommand ----
 export type CoreCommand = { "method": "node_detect" } | { "method": "node_set_manual", path: string, } | { "method": "node_download_portable", version: string | null, } | { "method": "shell_detect" } | { "method": "workspace_root" } | { "method": "workspace_open", path: string, } | { "method": "fs_read_dir", path: string, } | { "method": "fs_read_file", path: string, } | { "method": "fs_write_file", path: string, content: string, } | { "method": "session_create", mode: SessionMode, task_id?: string | null, } | { "method": "agent_send", session_id: string, text: string, } | { "method": "agent_cancel", session_id: string, } | { "method": "approval_resolve", session_id: string, approval_id: number, decision: ApprovalDecision, } | { "method": "task_list" } | { "method": "task_create", title: string, session_id: string | null, } | { "method": "task_start", task_id: string, } | { "method": "task_cancel", task_id: string, } | { "method": "task_apply", task_id: string, } | { "method": "task_discard", task_id: string, } | { "method": "task_diff", task_id: string, } | { "method": "task_bind_session", task_id: string, session_id: string | null, } | { "method": "db_list" } | { "method": "db_connect", connection_id: string, } | { "method": "db_disconnect", connection_id: string, } | { "method": "db_schema", connection_id: string, } | { "method": "db_query", connection_id: string, sql: string, limit: number | null, } | { "method": "db_execute", connection_id: string, sql: string, } | { "method": "db_explain", connection_id: string, sql: string, } | { "method": "db_save_connection", connection: DbConnectionConfig, } | { "method": "db_delete_connection", connection_id: string, } | { "method": "git_status" } | { "method": "git_diff", path: string | null, staged: boolean, } | { "method": "git_stage", paths: Array<string>, } | { "method": "git_unstage", paths: Array<string>, } | { "method": "git_commit", message: string, } | { "method": "git_log", limit: number | null, } | { "method": "contract_info" };

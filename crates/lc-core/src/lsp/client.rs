@@ -1,5 +1,5 @@
 //! 单个 stdio LSP server 客户端：Content-Length framing、JSON-RPC 2.0、
-//! 文档同步与诊断接收。
+//! 文档同步、诊断接收与补全 / 悬停 / 跳转请求。
 //!
 //! 消息读取在独立线程完成：响应经 `mpsc` 交给 [`LspClient::initialize`] /
 //! `shutdown` 的等待方；`publishDiagnostics` 通知直接分发给 [`DiagnosticSink`]；
@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use lc_proto::{LspCompletionItem, LspHover, LspHoverContent, LspLocation, LspTextEdit};
+
 use super::LspError;
 use super::config::LspServerConfig;
 use super::diagnostic::{Diagnostic, DiagnosticSink};
@@ -31,6 +33,8 @@ use crate::process::scrub_secret_env;
 pub const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 /// `shutdown` 请求超时；超时后直接杀进程，不阻塞退出流程。
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// completion / hover / definition 请求超时；超时按既有语义终止子进程。
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const STOP_GRACE: Duration = Duration::from_millis(750);
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -448,6 +452,73 @@ impl LspClient {
             .contains_key(&key)
     }
 
+    /// `textDocument/completion`；文档未 didOpen 返回 [`LspError::DocumentNotOpen`]。
+    ///
+    /// `line` / `column` 为 1-based（与前端坐标一致），内部换算成 LSP 的
+    /// 0-based UTF-16 position。
+    pub fn completion(
+        &mut self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LspCompletionItem>, LspError> {
+        let params = self.text_document_position(path, line, column)?;
+        let result = self.request("textDocument/completion", params, REQUEST_TIMEOUT)?;
+        Ok(parse_completion_result(&result))
+    }
+
+    /// `textDocument/hover`；该位置无悬停时 `contents` 为空数组。
+    pub fn hover(&mut self, path: &str, line: u32, column: u32) -> Result<LspHover, LspError> {
+        let params = self.text_document_position(path, line, column)?;
+        let result = self.request("textDocument/hover", params, REQUEST_TIMEOUT)?;
+        Ok(parse_hover_result(&result))
+    }
+
+    /// `textDocument/definition`；Location / LocationLink 拍平为位置列表，
+    /// 空数组表示无定义。
+    pub fn definition(
+        &mut self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LspLocation>, LspError> {
+        let params = self.text_document_position(path, line, column)?;
+        let result = self.request("textDocument/definition", params, REQUEST_TIMEOUT)?;
+        Ok(parse_definition_result(&result))
+    }
+
+    /// 已打开文档的 URI 与 LSP position 参数；未打开返回 DocumentNotOpen。
+    fn text_document_position(
+        &self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Value, LspError> {
+        let display = resolve_path(path, &self.workspace_root)
+            .to_string_lossy()
+            .into_owned();
+        let key = path_key(&display);
+        let uri = {
+            let guard = self
+                .documents
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            guard.open.get(&key).map(|document| document.uri.clone())
+        };
+        let Some(uri) = uri else {
+            return Err(LspError::DocumentNotOpen {
+                path: path.to_string(),
+            });
+        };
+        Ok(json!({
+            "textDocument": {"uri": uri},
+            "position": {
+                "line": line.saturating_sub(1),
+                "character": column.saturating_sub(1),
+            }
+        }))
+    }
+
     /// 尽力优雅关闭并回收子进程；幂等。
     pub fn stop(&mut self) {
         if self.stopped {
@@ -798,6 +869,147 @@ fn position(point: Option<&Value>, key: &str) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
+/// completion 结果：CompletionItem[] | CompletionList | null 三种形态；
+/// label 缺失或为空的项跳过，kind 只保留 LSP 规定的 1–25。
+fn parse_completion_result(value: &Value) -> Vec<LspCompletionItem> {
+    let items: &[Value] = match value {
+        Value::Null => &[],
+        Value::Array(items) => items,
+        Value::Object(_) => value
+            .get("items")
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice),
+        _ => &[],
+    };
+    items.iter().filter_map(parse_completion_item).collect()
+}
+
+fn parse_completion_item(value: &Value) -> Option<LspCompletionItem> {
+    let label = value.get("label").and_then(Value::as_str)?;
+    if label.is_empty() {
+        return None;
+    }
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_u64)
+        .and_then(|kind| u8::try_from(kind).ok())
+        .filter(|kind| (1..=25).contains(kind));
+    let detail = value
+        .get("detail")
+        .and_then(Value::as_str)
+        .filter(|detail| !detail.is_empty())
+        .map(str::to_string);
+    let insert_text = value
+        .get("insertText")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // TextEdit 与 InsertReplaceEdit 的 v0 统一取 newText（plain insert）。
+    let text_edit = value
+        .get("textEdit")
+        .and_then(|edit| edit.get("newText"))
+        .and_then(Value::as_str)
+        .map(|new_text| LspTextEdit {
+            new_text: new_text.to_string(),
+        });
+    Some(LspCompletionItem {
+        label: label.to_string(),
+        kind,
+        detail,
+        insert_text,
+        text_edit,
+    })
+}
+
+/// hover 结果：null 或无 contents 视为无悬停。
+fn parse_hover_result(value: &Value) -> LspHover {
+    let contents = value
+        .get("contents")
+        .map(parse_hover_contents)
+        .unwrap_or_default();
+    LspHover { contents }
+}
+
+/// MarkupContent | MarkedString | MarkedString[] 拍平为段列表。
+fn parse_hover_contents(value: &Value) -> Vec<LspHoverContent> {
+    match value {
+        Value::String(text) => vec![LspHoverContent {
+            value: text.clone(),
+            is_markdown: true,
+        }],
+        Value::Array(parts) => parts.iter().flat_map(parse_marked_string).collect(),
+        Value::Object(_) => {
+            if let Some(kind) = value.get("kind").and_then(Value::as_str) {
+                let value = value
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                vec![LspHoverContent {
+                    value,
+                    is_markdown: kind == "markdown",
+                }]
+            } else {
+                parse_marked_string(value)
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// MarkedString：字符串形式按 markdown 处理；`{language, value}` 包成围栏
+/// 代码块；其它形状忽略。
+fn parse_marked_string(value: &Value) -> Vec<LspHoverContent> {
+    if let Some(text) = value.as_str() {
+        return vec![LspHoverContent {
+            value: text.to_string(),
+            is_markdown: true,
+        }];
+    }
+    if let (Some(language), Some(code)) = (
+        value.get("language").and_then(Value::as_str),
+        value.get("value").and_then(Value::as_str),
+    ) {
+        return vec![LspHoverContent {
+            value: format!("```{language}\n{code}\n```"),
+            is_markdown: true,
+        }];
+    }
+    Vec::new()
+}
+
+/// definition 结果：Location | Location[] | LocationLink[] | null 拍平为
+/// 位置列表；无法转成路径的项跳过。
+fn parse_definition_result(value: &Value) -> Vec<LspLocation> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items.iter().filter_map(parse_location_like).collect(),
+        Value::Object(_) => parse_location_like(value).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Location `{uri, range}` 与 LocationLink `{targetUri, targetSelectionRange}`
+/// 统一取起始位置，转成 1-based 行列。
+fn parse_location_like(value: &Value) -> Option<LspLocation> {
+    let (uri, range) = if value.get("uri").is_some() {
+        (value.get("uri")?, value.get("range"))
+    } else if value.get("targetUri").is_some() {
+        let range = value
+            .get("targetSelectionRange")
+            .or_else(|| value.get("targetRange"));
+        (value.get("targetUri")?, range)
+    } else {
+        return None;
+    };
+    let path = uri_to_path(uri.as_str()?)?;
+    let start = range.and_then(|range| range.get("start"));
+    Some(LspLocation {
+        path,
+        line: position(start, "line").unwrap_or(0).saturating_add(1),
+        column: position(start, "character").unwrap_or(0).saturating_add(1),
+    })
+}
+
 fn read_message<R: BufRead>(reader: &mut R) -> std::io::Result<Option<Value>> {
     let mut content_length = None;
     loop {
@@ -1036,5 +1248,177 @@ mod tests {
 
         // LSP character 是 UTF-16 code unit：emoji 占 2。
         assert_eq!(end_position("😀"), (0, 2));
+    }
+
+    #[test]
+    fn completion_parses_array_and_completion_list_shapes() {
+        let item = |label: &str, extra: Value| {
+            let mut value = json!({"label": label});
+            if let (Some(object), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
+                object.extend(extra.clone());
+            }
+            value
+        };
+        let array = parse_completion_result(&json!([
+            item("alpha", json!({"kind": 3, "detail": "fn"})),
+            item("beta", json!({"kind": 6, "insertText": "beta()"})),
+            item(
+                "gamma",
+                json!({"textEdit": {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "newText": "gamma!"}})
+            ),
+            json!({"kind": 1}),
+            "not-an-object",
+        ]));
+        assert_eq!(
+            array,
+            vec![
+                LspCompletionItem {
+                    label: "alpha".into(),
+                    kind: Some(3),
+                    detail: Some("fn".into()),
+                    insert_text: None,
+                    text_edit: None,
+                },
+                LspCompletionItem {
+                    label: "beta".into(),
+                    kind: Some(6),
+                    detail: None,
+                    insert_text: Some("beta()".into()),
+                    text_edit: None,
+                },
+                LspCompletionItem {
+                    label: "gamma".into(),
+                    kind: None,
+                    detail: None,
+                    insert_text: None,
+                    text_edit: Some(LspTextEdit {
+                        new_text: "gamma!".into(),
+                    }),
+                },
+            ]
+        );
+
+        let list = parse_completion_result(&json!({
+            "isIncomplete": false,
+            "items": [item("delta", json!({"kind": 14}))]
+        }));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].label, "delta");
+        assert_eq!(list[0].kind, Some(14));
+
+        assert!(parse_completion_result(&Value::Null).is_empty());
+        assert!(parse_completion_result(&json!({"unexpected": true})).is_empty());
+    }
+
+    #[test]
+    fn completion_kind_is_clamped_to_lsp_range() {
+        let items = parse_completion_result(&json!([
+            {"label": "zero", "kind": 0},
+            {"label": "ok", "kind": 25},
+            {"label": "too-big", "kind": 99},
+        ]));
+        assert_eq!(items[0].kind, None);
+        assert_eq!(items[1].kind, Some(25));
+        assert_eq!(items[2].kind, None);
+    }
+
+    #[test]
+    fn hover_flattens_markup_and_marked_string_shapes() {
+        let markdown = parse_hover_result(&json!({
+            "contents": {"kind": "markdown", "value": "**bold**"}
+        }));
+        assert_eq!(
+            markdown.contents,
+            vec![LspHoverContent {
+                value: "**bold**".into(),
+                is_markdown: true,
+            }]
+        );
+
+        let plain = parse_hover_result(&json!({
+            "contents": {"kind": "plaintext", "value": "a_b"}
+        }));
+        assert_eq!(
+            plain.contents,
+            vec![LspHoverContent {
+                value: "a_b".into(),
+                is_markdown: false,
+            }]
+        );
+
+        let marked = parse_hover_result(&json!({
+            "contents": [
+                "raw markdown",
+                {"language": "rust", "value": "fn main() {}"},
+                {"unsupported": true},
+            ]
+        }));
+        assert_eq!(marked.contents.len(), 2);
+        assert_eq!(marked.contents[0].value, "raw markdown");
+        assert!(marked.contents[0].is_markdown);
+        assert_eq!(marked.contents[1].value, "```rust\nfn main() {}\n```");
+        assert!(marked.contents[1].is_markdown);
+
+        assert!(parse_hover_result(&Value::Null).contents.is_empty());
+        assert!(parse_hover_result(&json!({})).contents.is_empty());
+    }
+
+    #[test]
+    fn definition_flattens_location_and_location_link_shapes() {
+        #[cfg(windows)]
+        let (main_rs, lib_rs, jump_txt) = (r"\tmp\main.rs", r"\tmp\lib.rs", r"\tmp\jump.txt");
+        #[cfg(not(windows))]
+        let (main_rs, lib_rs, jump_txt) = ("/tmp/main.rs", "/tmp/lib.rs", "/tmp/jump.txt");
+
+        let single = parse_definition_result(&json!({
+            "uri": "file:///tmp/main.rs",
+            "range": {
+                "start": {"line": 0, "character": 4},
+                "end": {"line": 0, "character": 8}
+            }
+        }));
+        assert_eq!(
+            single,
+            vec![LspLocation {
+                path: main_rs.into(),
+                line: 1,
+                column: 5,
+            }]
+        );
+
+        let mixed = parse_definition_result(&json!([
+            {
+                "targetUri": "file:///tmp/lib.rs",
+                "targetRange": {"start": {"line": 2, "character": 0}},
+                "targetSelectionRange": {"start": {"line": 2, "character": 3}}
+            },
+            {
+                "uri": "file:///tmp/jump.txt",
+                "range": {"start": {"line": 9, "character": 1}}
+            },
+        ]));
+        assert_eq!(
+            mixed,
+            vec![
+                LspLocation {
+                    path: lib_rs.into(),
+                    line: 3,
+                    column: 4,
+                },
+                LspLocation {
+                    path: jump_txt.into(),
+                    line: 10,
+                    column: 2,
+                },
+            ]
+        );
+
+        assert!(parse_definition_result(&Value::Null).is_empty());
+        assert!(
+            parse_definition_result(&json!([
+                {"uri": "https://example.com/x.rs", "range": {"start": {"line": 0, "character": 0}}}
+            ]))
+            .is_empty()
+        );
     }
 }

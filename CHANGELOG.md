@@ -68,6 +68,11 @@
 - 供应商交互收尾：保存禁用表单、页签常驻保留草稿、稳定模型行 key、短 Key 全掩码
 - 插件系统 v0：Node/JS 扩展宿主、WASM WASI 命令、声明式 MCP/LSP、插件管理页与命令面板
 - 插件安全边界：项目插件默认关闭、清单路径校验、独立进程、WASM 无文件/网络、密钥环境清理
+- `lc-proto` 契约 v0.8：LSP 编辑器特性 DTO（`LspCompletionItem`/`LspHover`/`LspLocation`，行列 1-based）
+- LSP 智能三件套：`textDocument/completion|hover|definition` 按路径请求（10s 超时、
+  未 didOpen / 无 server / server error 一律结构化错误）；Monaco 异步 provider 接入
+  （仅已启动 server 的语言注册，LSP kind→Monaco kind、MarkedString 拍平、
+  plain insert 文本编辑），跨文件跳转经 `registerEditorOpener` 落到标签系统并复用 editorReveal
 - Agent 模型与思考：会话创建前选择模型/思考挡位，透传 `session_create`；`max` 归一 `high`
 - Agent 上下文预算：无会话时展示所选模型 `contextK` 与压缩阈值；新增“新会话”重置消息流
 - Agent 文本附件：原生文件选择器，UTF-8、10 个/256 KiB/总 1 MiB 上限，chips 展示与移除

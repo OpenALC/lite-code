@@ -3,13 +3,38 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type * as monacoNs from 'monaco-editor'
 
-import { lspDidChange, lspDidClose, lspDidOpen, writeFile } from '../services/bridge'
+import {
+  lspCompletion,
+  lspDefinition,
+  lspDidChange,
+  lspDidClose,
+  lspDidOpen,
+  lspHover,
+  readFile,
+  workspaceRoot,
+  writeFile,
+} from '../services/bridge'
 import { pushAgentContext } from '../services/agentContext'
-import { consumeReveal, subscribeReveal } from '../services/editorReveal'
+import { consumeReveal, requestReveal, subscribeReveal } from '../services/editorReveal'
 import { languageForPath } from '../services/editorLanguage'
 import { diagnosticsFor, subscribeDiagnostics } from '../services/lspDiagnostics'
+import {
+  emptyCompletionList,
+  toCompletionSuggestions,
+  toDefinitionLocations,
+  toHover,
+} from '../services/lspProviders'
+import { lspLanguages, subscribeLspLanguages } from '../services/lspServers'
 import type { EditorFileStrategy } from '../services/largeFile'
-import { activeTab, markSaved, tabsStore, updateContent } from '../services/tabs'
+import { resolveEditorStrategy } from '../services/largeFile'
+import {
+  activeTab,
+  activateTab,
+  markSaved,
+  openTab,
+  tabsStore,
+  updateContent,
+} from '../services/tabs'
 import { subscribePrefs, uiPrefs, type UiPrefs } from '../services/themeStore'
 import type { Tab, TabsState } from '../services/tabs'
 
@@ -22,6 +47,10 @@ let unsubTabs: (() => void) | null = null
 let unsubPrefs: (() => void) | null = null
 let unsubReveal: (() => void) | null = null
 let unsubDiagnostics: (() => void) | null = null
+let unsubLspServers: (() => void) | null = null
+/** 已注册的 LSP provider（按语言集合整体重建）与跨文件跳转 opener。 */
+let lspProviderDisposables: monacoNs.IDisposable[] = []
+let lspEditorOpener: monacoNs.IDisposable | null = null
 let lspTimer: ReturnType<typeof setTimeout> | null = null
 const lspOpened = new Map<string, string>()
 let removeContext: (() => void) | null = null
@@ -183,6 +212,133 @@ function reopenLspDocuments(): void {
       lspOpened.set(tab.path, languageForPath(tab.path))
       void lspDidOpen(tab.path, languageForPath(tab.path), tab.content)
     }
+  }
+}
+
+/**
+ * model → 标签 path。用 Uri.file(path).toString() 全等比较（与 modelUri 同一
+ * 构造方式），规避 Uri 归一化差异；未匹配的（内存缓冲区等）返回 null。
+ */
+function pathForModel(model: monacoNs.editor.ITextModel): string | null {
+  if (!monacoRef) return null
+  const uri = model.uri.toString()
+  const tab = tabsStore
+    .get()
+    .tabs.find(tab => tab.path && monacoRef!.Uri.file(tab.path).toString() === uri)
+  return tab?.path ?? null
+}
+
+/** uri → 展示路径：优先命中已打开标签，否则按 fsPath 还原（同平台往返一致）。 */
+function pathForUri(uri: monacoNs.Uri): string | null {
+  if (!monacoRef || uri.scheme !== 'file') return null
+  const direct = tabsStore
+    .get()
+    .tabs.find(tab => tab.path && monacoRef!.Uri.file(tab.path).toString() === uri.toString())
+  if (direct?.path) return direct.path
+  return uri.fsPath
+}
+
+/** definition 命中后的落点跳转：已开标签激活 + 定位；未开先读后开再定位。 */
+async function jumpToLocation(location: {
+  path: string
+  line: number
+  column: number
+}): Promise<void> {
+  const existing = tabsStore.get().tabs.find(tab => tab.path === location.path)
+  if (existing) {
+    activateTab(existing.id)
+    requestReveal(existing.id, location.line, location.column)
+    return
+  }
+  const root = await workspaceRoot()
+  if (!root.ok || !root.data.root) return
+  const res = await readFile(root.data.root, location.path)
+  if (!res.ok) return
+  openTab({
+    id: location.path,
+    title: location.path.replace(/\\/g, '/').split('/').pop() ?? location.path,
+    path: location.path,
+    content: res.data.text,
+    strategy: resolveEditorStrategy(res.data.text.length),
+  })
+  requestReveal(location.path, location.line, location.column)
+}
+
+/**
+ * monaco 跨文件跳转（definition 返回其它文件）由标签系统承接：
+ * registerEditorOpener 在默认 handler 之前执行，返回 true 表示已处理。
+ */
+function registerLspEditorOpener(): void {
+  const monaco = monacoRef
+  if (!monaco) return
+  lspEditorOpener = monaco.editor.registerEditorOpener({
+    openCodeEditor(_source, resource, selectionOrPosition) {
+      const path = pathForUri(resource)
+      if (!path) return false
+      const line =
+        selectionOrPosition && 'lineNumber' in selectionOrPosition
+          ? selectionOrPosition.lineNumber
+          : 1
+      const column =
+        selectionOrPosition && 'lineNumber' in selectionOrPosition
+          ? selectionOrPosition.column
+          : 1
+      void jumpToLocation({ path, line, column })
+      return true
+    },
+  })
+}
+
+/**
+ * 按语言集合注册 LSP 三件套 provider（补全 / 悬停 / 跳转）。
+ * 只在有已启动 server 的语言上注册；语言集合变化时整体重建，
+ * 无 server 的语言不注册，Monaco 保留内置建议。
+ */
+function syncLspProviders(languageIds: readonly string[]): void {
+  const monaco = monacoRef
+  if (!monaco) return
+  for (const disposable of lspProviderDisposables) disposable.dispose()
+  lspProviderDisposables = []
+  for (const languageId of languageIds) {
+    lspProviderDisposables.push(
+      monaco.languages.registerCompletionItemProvider(languageId, {
+        async provideCompletionItems(model, position, _context, token) {
+          const path = pathForModel(model)
+          if (!path || !lspOpened.has(path)) return emptyCompletionList()
+          const res = await lspCompletion(path, position.lineNumber, position.column)
+          if (!res.ok || token.isCancellationRequested) return emptyCompletionList()
+          return {
+            suggestions: toCompletionSuggestions(
+              res.data,
+              position,
+              model.getWordUntilPosition(position),
+            ),
+          }
+        },
+      }),
+    )
+    lspProviderDisposables.push(
+      monaco.languages.registerHoverProvider(languageId, {
+        async provideHover(model, position, token) {
+          const path = pathForModel(model)
+          if (!path || !lspOpened.has(path)) return null
+          const res = await lspHover(path, position.lineNumber, position.column)
+          if (!res.ok || token.isCancellationRequested) return null
+          return toHover(res.data)
+        },
+      }),
+    )
+    lspProviderDisposables.push(
+      monaco.languages.registerDefinitionProvider(languageId, {
+        async provideDefinition(model, position, token) {
+          const path = pathForModel(model)
+          if (!path || !lspOpened.has(path)) return null
+          const res = await lspDefinition(path, position.lineNumber, position.column)
+          if (!res.ok || token.isCancellationRequested) return null
+          return toDefinitionLocations(res.data, target => monaco.Uri.file(target))
+        },
+      }),
+    )
   }
 }
 
@@ -364,6 +520,9 @@ onMounted(async () => {
   unsubTabs = tabsStore.subscribe(syncFromStore)
   unsubReveal = subscribeReveal(() => applyReveal())
   unsubDiagnostics = subscribeDiagnostics(() => applyDiagnostics())
+  unsubLspServers = subscribeLspLanguages(syncLspProviders)
+  syncLspProviders(lspLanguages())
+  registerLspEditorOpener()
   unsubPrefs = subscribePrefs(prefs => {
     monacoRef?.editor.setTheme(prefs.theme === 'light' ? 'lite-code-light' : 'lite-code-dark')
     applyEditorPrefs(prefs)
@@ -398,6 +557,11 @@ onBeforeUnmount(() => {
   unsubPrefs?.()
   unsubReveal?.()
   unsubDiagnostics?.()
+  unsubLspServers?.()
+  for (const disposable of lspProviderDisposables) disposable.dispose()
+  lspProviderDisposables = []
+  lspEditorOpener?.dispose()
+  lspEditorOpener = null
   if (lspTimer) clearTimeout(lspTimer)
   for (const path of lspOpened.keys()) void lspDidClose(path)
   lspOpened.clear()

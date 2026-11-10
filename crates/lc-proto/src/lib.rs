@@ -10,6 +10,7 @@ pub mod db;
 pub mod error;
 pub mod event;
 pub mod git;
+pub mod lsp;
 pub mod runtime;
 pub mod task;
 
@@ -25,6 +26,7 @@ pub use db::{
 pub use error::{ErrorBody, ErrorCode};
 pub use event::{CoreEvent, EventEnvelope};
 pub use git::{GitCommit, GitFileStatus, GitStatus};
+pub use lsp::{LspCompletionItem, LspHover, LspHoverContent, LspLocation, LspTextEdit};
 pub use runtime::{
     NodeFailureReason, NodeHealth, NodeProbeAttempt, NodeRuntimeInfo, NodeSource, NodeStatus,
     SemVer, ShellInfo, ShellKind,

@@ -85,6 +85,7 @@ import {
   type DiagnosticsByPath,
   type ProblemFilter,
 } from './services/lspDiagnostics'
+import { setLspLanguages } from './services/lspServers'
 import { matchQuickNav, parseQuickQuery } from './services/quickPalette'
 import {
   loadQuickRecent,
@@ -470,6 +471,9 @@ function onExtensionsChanged(): void {
 
 function startLsp(): void {
   void lspStartPlugins().then(res => {
+    // 无论成败都刷新注册表：失败（如全部 server 启动错误）等价于无 server，
+    // CodeEditor 会撤掉对应语言的补全/悬停/跳转 provider。
+    setLspLanguages(res.ok ? res.data.servers.flatMap(server => server.languageIds) : [])
     if (res.ok) window.dispatchEvent(new Event('lsp:started'))
   })
 }

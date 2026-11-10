@@ -1,17 +1,29 @@
 #!/usr/bin/env node
 // Minimal fake LSP server used by lc-core integration tests.
 //
-// Usage: node fake_lsp_server.mjs --log <path>
+// Usage: node fake_lsp_server.mjs --log <path> [--hang <method>] [--rpc-error <method>]
 //
 // It implements just enough of LSP v0: initialize/initialized, didOpen,
-// didChange, didClose, shutdown/exit, and publishDiagnostics. Every received
-// method is appended to the log as one JSON line so the Rust test can verify
-// ordering and payloads without a second IPC channel.
+// didChange, didClose, shutdown/exit, publishDiagnostics, plus the editor
+// feature requests (completion/hover/definition). Every received method is
+// appended to the log as one JSON line so the Rust test can verify ordering
+// and payloads without a second IPC channel.
+//
+// --hang <method>:     the method is logged but never answered (timeout tests).
+// --rpc-error <method>: the method is answered with a JSON-RPC error.
 
 import { appendFileSync } from 'node:fs'
 
 const logIndex = process.argv.indexOf('--log')
 const logPath = logIndex >= 0 ? process.argv[logIndex + 1] : process.env.LC_FAKE_LSP_LOG
+
+function flagValue(flag) {
+  const index = process.argv.indexOf(flag)
+  return index >= 0 ? process.argv[index + 1] : undefined
+}
+
+const HANG_ON = flagValue('--hang')
+const RPC_ERROR_ON = flagValue('--rpc-error')
 
 function log(entry) {
   if (!logPath) return
@@ -38,6 +50,23 @@ function publish(uri, diagnostics) {
 
 function handle(message) {
   const method = typeof message.method === 'string' ? message.method : ''
+
+  if (message.id !== undefined) {
+    if (method === HANG_ON) {
+      log({ method, hang: true })
+      return
+    }
+    if (method === RPC_ERROR_ON) {
+      log({ method, rpcError: true })
+      send({
+        jsonrpc: '2.0',
+        id: message.id,
+        error: { code: -32603, message: 'fake: method failed' },
+      })
+      return
+    }
+  }
+
   if (method === 'initialize') {
     log({ method, params: message.params })
     send({
@@ -101,6 +130,85 @@ function handle(message) {
     const uri = message.params.textDocument.uri
     log({ method, uri })
     publish(uri, [])
+    return
+  }
+
+  if (method === 'textDocument/completion') {
+    const position = message.params.position
+    log({
+      method,
+      uri: message.params.textDocument.uri,
+      line: position.line,
+      character: position.character,
+    })
+    send({
+      jsonrpc: '2.0',
+      id: message.id,
+      result: [
+        { label: 'alpha', kind: 6, detail: 'first item' },
+        { label: 'beta', kind: 3, insertText: 'beta()' },
+        {
+          label: 'gamma',
+          kind: 14,
+          textEdit: {
+            range: {
+              start: { line: position.line, character: 0 },
+              end: position,
+            },
+            newText: 'gamma!',
+          },
+        },
+      ],
+    })
+    return
+  }
+
+  if (method === 'textDocument/hover') {
+    const position = message.params.position
+    log({
+      method,
+      uri: message.params.textDocument.uri,
+      line: position.line,
+      character: position.character,
+    })
+    send({
+      jsonrpc: '2.0',
+      id: message.id,
+      result: {
+        contents: { kind: 'markdown', value: '**fake** hover' },
+      },
+    })
+    return
+  }
+
+  if (method === 'textDocument/definition') {
+    const uri = message.params.textDocument.uri
+    const position = message.params.position
+    log({ method, uri, line: position.line, character: position.character })
+    send({
+      jsonrpc: '2.0',
+      id: message.id,
+      result: [
+        {
+          uri,
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 4 },
+          },
+        },
+        {
+          targetUri: uri,
+          targetRange: {
+            start: { line: 2, character: 0 },
+            end: { line: 2, character: 3 },
+          },
+          targetSelectionRange: {
+            start: { line: 2, character: 1 },
+            end: { line: 2, character: 3 },
+          },
+        },
+      ],
+    })
     return
   }
 

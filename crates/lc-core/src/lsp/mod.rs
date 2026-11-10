@@ -1,7 +1,8 @@
 //! LSP lane（docs/EXTENSIONS.md §6）：stdio JSON-RPC 语言服务器 v0。
 //!
 //! 范围：`initialize` / `initialized` / `textDocument/didOpen` / `didChange` /
-//! `didClose` / `publishDiagnostics`。补全、悬停、跳转等请求留给后续版本。
+//! `didClose` / `publishDiagnostics`，以及按路径请求的补全 / 悬停 / 跳转
+//! （`textDocument/completion` / `hover` / `definition`，10s 超时）。
 //!
 //! 分层：
 //! - [`config`]：插件清单 `languageServers` 对应的 [`LspServerConfig`]（camelCase）；
@@ -20,7 +21,7 @@ pub mod diagnostic;
 pub mod manager;
 mod uri;
 
-pub use client::{INITIALIZE_TIMEOUT, LspClient, SHUTDOWN_TIMEOUT};
+pub use client::{INITIALIZE_TIMEOUT, LspClient, REQUEST_TIMEOUT, SHUTDOWN_TIMEOUT};
 pub use config::{LspServerConfig, LspServerInfo};
 pub use diagnostic::{Diagnostic, DiagnosticSink, DiagnosticStore};
 pub use manager::{LspManager, LspStartFailure, LspStartReport};

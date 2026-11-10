@@ -19,6 +19,9 @@ import type {
   GitCommit,
   GitFileStatus,
   GitStatus,
+  LspCompletionItem,
+  LspHover,
+  LspLocation,
   SessionInfo,
   SessionMode,
 } from '@lc-proto'
@@ -1445,6 +1448,39 @@ export async function lspDidClose(path: string): Promise<BridgeResult<AckResult>
 export async function lspStopAll(): Promise<BridgeResult<AckResult>> {
   if (!isTauri()) return { ok: true, data: { kind: 'ack' }, fallback: true }
   return asAck(await call('lsp_stop_all', {}), 'lsp_stop_all')
+}
+
+/**
+ * textDocument/completion。`line` / `column` 为 1-based（与 Monaco 一致），
+ * Rust 侧换算成 LSP 的 0-based UTF-16 position。浏览器 dev 返回空列表。
+ */
+export async function lspCompletion(
+  path: string,
+  line: number,
+  column: number,
+): Promise<BridgeResult<LspCompletionItem[]>> {
+  if (!isTauri()) return { ok: true, data: [], fallback: true }
+  return invokeCustom<LspCompletionItem[]>('lsp_completion', { path, line, column })
+}
+
+/** textDocument/hover；该位置无悬停时 `contents` 为空数组。 */
+export async function lspHover(
+  path: string,
+  line: number,
+  column: number,
+): Promise<BridgeResult<LspHover>> {
+  if (!isTauri()) return { ok: true, data: { contents: [] }, fallback: true }
+  return invokeCustom<LspHover>('lsp_hover', { path, line, column })
+}
+
+/** textDocument/definition；空数组表示无定义。 */
+export async function lspDefinition(
+  path: string,
+  line: number,
+  column: number,
+): Promise<BridgeResult<LspLocation[]>> {
+  if (!isTauri()) return { ok: true, data: [], fallback: true }
+  return invokeCustom<LspLocation[]>('lsp_definition', { path, line, column })
 }
 
 // ==== LSP 诊断事件 ====
