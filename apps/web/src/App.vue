@@ -14,7 +14,7 @@ import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
 import ProvidersPanel from './components/ProvidersPanel.vue'
 import SearchView from './components/SearchView.vue'
-import SettingsPanel from './components/SettingsPanel.vue'
+import SettingsPanel, { type SettingsSection } from './components/SettingsPanel.vue'
 import TabBar from './components/TabBar.vue'
 import TaskList from './components/TaskList.vue'
 import TaskStatusBar from './components/TaskStatusBar.vue'
@@ -758,19 +758,16 @@ function runMenu(action: () => void | Promise<void>): void {
   void action()
 }
 
-// 设置作为编辑器区的独立页签（VS Code 行为），不在窄侧栏里硬塞表单。
-const SETTINGS_TAB_ID = '__settings__'
-function openSettings(): void {
-  setAppMode('editor')
-  // 设置页需要完整编辑器宽度：暂时收起右侧 Agent/Git/DB 栏与底部面板。
-  rightVisible.value = false
-  bottomVisible.value = false
-  openTab({
-    id: SETTINGS_TAB_ID,
-    title: t('activity.settings'),
-    path: null,
-    content: '',
-  })
+// 设置为模式无关的模态浮层（Kimi Code / Zcode 行为）：任何入口打开都不切换
+// 布局、不收起侧栏/底部面板，Esc 或点遮罩关闭；供应商管理内嵌为「模型」分区。
+const settingsOpen = ref(false)
+const settingsInitial = ref<SettingsSection>('general')
+function openSettings(section: SettingsSection = 'general'): void {
+  settingsInitial.value = section
+  settingsOpen.value = true
+}
+function closeSettings(): void {
+  settingsOpen.value = false
 }
 
 const PROVIDERS_TAB_ID = '__providers__'
@@ -798,7 +795,6 @@ function openExtensions(): void {
 }
 
 watch(locale, () => {
-  renameTab(SETTINGS_TAB_ID, t('activity.settings'))
   renameTab(PROVIDERS_TAB_ID, t('providers.title'))
   renameTab(EXTENSIONS_TAB_ID, t('activity.extensions'))
 })
@@ -857,6 +853,11 @@ function cycleTabs(direction: 1 | -1): void {
 
 // 快捷键
 function onKey(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && settingsOpen.value) {
+    event.preventDefault()
+    closeSettings()
+    return
+  }
   const mod = event.ctrlKey || event.metaKey
   if (mod && event.key.toLowerCase() === 'p') {
     event.preventDefault()
@@ -899,7 +900,6 @@ onMounted(() => {
   document.documentElement.dataset.theme = prefs.value.theme
   locale.value = prefs.value.locale
   document.documentElement.lang = prefs.value.locale
-  renameTab(SETTINGS_TAB_ID, t('activity.settings'))
   renameTab(PROVIDERS_TAB_ID, t('providers.title'))
   renameTab(EXTENSIONS_TAB_ID, t('activity.extensions'))
   window.addEventListener('keydown', onKey)
@@ -1188,9 +1188,8 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="act-btn"
-          :class="{ active: activeTabId === '__settings__' }"
           :title="t('activity.settings')"
-          @click="openSettings"
+          @click="openSettings()"
         >
           <AppIcon name="settings" />
         </button>
@@ -1328,11 +1327,7 @@ onBeforeUnmount(() => {
           />
           <ProvidersPanel v-show="activeTabId === '__providers__'" />
           <template v-if="activeTabId !== '__providers__' && activeTabId !== '__extensions__'">
-            <SettingsPanel
-              v-if="activeTabId === '__settings__'"
-              @manage-providers="openProviders"
-            />
-            <CodeEditor v-else-if="openTabs.length > 0" />
+            <CodeEditor v-if="openTabs.length > 0" />
             <div
               v-else
               class="welcome"
@@ -1519,7 +1514,7 @@ onBeforeUnmount(() => {
             v-if="rightTab === 'agent'"
             :controller="agentSession"
             :workspace="projectRoot"
-            @manage-providers="openProviders"
+            @manage-providers="openSettings('providers')"
           />
           <TaskWorkbench
             v-else-if="rightTab === 'workbench'"
@@ -1555,7 +1550,7 @@ onBeforeUnmount(() => {
           <div class="agent-sidebar-footer">
             <button
               type="button"
-              @click="openProviders"
+              @click="openSettings('providers')"
             >
               <AppIcon
                 name="providers"
@@ -1565,7 +1560,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              @click="openSettings"
+              @click="openSettings()"
             >
               <AppIcon
                 name="settings"
@@ -1591,7 +1586,7 @@ onBeforeUnmount(() => {
               show-preview-toggle
               :rail-open="agentRail === 'git'"
               :preview-open="agentRail === 'preview'"
-              @manage-providers="openProviders"
+              @manage-providers="openSettings('providers')"
               @toggle-rail="toggleAgentRail('git')"
               @toggle-preview="toggleAgentRail('preview')"
             />
@@ -1674,7 +1669,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="status-item"
-        @click="openSettings"
+        @click="openSettings()"
       >
         {{ t('activity.settings') }}
       </button>
@@ -1686,6 +1681,29 @@ onBeforeUnmount(() => {
         {{ t('bottom.terminal') }}
       </button>
     </footer>
+
+    <div
+      v-if="settingsOpen"
+      class="modal-mask"
+      @click.self="closeSettings"
+    >
+      <div
+        class="settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('settings.title')"
+      >
+        <button
+          type="button"
+          class="modal-close"
+          :title="t('settings.close')"
+          @click="closeSettings"
+        >
+          <AppIcon name="x" />
+        </button>
+        <SettingsPanel :initial-section="settingsInitial" />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -2559,6 +2577,58 @@ onBeforeUnmount(() => {
 
   .right-off .right {
     display: none;
+  }
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 45%);
+}
+
+.settings-dialog {
+  position: relative;
+  width: min(880px, calc(100vw - 48px));
+  height: min(620px, calc(100vh - 64px));
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  background: var(--panel-3);
+  color: var(--fg);
+}
+
+@media (max-width: 760px) {
+  .settings-dialog {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 32px);
   }
 }
 </style>

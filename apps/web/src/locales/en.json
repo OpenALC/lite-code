@@ -574,6 +574,7 @@
   },
   "settings": {
     "title": "Settings",
+    "close": "Close",
     "general": "General",
     "modelServices": "Model services",
     "appearance": "Appearance",

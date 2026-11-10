@@ -65,6 +65,12 @@ try {
   if (command === 'evalfile') {
     const expression = fs.readFileSync(args[0], 'utf8')
     console.log(JSON.stringify(await evaluate(client, expression), null, 2))
+  } else if (command === 'shot') {
+    const file = args[0]
+    if (!file) throw new Error('missing output file')
+    const result = await client.send('Page.captureScreenshot', { format: 'png' })
+    fs.writeFileSync(file, Buffer.from(result.data, 'base64'))
+    console.log(`saved ${file}`)
   } else {
     throw new Error(`unknown command: ${command}`)
   }

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AppIcon from './AppIcon.vue'
+import ProvidersPanel from './ProvidersPanel.vue'
 import {
   AGENT_FONT_DEFAULT,
   AGENT_FONT_MAX,
@@ -28,7 +29,6 @@ import {
 
 const appVersion = __APP_VERSION__
 const { t, locale } = useI18n()
-const emit = defineEmits<{ 'manage-providers': [] }>()
 const prefs = ref(uiPrefs())
 const unsub = subscribePrefs(next => {
   prefs.value = next
@@ -39,12 +39,16 @@ const zoomLabel = computed(() => `${Math.round(prefs.value.zoom * 100)}%`)
 const fontSizeLabel = computed(() => `${prefs.value.fontSize} px`)
 const agentFontLabel = computed(() => `${prefs.value.agentFontSize} px`)
 
-type SectionId = 'general' | 'editor' | 'agent' | 'shortcuts' | 'about'
-const activeSection = ref<SectionId>('general')
-const sections = computed<{ id: SectionId; label: string; icon: string }[]>(() => [
+export type SettingsSection = 'general' | 'editor' | 'agent' | 'providers' | 'shortcuts' | 'about'
+const props = withDefaults(defineProps<{ initialSection?: SettingsSection }>(), {
+  initialSection: 'general',
+})
+const activeSection = ref<SettingsSection>(props.initialSection)
+const sections = computed<{ id: SettingsSection; label: string; icon: string }[]>(() => [
   { id: 'general', label: t('settings.general'), icon: 'settings' },
   { id: 'editor', label: t('settings.editor'), icon: 'code' },
   { id: 'agent', label: t('settings.agent'), icon: 'agent' },
+  { id: 'providers', label: t('providers.title'), icon: 'providers' },
   { id: 'shortcuts', label: t('settings.shortcuts'), icon: 'keyboard' },
   { id: 'about', label: t('settings.about'), icon: 'info' },
 ])
@@ -245,7 +249,7 @@ function changeLocale(value: string): void {
             <button
               type="button"
               class="manage"
-              @click="emit('manage-providers')"
+              @click="activeSection = 'providers'"
             >
               {{ t('settings.manageProviders') }}
             </button>
@@ -326,6 +330,12 @@ function changeLocale(value: string): void {
             <span class="muted">stdio · {{ t('settings.projectOptIn') }}</span>
           </div>
         </section>
+      </template>
+
+      <template v-else-if="activeSection === 'providers'">
+        <div class="settings-embed">
+          <ProvidersPanel />
+        </div>
       </template>
 
       <template v-else-if="activeSection === 'shortcuts'">
@@ -578,6 +588,17 @@ select {
   background: var(--bg);
   color: var(--fg-2);
   font-size: 11.5px;
+}
+
+.settings-embed {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.settings-embed :deep(.providers-page) {
+  max-width: none;
+  padding: 0 4px 16px;
 }
 
 @media (max-width: 760px) {
