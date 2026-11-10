@@ -407,7 +407,9 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - **声明式插件主题已合**（`fb1b65a`）：contributes.themes 端到端——清单校验
   （label 唯一/目录内 .json/64KiB）、ext_read_theme 防穿越、主题 JSON
   --vars 白名单防注入、设置页 select（暗/亮+插件 optgroup）、失效回落
-  dark；web 502 项全绿。EXTENSIONS §8 仅剩「语言声明」。
+  dark；web 502 项全绿。EXTENSIONS §8 语言声明已随 `f29d86a` 收官——v0 未实现仅剩
+  市场/Webview/树视图/签名/依赖/API 兼容；扩展 lane 累计：工具/延迟激活/
+  主题/语言四块全落地。
   注意：本轮子代理并发期间发生 stash 误操作事故（agent-84 误 git stash
   卷走他轨在途改动，后已被 pop 还原），主 agent 已外科手术隔离提交，
   各轨道最终状态以验收时全量门禁为准。
