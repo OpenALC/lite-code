@@ -153,7 +153,7 @@ enum LlmEvent {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> serde_json::Value;
-    fn risk(&self) -> Risk;                     // Read | Write | Execute | Network
+    fn risk(&self) -> Risk;                     // Read | Write | Execute | Network | Mutating
     fn execute(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput>;
 }
 ```
@@ -403,6 +403,7 @@ curl ... | sh       iwr ... | iex     chmod 777 /
 | `Write` | `write_file` `edit_file` | 项目内自动；项目外询问 |
 | `Execute` | `shell` `ssh_exec` | 走三层判定 |
 | `Network` | `http` `db_query` `mcp_*` | 询问（`yolo` 下自动） |
+| `Mutating` | 插件贡献的工具（`contributes.tools`，见 EXTENSIONS.md §4.1） | 询问（`yolo` 下自动）；`plan` 模式拒绝 |
 
 ### 5.4 审批 UI 约定
 

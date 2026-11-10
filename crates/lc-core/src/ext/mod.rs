@@ -16,6 +16,7 @@ mod host;
 mod manifest;
 mod mcp;
 mod state;
+mod tools;
 mod wasm;
 
 #[cfg(test)]
@@ -29,8 +30,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use host::ExtHost;
+pub use host::TOOL_TIMEOUT;
 pub use mcp::plugin_mcp_servers;
 pub use state::ExtensionsState;
+pub use tools::{ExtToolExecutor, HostToolRunner, PluginTool, PluginToolRunner, plugin_tools};
 
 /// 项目级插件目录的显式开关；只有值（去掉首尾空白）等于 `1` 时生效。
 pub const PROJECT_ALLOW_ENV: &str = "LC_EXT_ALLOW_PROJECT";
@@ -103,6 +106,8 @@ pub enum ExtError {
     UnknownPlugin { id: String },
     #[error("命令 `{command}` 不存在或所属插件已禁用")]
     CommandNotFound { command: String },
+    #[error("插件 `{plugin}` 的工具 `{tool}` 不存在、未声明或所属插件已禁用")]
+    ToolNotFound { plugin: String, tool: String },
     #[error("Node 运行时不可用")]
     NodeUnavailable,
     #[error("扩展宿主启动失败：{0}")]
@@ -133,9 +138,9 @@ impl ExtError {
             ExtError::NoHomeDir | ExtError::Config(_) => ErrorCode::Internal,
             ExtError::Io(_) => ErrorCode::Io,
             ExtError::AssetMissing(_) => ErrorCode::NotFound,
-            ExtError::UnknownPlugin { .. } | ExtError::CommandNotFound { .. } => {
-                ErrorCode::NotFound
-            }
+            ExtError::UnknownPlugin { .. }
+            | ExtError::CommandNotFound { .. }
+            | ExtError::ToolNotFound { .. } => ErrorCode::NotFound,
             ExtError::NodeUnavailable => ErrorCode::NodeUnavailable,
             ExtError::HostSpawn(_) => ErrorCode::NodeBroken,
             ExtError::HostProtocol(_) | ExtError::HostExited(_) => ErrorCode::Internal,

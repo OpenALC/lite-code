@@ -1296,4 +1296,131 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    // ---- 插件级 Agent 工具（docs/EXTENSIONS.md §4.1）：ext lane 桥接进循环 ----
+
+    use crate::ext::{ExtError, ExtToolExecutor, PluginTool, PluginToolRunner};
+
+    struct FakePluginRunner {
+        results: std::collections::HashMap<String, Result<Value, ExtError>>,
+        calls: Arc<Mutex<Vec<(String, String, Value)>>>,
+    }
+
+    impl FakePluginRunner {
+        fn new(results: Vec<(&str, Result<Value, ExtError>)>) -> Self {
+            Self {
+                results: results
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl PluginToolRunner for FakePluginRunner {
+        fn run_tool(&self, plugin_id: &str, tool: &str, args: Value) -> Result<Value, ExtError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((plugin_id.to_string(), tool.to_string(), args));
+            self.results.get(tool).cloned().unwrap_or_else(|| {
+                Err(ExtError::ToolNotFound {
+                    plugin: plugin_id.to_string(),
+                    tool: tool.to_string(),
+                })
+            })
+        }
+    }
+
+    fn plugin_tool() -> PluginTool {
+        PluginTool {
+            plugin_id: "example.tools".into(),
+            name: "example.search".into(),
+            description: "搜索工作区文本".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+            command: "example.search".into(),
+        }
+    }
+
+    #[test]
+    fn plugin_tool_goes_through_approval_then_executes_via_ext_runner() {
+        let llm = FakeLlm::new(vec![
+            tool_turn(&[("call_1", "example.search", json!({ "query": "hi" }))]),
+            vec![
+                LlmEvent::TextDelta {
+                    index: 0,
+                    text: "done".into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ]);
+        let runner = Arc::new(FakePluginRunner::new(vec![(
+            "example.search",
+            Ok(Value::String("result-from-plugin".into())),
+        )]));
+        let plugin_executor = ExtToolExecutor::new(runner.clone(), &[plugin_tool()])
+            .with_fallback(Arc::new(FakeExecutor::default()));
+        let registry = ToolRegistry::with_builtins()
+            .with_mcp_tools([])
+            .with_plugin_tools(plugin_executor.tool_specs());
+        let requests = llm.requests();
+        let mut agent = AgentLoop::new(
+            Session::new("s-tools", PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(plugin_executor),
+            registry,
+            std::env::temp_dir(),
+            "test-model",
+        );
+
+        // auto 模式：Mutating 插件工具先挂起审批，runner 尚未执行。
+        let outcome = agent.run("搜一下", &mut |_| {}).expect("first turn");
+        let LoopOutcome::NeedsApproval { approval } = outcome else {
+            panic!("插件工具应进入审批：{outcome:?}");
+        };
+        assert_eq!(approval.tool, "example.search");
+        assert!(matches!(
+            approval.source,
+            crate::agent::policy::PolicySource::NetworkTool
+        ));
+        assert!(approval.reason.contains("插件"), "{}", approval.reason);
+        assert!(
+            runner.calls.lock().unwrap().is_empty(),
+            "审批前不得执行工具"
+        );
+
+        // 允许一次：工具经扩展宿主通道执行，结果包不可信边界回填给模型。
+        let outcome = agent
+            .resolve_approval(approval.id, ApprovalDecision::AllowOnce, &mut |_| {})
+            .expect("resolve");
+        assert!(matches!(outcome, LoopOutcome::Final { .. }), "{outcome:?}");
+        assert_eq!(
+            *runner.calls.lock().unwrap(),
+            [(
+                "example.tools".to_string(),
+                "example.search".to_string(),
+                json!({ "query": "hi" })
+            )]
+        );
+        let requests = requests.lock().unwrap();
+        assert!(
+            requests[1..]
+                .iter()
+                .flat_map(|request| request.input.iter())
+                .any(|input| matches!(
+                    input,
+                    LlmInput::FunctionCallOutput { output, .. }
+                        if output.contains("result-from-plugin")
+                            && output.contains("UNTRUSTED PLUGIN CONTENT")
+                )),
+            "工具结果应以不可信边界回填: {requests:?}"
+        );
+    }
 }

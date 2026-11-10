@@ -283,6 +283,69 @@ function createCommandRegistry() {
   return { createPlugin, remove, lookup, list };
 }
 
+// ---- tools.mjs ----
+
+function createToolRegistry() {
+  const plugins = new Map();
+
+  function createPlugin(pluginId, tools) {
+    if (plugins.has(pluginId)) {
+      throw new Error(`Plugin "${pluginId}" is already registered`);
+    }
+    const declared = new Map();
+    for (const item of tools) {
+      const name = typeof item === "string" ? item : item && typeof item === "object" ? item.name : null;
+      if (typeof name !== "string" || name.length === 0) {
+        throw new Error(`Plugin "${pluginId}" has an invalid tool entry`);
+      }
+      const command =
+        item && typeof item === "object" && typeof item.command === "string" && item.command.length > 0
+          ? item.command
+          : name;
+      declared.set(name, command);
+    }
+    plugins.set(pluginId, { declared, handlers: new Map() });
+
+    return function register(tool, handler) {
+      if (typeof tool !== "string" || tool.length === 0) {
+        throw new TypeError("tool must be a non-empty string");
+      }
+      if (typeof handler !== "function") {
+        throw new TypeError(`handler for tool "${tool}" must be a function`);
+      }
+      const entry = plugins.get(pluginId);
+      if (!entry.declared.has(tool)) {
+        throw new Error(`Tool "${tool}" is not declared in the manifest of plugin "${pluginId}"`);
+      }
+      if (entry.handlers.has(tool)) {
+        throw new Error(`Tool "${tool}" is already registered by plugin "${pluginId}"`);
+      }
+      entry.handlers.set(tool, handler);
+    };
+  }
+
+  function remove(pluginId) {
+    plugins.delete(pluginId);
+  }
+
+  // 命中返回 { found: true, handler, command }；handler 可能为 null，
+  // 表示插件未调用 ctx.tools.register，调用方回退到 command handler。
+  function lookup(pluginId, tool) {
+    const entry = plugins.get(pluginId);
+    if (!entry) return { found: false, reason: "plugin-not-loaded" };
+    const command = entry.declared.get(tool);
+    if (command === undefined) return { found: false, reason: "tool-not-declared" };
+    return { found: true, handler: entry.handlers.get(tool) ?? null, command };
+  }
+
+  function list(pluginId) {
+    const entry = plugins.get(pluginId);
+    return entry ? [...entry.declared.keys()] : [];
+  }
+
+  return { createPlugin, remove, lookup, list };
+}
+
 // ---- host.mjs ----
 
 const DEACTIVATE_BUDGET_MS = 1500;
@@ -290,6 +353,7 @@ const STDOUT_FLUSH_GRACE_MS = 500;
 
 const stderrLog = console.error.bind(console);
 const commandRegistry = createCommandRegistry();
+const toolRegistry = createToolRegistry();
 
 let loadedPlugins = [];
 let initialized = false;
@@ -385,6 +449,34 @@ function normalizeCommands(pluginId, commands) {
   return [...new Set(ids)];
 }
 
+function normalizeTools(pluginId, tools) {
+  if (tools === undefined) return [];
+  if (!Array.isArray(tools)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" tools must be an array`);
+  }
+
+  const normalized = [];
+  for (const item of tools) {
+    if (typeof item === "string" && item.length > 0) {
+      normalized.push({ name: item, command: item });
+    } else if (
+      item &&
+      typeof item === "object" &&
+      typeof item.name === "string" &&
+      item.name.length > 0
+    ) {
+      normalized.push({
+        name: item.name,
+        command:
+          typeof item.command === "string" && item.command.length > 0 ? item.command : item.name
+      });
+    } else {
+      throw pluginError("manifest", `Plugin "${pluginId}" has an invalid tool entry`);
+    }
+  }
+  return normalized;
+}
+
 function describePlugin(spec) {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
     throw pluginError("manifest", "Plugin entry must be an object");
@@ -409,7 +501,8 @@ function describePlugin(spec) {
     id: spec.id,
     path: pluginPath,
     entry,
-    commands: normalizeCommands(spec.id, spec.commands)
+    commands: normalizeCommands(spec.id, spec.commands),
+    tools: normalizeTools(spec.id, spec.tools)
   };
 }
 
@@ -429,8 +522,10 @@ async function loadPlugin(descriptor, pluginWorkspace) {
   }
 
   let register;
+  let registerTool;
   try {
     register = commandRegistry.createPlugin(descriptor.id, descriptor.commands);
+    registerTool = toolRegistry.createPlugin(descriptor.id, descriptor.tools);
   } catch (error) {
     throw pluginError("manifest", `Cannot register plugin "${descriptor.id}": ${messageOf(error)}`);
   }
@@ -439,6 +534,7 @@ async function loadPlugin(descriptor, pluginWorkspace) {
     const storage = createPluginStorage(descriptor.id, descriptor.path, (...args) => pluginLog(descriptor.id, ...args));
     const ctx = Object.freeze({
       commands: Object.freeze({ register }),
+      tools: Object.freeze({ register: registerTool }),
       workspace: pluginWorkspace,
       storage,
       window: Object.freeze({
@@ -452,6 +548,7 @@ async function loadPlugin(descriptor, pluginWorkspace) {
     await activate(ctx);
   } catch (error) {
     commandRegistry.remove(descriptor.id);
+    toolRegistry.remove(descriptor.id);
     throw pluginError("activate", `Plugin "${descriptor.id}" failed to activate: ${messageOf(error)}`);
   }
 
@@ -510,7 +607,11 @@ async function handleInitialize(id, params) {
 
   return resultResponse(id, {
     workspaceRoot: nextWorkspace.root,
-    plugins: plugins.map((plugin) => ({ id: plugin.id, commands: commandRegistry.list(plugin.id) })),
+    plugins: plugins.map((plugin) => ({
+      id: plugin.id,
+      commands: commandRegistry.list(plugin.id),
+      tools: toolRegistry.list(plugin.id)
+    })),
     errors
   });
 }
@@ -555,12 +656,68 @@ async function handleExecute(id, params) {
   }
 }
 
+async function handleToolExecute(id, params) {
+  if (!initialized) {
+    return errorResponse(id, RPC_INTERNAL_ERROR, "Extension host is not initialized");
+  }
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "tool/execute expects an object with pluginId and tool");
+  }
+
+  const { pluginId, tool } = params;
+  if (typeof pluginId !== "string" || pluginId.length === 0) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "tool/execute.pluginId must be a non-empty string");
+  }
+  if (typeof tool !== "string" || tool.length === 0) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "tool/execute.tool must be a non-empty string");
+  }
+
+  const found = toolRegistry.lookup(pluginId, tool);
+  if (!found.found) {
+    return errorResponse(id, RPC_METHOD_NOT_FOUND, `Tool not found: ${pluginId}/${tool}`, {
+      pluginId,
+      tool,
+      reason: found.reason
+    });
+  }
+
+  // ctx.tools.register 优先；未注册回退到清单 command 映射的命令 handler。
+  let handler = found.handler;
+  if (!handler) {
+    const command = commandRegistry.lookup(pluginId, found.command);
+    if (!command.found) {
+      return errorResponse(
+        id,
+        RPC_METHOD_NOT_FOUND,
+        `Tool handler missing: ${pluginId}/${tool} (command "${found.command}" not registered)`,
+        { pluginId, tool, command: found.command, reason: command.reason }
+      );
+    }
+    handler = command.handler;
+  }
+
+  try {
+    const value = await handler(params.args);
+    return resultResponse(id, { result: serializableResult(value) });
+  } catch (error) {
+    const details = thrownDetails(error);
+    return errorResponse(id, RPC_INTERNAL_ERROR, `Tool failed: ${pluginId}/${tool}: ${details.message}`, {
+      pluginId,
+      tool,
+      name: details.name,
+      stack: details.stack
+    });
+  }
+}
+
 function dispatch(message, id) {
   switch (message.method) {
     case "initialize":
       return handleInitialize(id, message.params);
     case "command/execute":
       return handleExecute(id, message.params);
+    case "tool/execute":
+      return handleToolExecute(id, message.params);
     case "shutdown":
       return resultResponse(id, { ok: true });
     default:

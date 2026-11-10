@@ -6,7 +6,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
 const sourceDir = path.join(here, "src");
 const outputFile = path.join(repoRoot, "crates", "lc-core", "assets", "ext-host.mjs");
-const sourceFiles = ["jsonrpc.mjs", "workspace.mjs", "storage.mjs", "commands.mjs", "host.mjs"];
+const sourceFiles = ["jsonrpc.mjs", "workspace.mjs", "storage.mjs", "commands.mjs", "tools.mjs", "host.mjs"];
 
 const IMPORT_PATTERN = /^import\s+[^\n]*;[ \t]*$/gm;
 const EXPORT_DECLARATION_PATTERN = /^export\s+(?=(?:async\s+)?function\b|class\b|const\b|let\b|var\b)/gm;

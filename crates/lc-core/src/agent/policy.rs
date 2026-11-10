@@ -191,6 +191,12 @@ impl Policy {
                 source: PolicySource::NetworkTool,
                 reason: "网络/外部工具需要确认".into(),
             },
+            // 插件贡献的工具（docs/EXTENSIONS.md §4）：v0 一律按最高风险处理，
+            // auto 模式询问、yolo 模式在上面的早退分支已放行。
+            Risk::Mutating => PolicyDecision::Ask {
+                source: PolicySource::NetworkTool,
+                reason: "插件贡献的工具需要确认".into(),
+            },
         }
     }
 }
@@ -235,12 +241,42 @@ mod tests {
     #[test]
     fn chat_denies_all_tools() {
         let policy = Policy::default();
-        for risk in [Risk::Read, Risk::Write, Risk::Execute, Risk::Network] {
+        for risk in [
+            Risk::Read,
+            Risk::Write,
+            Risk::Execute,
+            Risk::Network,
+            Risk::Mutating,
+        ] {
             assert!(matches!(
                 policy.evaluate(&request(PolicyMode::Chat, risk)),
                 PolicyDecision::Deny { .. }
             ));
         }
+    }
+
+    #[test]
+    fn plugin_mutating_tool_asks_in_auto_and_plan_allows_only_read() {
+        let policy = Policy::default();
+        assert!(matches!(
+            policy.evaluate(&request(PolicyMode::Auto, Risk::Mutating)),
+            PolicyDecision::Ask {
+                source: PolicySource::NetworkTool,
+                ..
+            }
+        ));
+        assert!(matches!(
+            policy.evaluate(&request(PolicyMode::Plan, Risk::Mutating)),
+            PolicyDecision::Deny {
+                source: PolicySource::Mode,
+                ..
+            }
+        ));
+        // yolo 在黑名单早退之后放行 Mutating。
+        assert_eq!(
+            policy.evaluate(&request(PolicyMode::Yolo, Risk::Mutating)),
+            PolicyDecision::Allow
+        );
     }
 
     #[test]

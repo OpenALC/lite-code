@@ -53,6 +53,22 @@ pub(crate) struct Contributes {
     pub mcp_servers: BTreeMap<String, McpServerDecl>,
     #[serde(default)]
     pub language_servers: Vec<LanguageServerDecl>,
+    /// Agent 可见的插件工具（docs/EXTENSIONS.md §1/§4）。
+    #[serde(default)]
+    pub tools: Vec<PluginToolDecl>,
+}
+
+/// 插件声明的 Agent 工具。`command` 映射到插件内注册的命令 handler，
+/// 缺省与 `name` 一致；执行时优先派发到 `ctx.tools.register` 注册的
+/// handler，未注册则回退到该命令 handler（docs/EXTENSIONS.md §4）。
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PluginToolDecl {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema（object 类型），原样进入 LLM 工具定义。
+    pub parameters: Value,
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -286,6 +302,55 @@ fn validate_manifest(
         }
     }
 
+    // Agent 工具校验（docs/EXTENSIONS.md §1）：名字合法且插件内唯一、
+    // 描述非空、parameters 是 object 类型 JSON Schema；command 必须出现在
+    // contributes.commands 中，或与 name 一致（缺省即 name）。
+    let command_ids: HashSet<&str> = manifest
+        .contributes
+        .commands
+        .iter()
+        .map(|command| command.command.as_str())
+        .collect();
+    let mut tool_names = HashSet::new();
+    for tool in &mut manifest.contributes.tools {
+        tool.name = tool.name.trim().to_string();
+        if !valid_tool_name(&tool.name) {
+            return Err(format!(
+                "工具名无效：`{}`（仅允许小写字母、数字、点、线）",
+                tool.name
+            ));
+        }
+        if !tool_names.insert(tool.name.clone()) {
+            return Err(format!("工具名重复：`{}`", tool.name));
+        }
+        tool.description = tool.description.trim().to_string();
+        if tool.description.is_empty() {
+            return Err(format!("工具 `{}` 缺少描述", tool.name));
+        }
+        if !valid_tool_parameters(&tool.parameters) {
+            return Err(format!(
+                "工具 `{}` 的 parameters 必须是 object 类型 JSON Schema",
+                tool.name
+            ));
+        }
+        let command = tool
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty());
+        let command = match command {
+            Some(command) => command.to_string(),
+            None => tool.name.clone(),
+        };
+        if command != tool.name && !command_ids.contains(command.as_str()) {
+            return Err(format!(
+                "工具 `{}` 映射的命令 `{command}` 未在 contributes.commands 中声明",
+                tool.name
+            ));
+        }
+        tool.command = Some(command);
+    }
+
     let mut mcp_names = HashSet::new();
     let mut normalized_mcp = BTreeMap::new();
     for (name, declared) in std::mem::take(&mut manifest.contributes.mcp_servers) {
@@ -346,6 +411,27 @@ fn valid_plugin_id(id: &str) -> bool {
 
 fn valid_command_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && !id.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+}
+
+/// 工具名是 Agent 可见标识：小写字母 / 数字 / 点 / 线（反域名风格）。
+fn valid_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '-'))
+}
+
+/// parameters 必须是 JSON object；带 `type` 字段时必须声明为 object
+/// （缺省 type 的 properties/required 简写也接受）。
+fn valid_tool_parameters(parameters: &Value) -> bool {
+    if !parameters.is_object() {
+        return false;
+    }
+    parameters
+        .get("type")
+        .map(|kind| kind.as_str() == Some("object"))
+        .unwrap_or(true)
 }
 
 fn runtime_name(runtime: PluginRuntime) -> &'static str {

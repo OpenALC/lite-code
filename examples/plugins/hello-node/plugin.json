@@ -10,6 +10,17 @@
   "contributes": {
     "commands": [
       { "command": "example.hello", "title": "Hello from Node plugin" }
+    ],
+    "tools": [
+      {
+        "name": "example.hello.tool",
+        "description": "Say hello via the Agent tool channel",
+        "parameters": {
+          "type": "object",
+          "properties": { "name": { "type": "string", "description": "Who to greet" } }
+        },
+        "command": "example.hello"
+      }
     ]
   },
   "permissions": ["workspace.read"]

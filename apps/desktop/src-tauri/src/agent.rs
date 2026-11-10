@@ -10,6 +10,7 @@
 //! 与鸿蒙端同一语义），多会话共享同一序列。
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -155,6 +156,63 @@ fn session_id(millis: u128, n: u64) -> String {
 
 fn unknown_session(id: &str) -> ErrorBody {
     ErrorBody::new(ErrorCode::NotFound, format!("会话不存在：{id}"))
+}
+
+// ==== 插件级 Agent 工具装配（docs/EXTENSIONS.md §4）====
+
+/// 插件工具装配层：`specs` 进 ToolRegistry，`llm_tools` 进 LLM 请求，
+/// `executor` 包在既有执行器链之外（路由按工具名分发，层级顺序不影响行为）。
+struct PluginToolLayer {
+    specs: Vec<lc_core::agent::ToolSpec>,
+    llm_tools: Vec<serde_json::Value>,
+    executor: Arc<dyn lc_core::agent::ToolExecutor>,
+}
+
+/// 查询启用插件的 Agent 工具并包一层执行器；任何一步失败都降级为空层
+/// （宿主未运行/Node 缺失/无启用工具时不注册插件工具，不阻断会话）。
+fn plugin_tool_layer(
+    root: &Path,
+    executor: Arc<dyn lc_core::agent::ToolExecutor>,
+) -> PluginToolLayer {
+    let empty = PluginToolLayer {
+        specs: Vec::new(),
+        llm_tools: Vec::new(),
+        executor,
+    };
+    let tools = lc_core::ext::plugin_tools(root);
+    if tools.is_empty() {
+        return empty;
+    }
+    let runner = match lc_core::ext::HostToolRunner::new(crate::ext::shared_host(), root) {
+        Ok(runner) => runner,
+        Err(error) => {
+            eprintln!("[ext] 插件工具不可用：{error}");
+            return empty;
+        }
+    };
+    build_plugin_tool_layer(tools, Arc::new(runner), empty.executor)
+}
+
+/// 纯装配（单测直接覆盖）：runner 可注入 fake，tools 手工构造。
+fn build_plugin_tool_layer(
+    tools: Vec<lc_core::ext::PluginTool>,
+    runner: Arc<dyn lc_core::ext::PluginToolRunner>,
+    executor: Arc<dyn lc_core::agent::ToolExecutor>,
+) -> PluginToolLayer {
+    if tools.is_empty() {
+        return PluginToolLayer {
+            specs: Vec::new(),
+            llm_tools: Vec::new(),
+            executor,
+        };
+    }
+    let plugin_executor =
+        lc_core::ext::ExtToolExecutor::new(runner, &tools).with_fallback(executor);
+    PluginToolLayer {
+        specs: plugin_executor.tool_specs(),
+        llm_tools: plugin_executor.llm_tools(),
+        executor: Arc::new(plugin_executor),
+    }
 }
 
 // ==== 事件发射 ====
@@ -581,7 +639,24 @@ pub(crate) fn session_create(
     }
     let executor: Arc<dyn lc_core::agent::ToolExecutor> =
         Arc::new(mcp_executor.with_fallback(Box::new(LocalToolExecutor::new(root.clone()))));
-    // DB 工具优先：db_* 由 DbExecutor 处理，其余交给 MCP → 本地执行器。
+
+    // 插件级 Agent 工具（docs/EXTENSIONS.md §4）：启用 node 插件的
+    // contributes.tools 一律按 Risk::Mutating 注册，进 AgentLoop 后由既有
+    // 策略层审批；宿主/Node 不可用或没有启用工具时静默降级，不阻断会话。
+    let plugin_layer = plugin_tool_layer(&root, executor);
+    let registry = registry.with_plugin_tools(plugin_layer.specs.clone());
+    for tool in &plugin_layer.llm_tools {
+        let registered = tool
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| registry.get(name).is_some());
+        if registered {
+            tools.push(tool.clone());
+        }
+    }
+    let executor = plugin_layer.executor;
+
+    // DB 工具优先：db_* 由 DbExecutor 处理，其余交给 插件 → MCP → 本地执行器。
     // 初始化失败只让 db_* 返回 ToolError::Database，不阻止普通会话。
     let executor = db::agent_executor(db.inner(), executor);
     let instructions = session_instructions(&root, DEFAULT_INSTRUCTIONS);
@@ -865,7 +940,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use lc_core::agent::{
-        ApprovalRequest, LlmStream, PolicyMode, PolicySource, ToolCall, ToolExecutor, ToolRegistry,
+        ApprovalRequest, LlmStream, PolicyMode, PolicySource, Risk, ToolCall, ToolExecutor,
+        ToolRegistry,
     };
     use lc_core::llm::ProviderKind;
     use lc_core::llm::{LlmError, LlmRequest, StopReason};
@@ -2151,5 +2227,236 @@ mod tests {
         let supported = ["off", "high"].map(String::from);
         let err = reasoning_effort(Some("low"), &supported).expect_err("unsupported");
         assert_eq!(err.code, lc_proto::ErrorCode::InvalidArgument);
+    }
+
+    // ---- 插件级 Agent 工具装配（docs/EXTENSIONS.md §4）----
+
+    use lc_core::ext::{ExtToolExecutor, PluginTool, PluginToolRunner};
+
+    struct FakePluginRunner {
+        results:
+            std::collections::HashMap<String, Result<serde_json::Value, lc_core::ext::ExtError>>,
+        calls: Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
+    }
+
+    impl FakePluginRunner {
+        fn new(results: Vec<(&str, Result<serde_json::Value, lc_core::ext::ExtError>)>) -> Self {
+            Self {
+                results: results
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl PluginToolRunner for FakePluginRunner {
+        fn run_tool(
+            &self,
+            plugin_id: &str,
+            tool: &str,
+            args: serde_json::Value,
+        ) -> Result<serde_json::Value, lc_core::ext::ExtError> {
+            self.calls
+                .lock()
+                .expect("calls")
+                .push((plugin_id.to_string(), tool.to_string(), args));
+            self.results.get(tool).cloned().unwrap_or_else(|| {
+                Err(lc_core::ext::ExtError::ToolNotFound {
+                    plugin: plugin_id.to_string(),
+                    tool: tool.to_string(),
+                })
+            })
+        }
+    }
+
+    fn sample_plugin_tool() -> PluginTool {
+        PluginTool {
+            plugin_id: "example.desktop".into(),
+            name: "example.search".into(),
+            description: "搜索工作区文本".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+            command: "example.search".into(),
+        }
+    }
+
+    #[test]
+    fn plugin_tool_layer_registers_mutating_tools_and_routes() {
+        let runner = Arc::new(FakePluginRunner::new(vec![(
+            "example.search",
+            Ok(serde_json::Value::String("hit".into())),
+        )]));
+        let base: Arc<dyn ToolExecutor> = Arc::new(FakeExecutor);
+        let layer =
+            build_plugin_tool_layer(vec![sample_plugin_tool()], runner.clone(), base.clone());
+
+        // spec 进注册表：一律 Risk::Mutating；LLM 定义透传清单 description/parameters。
+        let registry = ToolRegistry::with_builtins()
+            .with_mcp_tools([])
+            .with_plugin_tools(layer.specs.clone());
+        assert_eq!(
+            registry.get("example.search").map(|spec| spec.risk),
+            Some(Risk::Mutating)
+        );
+        assert_eq!(layer.llm_tools.len(), 1);
+        assert_eq!(layer.llm_tools[0]["name"], "example.search");
+        assert_eq!(layer.llm_tools[0]["description"], "搜索工作区文本");
+        assert_eq!(
+            layer.llm_tools[0]["parameters"]["required"],
+            serde_json::json!(["query"])
+        );
+
+        // 执行器路由到插件通道，未命中回退到原执行器。
+        let output = layer
+            .executor
+            .execute(&ToolCall::new(
+                "example.search",
+                serde_json::json!({"query": "x"}),
+            ))
+            .expect("plugin tool");
+        assert!(output.text.contains("hit"), "{}", output.text);
+        assert!(
+            output.text.starts_with("[UNTRUSTED PLUGIN CONTENT"),
+            "{}",
+            output.text
+        );
+        let output = layer
+            .executor
+            .execute(&ToolCall::new(
+                "read_file",
+                serde_json::json!({"path": "a"}),
+            ))
+            .expect("fallback");
+        assert_eq!(output.text, "tool ok");
+        assert_eq!(
+            runner.calls.lock().expect("calls").len(),
+            1,
+            "只有插件工具走插件通道"
+        );
+
+        // 空工具列表：原样返回，不包插件层。
+        let layer = build_plugin_tool_layer(vec![], runner.clone(), base.clone());
+        assert!(layer.specs.is_empty());
+        assert!(layer.llm_tools.is_empty());
+        let output = layer
+            .executor
+            .execute(&ToolCall::new("read_file", serde_json::json!({})))
+            .expect("pass through");
+        assert_eq!(output.text, "tool ok");
+    }
+
+    #[test]
+    fn worker_runs_plugin_tool_after_approval() {
+        let sink = RecordingSink::default();
+        let sessions = AgentSessions::default();
+        let id = sessions.allocate_id();
+        let llm = FakeLlm::new(vec![
+            vec![
+                LlmEvent::ToolUseStart {
+                    id: "call_1".into(),
+                    name: "example.search".into(),
+                },
+                LlmEvent::ToolUseArgsDelta {
+                    id: "call_1".into(),
+                    json: r#"{"query":"hi"}"#.into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta {
+                    index: 0,
+                    text: "finished".into(),
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ]);
+        let runner = Arc::new(FakePluginRunner::new(vec![(
+            "example.search",
+            Ok(serde_json::Value::String("result-from-plugin".into())),
+        )]));
+        let base: Arc<dyn ToolExecutor> = Arc::new(FakeExecutor);
+        let plugin_executor =
+            ExtToolExecutor::new(runner.clone(), &[sample_plugin_tool()]).with_fallback(base);
+        let registry = ToolRegistry::with_builtins()
+            .with_mcp_tools([])
+            .with_plugin_tools(plugin_executor.tool_specs());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let agent = AgentLoop::new(
+            Session::new(id.clone(), PolicyMode::Auto),
+            Box::new(llm),
+            Box::new(plugin_executor),
+            registry,
+            std::env::temp_dir(),
+            "test-model",
+        );
+        let handle = spawn_worker(
+            &sessions,
+            id,
+            agent,
+            Arc::new(sink.clone()),
+            cancel,
+            None,
+            None,
+        )
+        .expect("spawn");
+
+        handle.begin_send().expect("begin");
+        handle
+            .sender
+            .send(WorkerCommand::Send("搜一下".into()))
+            .expect("send");
+
+        // 插件工具 = Mutating：auto 模式先挂审批，runner 尚未执行。
+        wait_for(|| {
+            sink.events()
+                .iter()
+                .any(|event| matches!(event, CoreEvent::AgentApprovalRequired { .. }))
+        });
+        assert!(runner.calls.lock().expect("calls").is_empty());
+        let approval = sink
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::AgentApprovalRequired { approval, .. } => Some(approval.clone()),
+                _ => None,
+            })
+            .expect("approval");
+        assert_eq!(approval.tool, "example.search");
+        assert_eq!(approval.source, ApprovalSource::NetworkTool);
+        assert!(approval.reason.contains("插件"), "{}", approval.reason);
+
+        handle
+            .sender
+            .send(WorkerCommand::ResolveApproval {
+                approval_id: approval.approval_id,
+                decision: CoreApprovalDecision::AllowOnce,
+            })
+            .expect("resolve");
+        wait_for(|| !handle.busy.load(Ordering::Acquire));
+
+        let events = sink.events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            CoreEvent::AgentToolResult { ok: true, text, .. }
+                if text.contains("result-from-plugin") && text.starts_with("[UNTRUSTED PLUGIN CONTENT")
+        )));
+        assert_eq!(
+            runner.calls.lock().expect("calls").len(),
+            1,
+            "审批允许后恰好执行一次"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(CoreEvent::AgentDone { stop_reason, .. }) if stop_reason == "end_turn"
+        ));
     }
 }

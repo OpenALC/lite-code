@@ -2,7 +2,7 @@
 // 命令由 `run()` 的 `generate_handler!` 注册。
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use lc_core::ext::{ExtError, ExtHost, ExtPaths, PluginList};
 use lc_proto::{CommandResult, ErrorBody, ErrorCode};
@@ -17,25 +17,26 @@ pub struct ExtCommandResult {
     pub result: Value,
 }
 
-/// 单宿主进程常驻：所有命令共享同一个 [`ExtHost`]，首次使用时探测 Node。
-fn shared_host() -> &'static Mutex<ExtHost> {
-    static HOST: OnceLock<Mutex<ExtHost>> = OnceLock::new();
-    HOST.get_or_init(|| Mutex::new(ExtHost::detect()))
+/// 单宿主进程常驻：所有命令与 Agent 会话共享同一个 [`ExtHost`]，
+/// 首次使用时探测 Node。返回 Arc 以便 Agent worker 的工具执行器长期持有。
+pub(crate) fn shared_host() -> Arc<Mutex<ExtHost>> {
+    static HOST: OnceLock<Arc<Mutex<ExtHost>>> = OnceLock::new();
+    HOST.get_or_init(|| Arc::new(Mutex::new(ExtHost::detect())))
+        .clone()
 }
 
-fn lock_host() -> Result<MutexGuard<'static, ExtHost>, ErrorBody> {
-    shared_host()
-        .lock()
-        .map_err(|_| ErrorBody::new(ErrorCode::Internal, "插件宿主锁中毒，请重启应用"))
+fn host_lock_error() -> ErrorBody {
+    ErrorBody::new(ErrorCode::Internal, "插件宿主锁中毒，请重启应用")
 }
 
 fn reset_host() -> Result<(), ErrorBody> {
-    lock_host()?.reset();
+    shared_host().lock().map_err(|_| host_lock_error())?.reset();
     Ok(())
 }
 
 fn host_node_path() -> Result<Option<PathBuf>, ErrorBody> {
-    let host = lock_host()?;
+    let host = shared_host();
+    let host = host.lock().map_err(|_| host_lock_error())?;
     Ok(host.node_path().map(Path::to_path_buf))
 }
 
@@ -93,7 +94,8 @@ pub(crate) async fn ext_reload(
     let root = state.get();
     blocking(move || {
         let node = {
-            let mut host = lock_host()?;
+            let host = shared_host();
+            let mut host = host.lock().map_err(|_| host_lock_error())?;
             host.refresh_node();
             host.node_path().map(Path::to_path_buf)
         };
@@ -111,7 +113,8 @@ pub(crate) async fn ext_execute_command(
 ) -> Result<ExtCommandResult, ErrorBody> {
     let root = state.get().ok_or_else(crate::workspace_unavailable)?;
     blocking(move || {
-        let mut host = lock_host()?;
+        let host = shared_host();
+        let mut host = host.lock().map_err(|_| host_lock_error())?;
         let result = host
             .execute(
                 &root,

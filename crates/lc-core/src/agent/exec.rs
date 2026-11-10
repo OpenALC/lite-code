@@ -61,6 +61,8 @@ pub enum ToolError {
     ShellUnavailable(String),
     #[error("MCP 工具错误：{0}")]
     Mcp(String),
+    #[error("插件工具错误：{0}")]
+    Plugin(String),
     #[error("数据库工具错误：{0}")]
     Database(String),
     #[error("工具暂未支持：{0}")]

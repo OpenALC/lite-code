@@ -155,6 +155,10 @@ export class HostClient {
     return this.request("command/execute", { pluginId, command, args }, id);
   }
 
+  executeTool(pluginId, tool, args, id) {
+    return this.request("tool/execute", { pluginId, tool, args }, id);
+  }
+
   initialize(workspaceRoot, plugins, id = "initialize") {
     return this.request("initialize", { workspaceRoot, plugins }, id);
   }
@@ -209,7 +213,8 @@ export async function createFixture(t) {
     id: manifest.id,
     path: pluginDir,
     main: manifest.main,
-    commands: manifest.contributes.commands
+    commands: manifest.contributes.commands,
+    tools: manifest.contributes.tools ?? []
   };
 
   t.after(async () => {

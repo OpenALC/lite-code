@@ -28,10 +28,19 @@ use super::{
 pub const INIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// `command/execute` 默认超时。
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+/// `tool/execute` 默认超时（插件级 Agent 工具，docs/EXTENSIONS.md §4）。
+pub const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const STDERR_TAIL_LINES: usize = 40;
 const HOST_ENV: &str = "LC_EXT_HOST";
 const WASM_HOST_ENV: &str = "LC_WASM_HOST";
+
+/// 初始化参数里随插件下发的工具声明（名字 → 命令 handler 映射）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostTool {
+    name: String,
+    command: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostPlugin {
@@ -39,6 +48,7 @@ struct HostPlugin {
     path: String,
     main: String,
     commands: Vec<String>,
+    tools: Vec<HostTool>,
 }
 
 /// Node 扩展宿主句柄。`execute` 在需要时启动宿主；`reset` 强制下次重启。
@@ -51,6 +61,7 @@ pub struct ExtHost {
     load_errors: Vec<String>,
     next_id: u64,
     command_timeout: Duration,
+    tool_timeout: Duration,
 }
 
 impl ExtHost {
@@ -64,6 +75,7 @@ impl ExtHost {
             load_errors: Vec::new(),
             next_id: 0,
             command_timeout: COMMAND_TIMEOUT,
+            tool_timeout: TOOL_TIMEOUT,
         }
     }
 
@@ -98,6 +110,11 @@ impl ExtHost {
 
     pub fn set_command_timeout(&mut self, timeout: Duration) {
         self.command_timeout = timeout;
+    }
+
+    /// 测试/嵌入方覆盖 `tool/execute` 超时（默认 [`TOOL_TIMEOUT`] = 30s）。
+    pub fn set_tool_timeout(&mut self, timeout: Duration) {
+        self.tool_timeout = timeout;
     }
 
     /// `initialize` 返回的插件加载错误（单个插件失败不影响其它插件）。
@@ -200,6 +217,60 @@ impl ExtHost {
         }
     }
 
+    /// 指定布局下执行插件级 Agent 工具（docs/EXTENSIONS.md §4）：
+    /// 向扩展宿主发送 `tool/execute`。工具不存在/插件禁用/非 node runtime
+    /// 返回 [`ExtError::ToolNotFound`]；宿主未运行时按 node 插件命令的
+    /// 既有逻辑惰性启动，Node 缺失返回 [`ExtError::NodeUnavailable`]。
+    pub fn execute_tool_with_paths(
+        &mut self,
+        paths: &ExtPaths,
+        allow_project: bool,
+        workspace_root: &Path,
+        plugin_id: &str,
+        tool: &str,
+        args: Value,
+    ) -> Result<Value, ExtError> {
+        let plugins = enabled_plugins(paths, allow_project)?;
+        let target = plugins
+            .iter()
+            .find(|plugin| {
+                plugin.info.enabled
+                    && plugin.info.id == plugin_id
+                    && plugin.manifest.as_ref().is_some_and(|manifest| {
+                        manifest
+                            .contributes
+                            .tools
+                            .iter()
+                            .any(|declared| declared.name == tool)
+                    })
+            })
+            .ok_or_else(|| ExtError::ToolNotFound {
+                plugin: plugin_id.to_string(),
+                tool: tool.to_string(),
+            })?;
+        // v0 工具只在扩展宿主（node runtime）分发；wasm/declarative 插件
+        // 声明的工具不参与注册，这里防御性返回未找到。
+        if target.manifest.as_ref().map(|manifest| manifest.runtime) != Some(PluginRuntime::Node) {
+            return Err(ExtError::ToolNotFound {
+                plugin: plugin_id.to_string(),
+                tool: tool.to_string(),
+            });
+        }
+
+        let node = self.node.clone().ok_or(ExtError::NodeUnavailable)?;
+        let host_plugins = host_plugins(&plugins);
+        self.ensure_host(&node, workspace_root, &host_plugins)?;
+        self.request(
+            "tool/execute",
+            json!({
+                "pluginId": target.info.id,
+                "tool": tool,
+                "args": normalize_args(args),
+            }),
+            self.tool_timeout,
+        )
+    }
+
     fn ensure_host(
         &mut self,
         node: &Path,
@@ -230,6 +301,13 @@ impl ExtHost {
                     "path": plugin.path,
                     "main": plugin.main,
                     "commands": plugin.commands,
+                    "tools": plugin.tools
+                        .iter()
+                        .map(|tool| json!({
+                            "name": tool.name,
+                            "command": tool.command,
+                        }))
+                        .collect::<Vec<_>>(),
                 }))
                 .collect::<Vec<_>>(),
         });
@@ -321,6 +399,15 @@ fn host_plugins(plugins: &[DiscoveredPlugin]) -> Vec<HostPlugin> {
                     .commands
                     .iter()
                     .map(|command| command.command.clone())
+                    .collect(),
+                tools: manifest
+                    .contributes
+                    .tools
+                    .iter()
+                    .map(|tool| HostTool {
+                        name: tool.name.clone(),
+                        command: tool.command.clone().unwrap_or_else(|| tool.name.clone()),
+                    })
                     .collect(),
             })
         })

@@ -175,9 +175,9 @@ stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
   `Risk::Mutating`（视为需审批），由 AgentLoop 既有策略层处理，审批队列无需改动。
 - 输出按字符边界截断到 128 KiB（与 shell/MCP 一致），再包
   `[UNTRUSTED PLUGIN CONTENT …] [/UNTRUSTED]` 边界后回填给模型。
-- 桌面端在 `session_create` 装配（插件层 → MCP → 本地 → db 由内向外路由按名分发）；
-  鸿蒙端 plan 只读策略会拒绝 Mutating 工具，接入点见 `lc-ohos` `read_only_registry`
-  的 TODO。
+- 桌面端在 `session_create` 装配（执行器链由外到内：db → 插件 → MCP → 本地，
+  按工具名路由分发）；鸿蒙端 plan 只读策略会拒绝 Mutating 工具，接入点见
+  `lc-ohos` `read_only_registry` 的 TODO。
 
 ## 5. WASM 运行协议
 

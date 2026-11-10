@@ -24,7 +24,9 @@ test("initialize loads the example plugin and executes a command", async (t) => 
     const result = await initializeHost(client, fixture);
     assert.deepEqual(result.errors, []);
     assert.equal(path.resolve(result.workspaceRoot), path.resolve(fixture.workspaceRoot));
-    assert.deepEqual(result.plugins, [{ id: "example.hello", commands: ["example.hello"] }]);
+    assert.deepEqual(result.plugins, [
+      { id: "example.hello", commands: ["example.hello"], tools: ["example.hello.tool"] }
+    ]);
 
     const first = await client.execute(
       "example.hello",
@@ -183,6 +185,99 @@ test("unknown commands and handler failures return JSON-RPC errors", async (t) =
 
     const voidResult = await client.execute("test.tools", "test.void", {}, "void");
     assert.equal(voidResult.result, null);
+  } finally {
+    await client.close();
+  }
+});
+
+test("tool/execute dispatches to registered tools with command fallback", async (t) => {
+  const fixture = await createFixture(t);
+  const agentTools = await writePlugin(fixture.pluginsRoot, "test.agent-tools", {
+    commands: ["test.echo-command"],
+    source: `
+      export function activate(ctx) {
+        ctx.commands.register("test.echo-command", (args) => ({ via: "command", args: args ?? {} }));
+        ctx.tools.register("test.explicit", (args) => ({ via: "tool", doubled: (args?.n ?? 0) * 2 }));
+        ctx.tools.register("test.broken", () => {
+          throw new Error("tool exploded");
+        });
+      }
+
+      export function deactivate() {}
+    `
+  });
+  const undeclared = await writePlugin(fixture.pluginsRoot, "test.undeclared-tool", {
+    commands: [],
+    source: `
+      export function activate(ctx) {
+        ctx.tools.register("test.not-declared", () => null);
+      }
+
+      export function deactivate() {}
+    `
+  });
+
+  const client = new HostClient(fixture.workspaceRoot);
+  try {
+    const result = await initializeHost(client, fixture, [
+      fixture.spec,
+      {
+        ...agentTools,
+        main: path.join(agentTools.path, "index.mjs"),
+        tools: [
+          { name: "test.explicit", command: "test.explicit" },
+          { name: "test.fallback", command: "test.echo-command" },
+          { name: "test.broken", command: "test.broken" }
+        ]
+      },
+      undeclared
+    ]);
+
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].pluginId, "test.undeclared-tool");
+    assert.match(result.errors[0].message, /not declared/);
+    assert.deepEqual(result.plugins, [
+      { id: "example.hello", commands: ["example.hello"], tools: ["example.hello.tool"] },
+      {
+        id: "test.agent-tools",
+        commands: ["test.echo-command"],
+        tools: ["test.explicit", "test.fallback", "test.broken"]
+      }
+    ]);
+
+    // ctx.tools.register 的 handler 优先。
+    const explicit = await client.executeTool("test.agent-tools", "test.explicit", { n: 21 }, "t1");
+    assert.equal(explicit.error, undefined);
+    assert.deepEqual(explicit.result, { result: { via: "tool", doubled: 42 } });
+
+    // 未注册 tools handler 时回退到清单 command 映射的命令 handler。
+    const fallback = await client.executeTool("test.agent-tools", "test.fallback", { x: 1 }, "t2");
+    assert.deepEqual(fallback.result, {
+      result: { via: "command", args: { x: 1 } }
+    });
+
+    // 示例插件只注册了命令 handler，工具经回退执行同一 handler。
+    const hello = await client.executeTool("example.hello", "example.hello.tool", { name: "Ada" }, "t3");
+    assert.equal(hello.result.result.message, "Hello, Ada!");
+    assert.equal(hello.result.result.calls, 1);
+
+    const missing = await client.executeTool("example.hello", "test.nope", {}, "t4");
+    assert.equal(missing.error.code, -32601);
+    assert.equal(missing.error.data.reason, "tool-not-declared");
+
+    const missingPlugin = await client.executeTool("test.nope", "test.explicit", {}, "t5");
+    assert.equal(missingPlugin.error.code, -32601);
+    assert.equal(missingPlugin.error.data.reason, "plugin-not-loaded");
+
+    const broken = await client.executeTool("test.agent-tools", "test.broken", {}, "t6");
+    assert.equal(broken.error.code, -32000);
+    assert.match(broken.error.message, /tool exploded/);
+    assert.equal(broken.error.data.tool, "test.broken");
+
+    // 宿主在工具错误后仍可用。
+    const stillWorks = await client.executeTool("test.agent-tools", "test.explicit", { n: 1 }, "t7");
+    assert.equal(stillWorks.result.result.doubled, 2);
+    assert.deepEqual(client.protocolErrors, []);
   } finally {
     await client.close();
   }

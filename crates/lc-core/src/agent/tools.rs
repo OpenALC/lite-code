@@ -16,6 +16,8 @@ pub enum Risk {
     Execute,
     /// 网络/外部：db_query / mcp_*
     Network,
+    /// 插件贡献的工具（ext lane 的 contributes.tools）：v0 一律视为需审批。
+    Mutating,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +116,20 @@ impl ToolRegistry {
     /// 截断（保持 harness 的 12 工具预算）。内置的 5 个 `db_*` 工具保留。
     pub fn with_mcp_tools(mut self, specs: impl IntoIterator<Item = ToolSpec>) -> Self {
         self.specs.retain(|spec| spec.name != "mcp_tool");
+        for spec in specs {
+            match self.register(spec) {
+                Ok(()) => {}
+                Err(ToolRegistryError::Duplicate(_)) => continue,
+                Err(ToolRegistryError::TooMany { .. }) => break,
+            }
+        }
+        self
+    }
+
+    /// 注册插件贡献的 Agent 工具（一律 [`Risk::Mutating`]，由调用方保证）；
+    /// 与 MCP 动态工具共享 12 工具预算：重名静默跳过（不覆盖既有工具），
+    /// 到上限即止。宿主不可用/插件禁用时不调用本方法，工具不注册。
+    pub fn with_plugin_tools(mut self, specs: impl IntoIterator<Item = ToolSpec>) -> Self {
         for spec in specs {
             match self.register(spec) {
                 Ok(()) => {}
@@ -421,5 +437,40 @@ mod tests {
         );
         assert!(registry.get("mcp_ok").is_some());
         assert_eq!(registry.len(), MAX_TOOLS);
+    }
+
+    #[test]
+    fn with_plugin_tools_keeps_budget_and_skips_duplicates() {
+        let registry = ToolRegistry::with_builtins().with_mcp_tools([]);
+        let registry = registry.with_plugin_tools([
+            ToolSpec::new("plugin.example.search", Risk::Mutating),
+            // 与内置工具重名：静默跳过，不覆盖既有风险等级。
+            ToolSpec::new("read_file", Risk::Mutating),
+        ]);
+        assert_eq!(
+            registry.get("plugin.example.search").map(|spec| spec.risk),
+            Some(Risk::Mutating)
+        );
+        assert_eq!(
+            registry.get("read_file").map(|spec| spec.risk),
+            Some(Risk::Read)
+        );
+        assert_eq!(registry.len(), MAX_TOOLS);
+
+        // 预算只剩 1 个时：先到的插件工具注册，多余的静默截断。
+        let full = ToolRegistry::with_builtins().with_mcp_tools([]);
+        let full = full.with_plugin_tools([
+            ToolSpec::new("plugin.a", Risk::Mutating),
+            ToolSpec::new("plugin.b", Risk::Mutating),
+        ]);
+        assert_eq!(full.len(), MAX_TOOLS);
+        assert!(full.get("plugin.a").is_some());
+        assert!(full.get("plugin.b").is_none());
+
+        // 预算为 0（满额注册表）时插件工具整体静默跳过。
+        let full = ToolRegistry::with_builtins();
+        let full = full.with_plugin_tools([ToolSpec::new("plugin.a", Risk::Mutating)]);
+        assert_eq!(full.len(), MAX_TOOLS);
+        assert!(full.get("plugin.a").is_none());
     }
 }

@@ -509,6 +509,13 @@ impl AgentFactory for RealAgentFactory {
 }
 
 /// plan 模式只暴露读工具；不注册 MCP、`task` 或 `db_*`，模型不会看到这些定义。
+///
+/// TODO(插件级 Agent 工具，docs/EXTENSIONS.md §4)：桌面端已把启用 node 插件的
+/// contributes.tools 注册为 `Risk::Mutating` 工具（`lc_core::ext::plugin_tools` +
+/// `ExtToolExecutor` + `HostToolRunner`）。鸿蒙端接入点在本函数与 [`RealAgentFactory`]：
+/// 需要引入 ExtHost 生命周期管理（当前 ohos 无扩展宿主），且 plan 只读策略会拒绝
+/// 一切 Mutating 工具（lc-core policy.rs evaluate），接入前需先定义鸿蒙侧的
+/// 插件工具审批语义。
 fn read_only_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     for (name, risk) in [
