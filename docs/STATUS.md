@@ -369,7 +369,12 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   `__settings__`/`__providers__` 标签恢复过滤（+1 单测，web 432 项）。
   运行时 e2e 全过；release notes 验证记录按复审更正（CI 取消链说明、
   web 变更列明、432 计数）。
-- **待发**：preview.65 tag（notes 已按两轮审查定稿，等发版指令）。
+- **readiness 复核收口**（`83bb73c` 键盘隔离 + `c0ff64f` 版本变更）：捕获阶段
+  守卫拦截后台全局快捷键（Ctrl+S/Ctrl+F 等，CodeEditor/AgentPanel 独立监听
+  一并隔离；输入框原生编辑键不受影响）；焦点陷阱修正（打开聚焦首控件、
+  立即 Shift+Tab 回绕）；e2e 五项全过（含开/关对照实验与 Agent 模式 Ctrl+F）。
+  版本变更 .64→.65 独立提交，`check-version --release --tag v0.6.1-preview.65`
+  通过，CI 绿——**打标前置条件全部满足，等「发版」指令**。
 
 ## main(2)：lc-host M3a 事件出口统一（f8a4cce）
 
