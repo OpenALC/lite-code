@@ -300,6 +300,24 @@ describe('draftFromInfo（列表数据源回填）', () => {
     }
   }
 
+  /** 模拟 lc-core info_from_config（契约 0.9）：空 user/secret_ref 不携带。 */
+  function infoFromConfig(config: DbConnectionConfig): DbConnectionInfo {
+    const remote = isRemoteKind(config.kind)
+    return {
+      connection_id: config.connection_id,
+      name: config.name,
+      kind: config.kind,
+      read_only: config.read_only,
+      state: 'disconnected',
+      host: remote ? config.host || null : null,
+      port: remote ? config.port : 0,
+      user: remote && config.user ? config.user : null,
+      secretRef: remote && config.secret_ref ? config.secret_ref : null,
+      database: config.database || null,
+      error: null,
+    }
+  }
+
   it('远程连接回填 host/database/name，port 回落默认、user/密码为空', () => {
     const filled = draftFromInfo(info())
     expect(filled.name).toBe('Prod')
@@ -317,6 +335,72 @@ describe('draftFromInfo（列表数据源回填）', () => {
     expect(filled.host).toBe('')
     expect(filled.port).toBe('')
     expect(filled.database).toBe('app.db')
+  })
+
+  it('契约 0.9：info 携带 port/user/secretRef 时如实回填（优先于回落）', () => {
+    const filled = draftFromInfo(
+      info({ port: 5433, user: 'reporter', secretRef: 'env:PGPASS' }),
+    )
+    expect(filled.port).toBe('5433')
+    expect(filled.user).toBe('reporter')
+    expect(filled.passwordEnv).toBe('PGPASS')
+  })
+
+  it('契约 0.9：sqlite 的 info 即使误带远程字段也回填为空', () => {
+    const filled = draftFromInfo(
+      info({
+        kind: 'sqlite',
+        host: null,
+        database: 'app.db',
+        port: 0,
+        user: null,
+        secretRef: null,
+      }),
+    )
+    expect(filled.host).toBe('')
+    expect(filled.port).toBe('')
+    expect(filled.user).toBe('')
+    expect(filled.passwordEnv).toBe('')
+  })
+
+  it('编辑回填往返：完整远程 draft → config → info → draft 全等', () => {
+    const original = draft({
+      name: 'pg',
+      kind: 'postgres',
+      host: 'db.internal',
+      port: '5433',
+      database: 'analytics',
+      user: 'reporter',
+      passwordEnv: 'PGPASS',
+      readOnly: true,
+    })
+    const roundtrip = draftFromInfo(infoFromConfig(buildConfig(original, 'c1')))
+    expect(roundtrip).toEqual(original)
+  })
+
+  it('无密码远程连接往返后 user/密码仍为空串', () => {
+    const original = draft({
+      name: 'pg',
+      kind: 'postgres',
+      host: 'db.internal',
+      port: '5432',
+      database: 'analytics',
+    })
+    const roundtrip = draftFromInfo(infoFromConfig(buildConfig(original, 'c1')))
+    expect(roundtrip).toEqual(original)
+  })
+
+  it('端口缺省归一：draft 空端口经 config（回落默认）→ info 回填后为默认端口串', () => {
+    const original = draft({
+      name: 'pg',
+      kind: 'postgres',
+      host: 'db.internal',
+      port: '',
+      database: 'analytics',
+    })
+    const roundtrip = draftFromInfo(infoFromConfig(buildConfig(original, 'c1')))
+    expect(roundtrip.port).toBe('5432')
+    expect(roundtrip).toEqual({ ...original, port: '5432' })
   })
 })
 

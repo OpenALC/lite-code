@@ -780,7 +780,7 @@ function asTaskDiff(
   }
 }
 
-// ==== 数据库命令（契约 v0.6；DTO 镜像见 dbTypes.ts） ====
+// ==== 数据库命令（契约 v0.9；DTO 镜像见 dbTypes.ts） ====
 
 /** 浏览器 dev 的内存连接表：不连真实数据库，仅让连接 CRUD 流程可演示。 */
 const browserDbConnections = new Map<string, DbConnectionInfo>()
@@ -794,6 +794,9 @@ function browserDbConnection(connectionId: string): DbConnectionInfo {
       read_only: false,
       state: 'disconnected',
       host: null,
+      port: 0,
+      user: null,
+      secretRef: null,
       database: null,
       error: null,
     }
@@ -802,13 +805,17 @@ function browserDbConnection(connectionId: string): DbConnectionInfo {
 
 function browserDbInfoFromConfig(config: DbConnectionConfig): DbConnectionInfo {
   const previous = browserDbConnections.get(config.connection_id)
+  const remote = config.kind !== 'sqlite'
   return {
     connection_id: config.connection_id,
     name: config.name,
     kind: config.kind,
     read_only: config.read_only,
     state: previous?.state ?? 'disconnected',
-    host: config.kind === 'sqlite' ? null : (config.host || null),
+    host: remote ? config.host || null : null,
+    port: remote ? config.port : 0,
+    user: remote && config.user ? config.user : null,
+    secretRef: remote && config.secret_ref ? config.secret_ref : null,
     database: config.database || null,
     error: null,
   }

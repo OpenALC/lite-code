@@ -1,6 +1,6 @@
 // 由 lc-proto codegen 生成，请勿手改。
 // 重新生成：cargo run --locked -p lc-proto --features codegen --bin codegen
-// 契约版本：0.8.0
+// 契约版本：0.9.0
 
 // ---- lc_proto::ErrorCode ----
 export type ErrorCode = "internal" | "not_implemented" | "invalid_argument" | "timeout" | "cancelled" | "path_outside_root" | "not_found" | "io" | "node_unavailable" | "node_broken" | "shell_unavailable" | "contract_mismatch" | "permission_denied" | "db_unavailable" | "db_rejected" | "db_read_only" | "git_unavailable" | "git_rejected";
@@ -99,7 +99,15 @@ export type DbKind = "postgres" | "mysql" | "mssql" | "sqlite";
 export type DbConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
 // ---- lc_proto::DbConnectionInfo ----
-export type DbConnectionInfo = { connection_id: string, name: string, kind: DbKind, read_only: boolean, state: DbConnectionState, host?: string | null, database?: string | null, error?: string | null, };
+export type DbConnectionInfo = { connection_id: string, name: string, kind: DbKind, read_only: boolean, state: DbConnectionState, host?: string | null, 
+/**
+ * 远程端口；0 表示缺省/未设置（序列化省略），UI 回落 kind 默认端口。
+ */
+port?: number, user?: string | null, 
+/**
+ * 凭证引用（`env:NAME` 等）；空串不携带。camelCase 与 TS 绑定一致。
+ */
+secretRef?: string | null, database?: string | null, error?: string | null, };
 
 // ---- lc_proto::DbSchemaNodeKind ----
 export type DbSchemaNodeKind = "database" | "schema" | "table" | "view" | "column";

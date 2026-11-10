@@ -11,7 +11,7 @@ use crate::runtime::{NodeStatus, ShellInfo};
 use crate::task::{FileChangeDto, TaskInfo};
 
 /// 当前契约版本。规则见 docs/VERSIONING.md §8。
-pub const CONTRACT_VERSION: &str = "0.8.0";
+pub const CONTRACT_VERSION: &str = "0.9.0";
 
 /// 全部命令名，与 [`CoreCommand`] 的 serde tag 一一对应。
 /// 单元测试保证与枚举同步（数量 + 命名）。

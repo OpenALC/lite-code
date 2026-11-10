@@ -1,4 +1,4 @@
-// P5 数据库 DTO 与运行时守卫（契约 v0.6，docs/MILESTONES.md P5）。
+// P5 数据库 DTO 与运行时守卫（契约 v0.9，docs/MILESTONES.md P5）。
 //
 // 类型单一来源：@lc-proto（crates/lc-proto codegen 产物）。本文件只保留
 // 枚举数组与跨 IPC 边界的形状校验；字段名与 Rust serde 严格一致。
@@ -79,6 +79,13 @@ function isOptionalString(value: unknown): value is string | null | undefined {
   return value === null || value === undefined || typeof value === 'string'
 }
 
+/** 契约 0.9 起 port 随 info 下发（u32，0 缺省省略）；旧核心可能整体缺省。 */
+function isOptionalNonNegativeInt(
+  value: unknown,
+): value is number | null | undefined {
+  return value === null || value === undefined || isNonNegativeInt(value)
+}
+
 export function isDbKind(value: unknown): value is DbKind {
   return typeof value === 'string' && (DB_KINDS as readonly string[]).includes(value)
 }
@@ -106,6 +113,9 @@ export function isDbConnectionInfo(value: unknown): value is DbConnectionInfo {
     typeof value.read_only === 'boolean' &&
     isDbConnectionState(value.state) &&
     isOptionalString(value.host) &&
+    isOptionalNonNegativeInt(value.port) &&
+    isOptionalString(value.user) &&
+    isOptionalString(value.secretRef) &&
     isOptionalString(value.database) &&
     isOptionalString(value.error)
   )

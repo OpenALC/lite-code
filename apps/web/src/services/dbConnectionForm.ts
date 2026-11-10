@@ -2,8 +2,8 @@
 // UI 不收集明文密码：密码框只收环境变量名，保存时拼 `env:` 前缀进 secret_ref，
 // 编辑时反解回变量名（契约：secret_ref 为空串表示 SQLite 或无认证）。
 //
-// 注意：列表/编辑数据源 DbConnectionInfo 只带 host/database，不带 port/user/secret_ref，
-// 编辑回填时这些字段回落 kind 默认端口与空串（draftFromInfo）。
+// 注意：列表/编辑数据源 DbConnectionInfo 自契约 0.9 起携带 port/user/secretRef，
+// draftFromInfo 优先采用；字段缺失（旧核心）时回落 kind 默认端口与空串。
 
 import type { DbConnectionConfig, DbConnectionInfo, DbKind } from './dbTypes'
 
@@ -127,16 +127,25 @@ export function draftFromConfig(config: DbConnectionConfig): ConnectionDraft {
   }
 }
 
-/** 列表数据源（DbConnectionInfo，无 port/user/secret_ref）→ 草稿。 */
+/**
+ * 列表数据源（DbConnectionInfo）→ 草稿。
+ * 契约 0.9 起 info 携带 port/user/secretRef，优先采用；缺失/0/空（旧核心
+ * 或 SQLite）时回落 kind 默认端口与空串，行为与 0.8 一致。
+ */
 export function draftFromInfo(connection: DbConnectionInfo): ConnectionDraft {
+  const remote = isRemoteKind(connection.kind)
+  const port =
+    typeof connection.port === 'number' && connection.port > 0
+      ? String(connection.port)
+      : String(remote ? defaultPort(connection.kind) : 0)
   return {
     name: connection.name,
     kind: connection.kind,
     host: connection.host ?? '',
-    port: connection.kind === 'sqlite' ? '' : String(REMOTE_PORT_DEFAULTS[connection.kind]),
+    port: remote ? port : '',
     database: connection.database ?? '',
-    user: '',
-    passwordEnv: '',
+    user: remote ? (connection.user ?? '') : '',
+    passwordEnv: remote ? secretRefToEnvName(connection.secretRef ?? '') : '',
     readOnly: connection.read_only,
   }
 }

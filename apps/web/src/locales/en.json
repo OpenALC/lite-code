@@ -418,6 +418,10 @@
     "databaseRequired": "Database name is required",
     "hostRequired": "Host is required",
     "portInvalid": "Port must be an integer between 1 and 65535",
+    "errorHint": {
+      "nodeRuntime": "No usable Node runtime found. Install or point to Node.js in Lite Code runtime settings, then retry.",
+      "connection": "Could not connect to the database. Check the host, port and credential environment variable (secret_ref), and make sure the database server is reachable."
+    },
     "expand": "Expand",
     "collapse": "Collapse",
     "insertTable": "Insert query: {name}",

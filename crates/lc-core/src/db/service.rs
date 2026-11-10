@@ -243,6 +243,10 @@ impl DbService {
                 info.kind = config.kind;
                 info.read_only = config.read_only;
                 info.host = host_option(&config);
+                info.port = u32::from(config.port);
+                info.user = (!config.user.is_empty()).then(|| config.user.clone());
+                info.secret_ref =
+                    (!config.secret_ref.is_empty()).then(|| config.secret_ref.clone());
                 info.database = database_option(&config);
                 info.clone()
             } else {
@@ -656,6 +660,9 @@ fn info_from_config(config: &DbConnectionConfig) -> DbConnectionInfo {
         read_only: config.read_only,
         state: DbConnectionState::Disconnected,
         host: host_option(config),
+        port: u32::from(config.port),
+        user: (!config.user.is_empty()).then(|| config.user.clone()),
+        secret_ref: (!config.secret_ref.is_empty()).then(|| config.secret_ref.clone()),
         database: database_option(config),
         error: None,
     }
@@ -846,7 +853,29 @@ mod tests {
             read_only: true,
             extra: Some("{\"ssl\":true}".to_string()),
         };
-        assert!(service.save_connection(mysql).is_ok());
+        let info = service.save_connection(mysql).expect("保存远程连接");
+        assert_eq!(info.host.as_deref(), Some("localhost"));
+        assert_eq!(info.port, 3306, "list/info 如实填充 port");
+        assert_eq!(info.user.as_deref(), Some("app"));
+        assert_eq!(
+            info.secret_ref.as_deref(),
+            Some("env:MYSQL_PASSWORD"),
+            "list/info 如实填充 secret_ref"
+        );
+
+        drop(service);
+        let reloaded = DbService::new(dir.config_path(), None);
+        let listed = reloaded.list();
+        let my = listed.iter().find(|c| c.connection_id == "my").expect("my");
+        assert_eq!(my.port, 3306, "重载后 port 保持");
+        assert_eq!(my.user.as_deref(), Some("app"));
+        assert_eq!(my.secret_ref.as_deref(), Some("env:MYSQL_PASSWORD"));
+        let main = listed
+            .iter()
+            .find(|c| c.connection_id == "main")
+            .expect("main");
+        assert_eq!(main.port, 0, "SQLite port 为 0（序列化省略）");
+        assert!(main.user.is_none() && main.secret_ref.is_none());
     }
 
     #[test]

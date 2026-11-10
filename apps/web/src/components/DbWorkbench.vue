@@ -12,6 +12,7 @@ import {
   type DbController,
   type Translate,
 } from '../services/dbStore'
+import { connectErrorHintKey } from '../services/dbErrorHint'
 
 const props = defineProps<{ controller: DbController }>()
 const { t } = useI18n()
@@ -29,6 +30,10 @@ const canQuery = computed(() => connected.value && !state.value.loading)
 const canExecute = computed(() => canQuery.value && !state.value.readOnly)
 const summary = computed(() => resultSummary(state.value.result))
 const untrusted = computed(() => isUntrusted(state.value.result))
+/** 连接失败按错误码分流提示（Node 缺失 → 运行时设置；其它 → 检查连接参数）。 */
+const errorHintKey = computed(() =>
+  state.value.error ? connectErrorHintKey(state.value.error) : null,
+)
 const sql = computed({
   get: () => state.value.sql,
   set: value => props.controller.setSql(value),
@@ -124,6 +129,10 @@ function onSqlKeydown(event: KeyboardEvent): void {
     >
       <span class="error-code">{{ state.error.code }}</span>
       <span class="error-msg">{{ state.error.message }}</span>
+      <span
+        v-if="errorHintKey"
+        class="error-hint"
+      >{{ t(errorHintKey) }}</span>
       <button
         type="button"
         class="error-dismiss"
@@ -350,6 +359,7 @@ function onSqlKeydown(event: KeyboardEvent): void {
 .error-bar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 5px 10px;
@@ -369,6 +379,15 @@ function onSqlKeydown(event: KeyboardEvent): void {
 .error-msg {
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-hint {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: 10px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 

@@ -24,6 +24,10 @@ pub enum DbConnectionState {
     Error,
 }
 
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct DbConnectionInfo {
@@ -34,6 +38,14 @@ pub struct DbConnectionInfo {
     pub state: DbConnectionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// 远程端口；0 表示缺省/未设置（序列化省略），UI 回落 kind 默认端口。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub port: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// 凭证引用（`env:NAME` 等）；空串不携带。camelCase 与 TS 绑定一致。
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "secretRef")]
+    pub secret_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -74,7 +74,7 @@ function openAdd(): void {
 
 function openEdit(connection: DbConnectionInfo): void {
   editingId.value = connection.connection_id
-  // DbConnectionInfo 只带 host/database；port/user/secret_ref 由 draftFromInfo 回落默认。
+  // 契约 0.9 起 info 携带 port/user/secretRef，draftFromInfo 如实回填。
   Object.assign(draft, draftFromInfo(connection))
   formError.value = null
   formOpen.value = true

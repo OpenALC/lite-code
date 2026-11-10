@@ -398,10 +398,12 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   `b69cf33`，final 复审建议提交）；release 工作流 10 资产已发布（draft=false，
   SHA256SUMS 随附）；updater-manifest 已提升到 .65（signed:false 与既有披露
   一致，3 平台含回滚通道 previous=.64）。
-- **Track B-M1 已合**（`50a81e3`）：MySQL/PG 连接管理 UI——远程表单
-  （host/port 校验/env 密码名 secret_ref/数据库必填）、dbStore 放开四 kind、
-  dbConnectionForm 纯函数 +30 单测，web 462 项全绿；已知限制（M3）：
-  DbConnectionInfo 不带 port/user/secret_ref，编辑回填回落默认。
+- **Track B-M1+M3 已合**（`50a81e3` + M3 契约 0.9）：MySQL/PG 连接管理
+  UI——远程表单（host/port 校验/env 密码名 secret_ref/数据库必填）、
+  dbStore 放开四 kind、dbConnectionForm 纯函数 +35 单测；契约 0.9 后
+  DbConnectionInfo 携带 port/user/secretRef（可选字段向后兼容），编辑回填
+  全等往返；connect 错误分类引导（Node 缺失/连接类分流提示，web 488 项
+  全绿）。M1 时的已知限制（回填回落默认）已随 M3 关闭。
   注意：本轮子代理并发期间发生 stash 误操作事故（agent-84 误 git stash
   卷走他轨在途改动，后已被 pop 还原），主 agent 已外科手术隔离提交，
   各轨道最终状态以验收时全量门禁为准。
