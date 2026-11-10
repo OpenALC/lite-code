@@ -180,7 +180,7 @@ pub(crate) fn discover(
 /// 插件中；依赖图存在环时环上插件整体标记 error。两者都需要完整插件
 /// 列表，因此在 discover 收尾时统一处理（参考 claimed_extensions 的
 /// 跨插件校验模式）。缺失依赖优先于环报错（一个插件只标一个错误）。
-fn validate_dependencies(plugins: &mut Vec<DiscoveredPlugin>) {
+fn validate_dependencies(plugins: &mut [DiscoveredPlugin]) {
     let ids: HashSet<&str> = plugins
         .iter()
         .filter_map(|plugin| {
