@@ -75,9 +75,9 @@ export function connectionStateLabel(state: DbConnectionState, t: Translate): st
   return t(`db.states.${state}`)
 }
 
-/** 连接按钮是否可用：当前只实现了 SQLite；connecting 时禁止重复点击。 */
+/** 连接按钮是否可用：四种 kind 均可连接（远程走 db-bridge sidecar）；connecting 时禁止重复点击。 */
 export function canConnect(connection: DbConnectionInfo): boolean {
-  return connection.kind === 'sqlite' && connection.state !== 'connecting'
+  return connection.state !== 'connecting'
 }
 
 export function activeConnection(state: DbState): DbConnectionInfo | null {

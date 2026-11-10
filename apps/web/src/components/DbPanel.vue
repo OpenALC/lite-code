@@ -1,7 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import {
+  buildConfig,
+  createDraft,
+  defaultPort,
+  draftFromInfo,
+  isRemoteKind,
+  remoteSummary,
+  validateDraft,
+  type ConnectionDraft,
+} from '../services/dbConnectionForm'
 import {
   activeConnection,
   canConnect,
@@ -15,9 +25,7 @@ import {
 } from '../services/dbStore'
 import {
   DB_KINDS,
-  type DbConnectionConfig,
   type DbConnectionInfo,
-  type DbKind,
 } from '../services/dbTypes'
 import DbSchemaTree from './DbSchemaTree.vue'
 import DbWorkbench from './DbWorkbench.vue'
@@ -36,24 +44,19 @@ const translate: Translate = (key, params) => t(key, params ?? {})
 const active = computed(() => activeConnection(state.value))
 const connections = computed(() => state.value.connections)
 
-interface ConnectionDraft {
-  name: string
-  kind: DbKind
-  database: string
-  readOnly: boolean
-}
-
 const formOpen = ref(false)
 const editingId = ref<string | null>(null)
 const saving = ref(false)
 const formError = ref<string | null>(null)
 const pendingDeleteId = ref<string | null>(null)
 
-const draft = reactive<ConnectionDraft>({
-  name: '',
-  kind: 'sqlite',
-  database: '',
-  readOnly: false,
+const draft = reactive<ConnectionDraft>(createDraft())
+
+// kind 切换到远程时端口为空则预填默认端口（postgres 5432 / mysql 3306 / mssql 1433）。
+watch(() => draft.kind, kind => {
+  if (isRemoteKind(kind) && draft.port.trim().length === 0) {
+    draft.port = String(defaultPort(kind))
+  }
 })
 
 const schemaEmptyText = computed(() => {
@@ -64,20 +67,15 @@ const schemaEmptyText = computed(() => {
 
 function openAdd(): void {
   editingId.value = null
-  draft.name = ''
-  draft.kind = 'sqlite'
-  draft.database = ''
-  draft.readOnly = false
+  Object.assign(draft, createDraft())
   formError.value = null
   formOpen.value = true
 }
 
 function openEdit(connection: DbConnectionInfo): void {
   editingId.value = connection.connection_id
-  draft.name = connection.name
-  draft.kind = connection.kind
-  draft.database = connection.database ?? ''
-  draft.readOnly = connection.read_only
+  // DbConnectionInfo 只带 host/database；port/user/secret_ref 由 draftFromInfo 回落默认。
+  Object.assign(draft, draftFromInfo(connection))
   formError.value = null
   formOpen.value = true
 }
@@ -90,30 +88,16 @@ function closeForm(): void {
 async function saveForm(): Promise<void> {
   if (saving.value) return
   formError.value = null
-  if (draft.name.trim().length === 0) {
-    formError.value = t('db.nameRequired')
-    return
-  }
-  if (draft.kind !== 'sqlite') {
-    formError.value = t('db.sqliteOnly')
-    return
-  }
-  if (draft.database.trim().length === 0) {
-    formError.value = t('db.pathRequired')
+  const errorKey = validateDraft(draft)
+  if (errorKey !== null) {
+    formError.value = t(errorKey)
     return
   }
   saving.value = true
-  const config: DbConnectionConfig = {
-    connection_id: editingId.value ?? nextConnectionId(state.value.connections),
-    name: draft.name.trim(),
-    kind: 'sqlite',
-    host: '',
-    port: 0,
-    database: draft.database.trim(),
-    user: '',
-    secret_ref: '',
-    read_only: draft.readOnly,
-  }
+  const config = buildConfig(
+    draft,
+    editingId.value ?? nextConnectionId(state.value.connections),
+  )
   const saved = await props.controller.saveConnection(config)
   saving.value = false
   if (saved) {
@@ -247,12 +231,67 @@ function insertTable(path: string[]): void {
               <span>{{ t('db.readOnly') }}</span>
             </label>
           </template>
-          <div
-            v-else
-            class="unsupported-note"
-          >
-            {{ t('db.sqliteOnly') }}
-          </div>
+          <template v-else>
+            <label class="field">
+              <span class="field-label">{{ t('db.host') }}</span>
+              <input
+                v-model="draft.host"
+                class="field-input mono"
+                type="text"
+                spellcheck="false"
+                :placeholder="t('db.hostPlaceholder')"
+              >
+            </label>
+            <label class="field">
+              <span class="field-label">{{ t('db.port') }}</span>
+              <input
+                v-model="draft.port"
+                class="field-input mono"
+                type="text"
+                inputmode="numeric"
+                spellcheck="false"
+                :placeholder="String(defaultPort(draft.kind))"
+              >
+            </label>
+            <label class="field">
+              <span class="field-label">{{ t('db.database') }}</span>
+              <input
+                v-model="draft.database"
+                class="field-input mono"
+                type="text"
+                spellcheck="false"
+                :placeholder="t('db.databaseNamePlaceholder')"
+              >
+            </label>
+            <label class="field">
+              <span class="field-label">{{ t('db.user') }}</span>
+              <input
+                v-model="draft.user"
+                class="field-input mono"
+                type="text"
+                spellcheck="false"
+                :placeholder="t('db.userPlaceholder')"
+              >
+            </label>
+            <label class="field">
+              <span class="field-label">{{ t('db.passwordEnv') }}</span>
+              <input
+                v-model="draft.passwordEnv"
+                class="field-input mono"
+                type="text"
+                spellcheck="false"
+                :placeholder="t('db.passwordEnvPlaceholder')"
+              >
+              <span class="field-hint">{{ t('db.passwordEnvHint') }}</span>
+            </label>
+            <label class="check">
+              <input
+                v-model="draft.readOnly"
+                type="checkbox"
+              >
+              <span>{{ t('db.readOnly') }}</span>
+            </label>
+          </template>
           <div
             v-if="formError"
             class="form-error"
@@ -263,7 +302,7 @@ function insertTable(path: string[]): void {
             <button
               type="submit"
               class="primary"
-              :disabled="saving || draft.kind !== 'sqlite'"
+              :disabled="saving"
             >
               {{ saving ? t('db.saving') : t('db.save') }}
             </button>
@@ -306,7 +345,12 @@ function insertTable(path: string[]): void {
                 >{{ connectionStateLabel(connection.state, translate) }}</span>
               </span>
               <span
-                v-if="connection.database"
+                v-if="remoteSummary(connection)"
+                class="conn-db"
+                :title="remoteSummary(connection) ?? undefined"
+              >{{ remoteSummary(connection) }}</span>
+              <span
+                v-else-if="connection.database"
                 class="conn-db"
                 :title="connection.database"
               >{{ connection.database }}</span>
@@ -317,30 +361,24 @@ function insertTable(path: string[]): void {
               >{{ connection.error }}</span>
             </button>
             <div class="conn-actions">
-              <template v-if="connection.kind === 'sqlite'">
-                <button
-                  v-if="connection.state === 'connected'"
-                  type="button"
-                  class="mini"
-                  :disabled="state.loading"
-                  @click="disconnect(connection)"
-                >
-                  {{ t('db.disconnect') }}
-                </button>
-                <button
-                  v-else
-                  type="button"
-                  class="mini"
-                  :disabled="!canConnect(connection) || state.loading"
-                  @click="connect(connection)"
-                >
-                  {{ connection.state === 'connecting' ? t('db.connecting') : t('db.connect') }}
-                </button>
-              </template>
-              <span
+              <button
+                v-if="connection.state === 'connected'"
+                type="button"
+                class="mini"
+                :disabled="state.loading"
+                @click="disconnect(connection)"
+              >
+                {{ t('db.disconnect') }}
+              </button>
+              <button
                 v-else
-                class="unsupported-mini"
-              >{{ t('db.sqliteOnly') }}</span>
+                type="button"
+                class="mini"
+                :disabled="!canConnect(connection) || state.loading"
+                @click="connect(connection)"
+              >
+                {{ connection.state === 'connecting' ? t('db.connecting') : t('db.connect') }}
+              </button>
               <button
                 type="button"
                 class="mini"
@@ -599,13 +637,10 @@ function insertTable(path: string[]): void {
   accent-color: var(--accent);
 }
 
-.unsupported-note {
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--panel-3);
-  color: var(--yellow);
-  font-size: 10px;
+.field-hint {
+  color: var(--fg-faint);
+  font-size: 9px;
+  line-height: 1.3;
 }
 
 .form-error {
@@ -764,12 +799,6 @@ function insertTable(path: string[]): void {
 .mini.danger:hover:not(:disabled) {
   border-color: var(--red);
   color: var(--red);
-}
-
-.unsupported-mini {
-  align-self: center;
-  color: var(--yellow);
-  font-size: 9px;
 }
 
 .schema-body {

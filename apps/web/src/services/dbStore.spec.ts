@@ -145,10 +145,13 @@ describe('labels 与摘要纯函数', () => {
     expect(isUntrusted(queryResult())).toBe(true)
   })
 
-  it('canConnect 只允许未处于 connecting 的 SQLite 连接', () => {
+  it('canConnect 允许四种 kind，仅 connecting 状态禁用', () => {
     expect(canConnect(connection({ kind: 'sqlite', state: 'disconnected' }))).toBe(true)
-    expect(canConnect(connection({ kind: 'postgres' }))).toBe(false)
+    expect(canConnect(connection({ kind: 'postgres' }))).toBe(true)
+    expect(canConnect(connection({ kind: 'mysql', state: 'error' }))).toBe(true)
+    expect(canConnect(connection({ kind: 'mssql', state: 'connected' }))).toBe(true)
     expect(canConnect(connection({ kind: 'sqlite', state: 'connecting' }))).toBe(false)
+    expect(canConnect(connection({ kind: 'postgres', state: 'connecting' }))).toBe(false)
   })
 })
 
