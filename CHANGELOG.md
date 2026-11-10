@@ -129,6 +129,8 @@
 - 插件级 Agent 工具：插件经 `contributes.tools` 向 AgentLoop 贡献工具（30s 超时/128KiB 截断/UNTRUSTED 边界），Risk::Mutating 走既有审批；ext-host 协议 `tool/execute` + `ctx.tools.register`（agent-81）
 - MySQL/PostgreSQL 连接管理 UI（M1）：远程连接表单（env 密码名不落明文）+ dbStore 放开四 kind（agent-84）；db-bridge 结果集字节截断（4KiB 单元格/128KiB 预算）+ CI PG/MySQL 服务容器集成测试（agent-85）
 - LSP 编辑器智能三件套（契约 v0.8）：completion/hover/definition 按路径请求 + Monaco 异步 provider + 跨文件跳转 registerEditorOpener（agent-82）
+- 插件延迟激活：activationEvents 生效（onCommand 懒激活/幂等/失败 -32601 带 stage，`*` 向后兼容）（agent-86）
+- db lane M3（契约 v0.9）：DbConnectionInfo 携带 port/user/secretRef，远程连接编辑回填全等往返；connect 错误分类引导（Node 缺失/连接类分流）（agent-87）——MySQL/PG 三切片全部关闭
 
 ## [0.6.1-preview.64] - 2026-11-10
 
