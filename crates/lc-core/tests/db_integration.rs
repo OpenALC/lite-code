@@ -89,7 +89,7 @@ fn start(node: &Path) -> DbSidecar {
     sidecar
 }
 
-fn cell<'a>(result: &'a DbQueryResult, row: usize, column: usize) -> &'a str {
+fn cell(result: &DbQueryResult, row: usize, column: usize) -> &str {
     result.rows[row][column]
         .as_deref()
         .expect("单元格不应为 NULL")
