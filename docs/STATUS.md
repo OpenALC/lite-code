@@ -356,6 +356,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   通过）——打包插件系统六块收官 + db M3 契约 0.9；notes
   `docs/releases/0.6.1-preview.67.md`；workspace 714 项发版前实测全绿。
   后台发版脚本已修 `/tmp` 路径坑（上轮 step4 假循环根因）。
+- **插件市场设计定稿**（`docs/plans/plugin-marketplace.md`，agent-92）：
+  静态 index+多源镜像（与 updater-manifest 同构，零服务端零新增重型依赖——
+  ureq/zip/sha2 已在 lc-core）；签名两档（警告/强制 minisign 分钥）；
+  curated PR 制审查；M1 index+安装/M2 更新卸载/M3 签名多镜像（13 点）。
 - **preview.67 已发布**（2026-11-11 凌晨）：10 资产 draft=false，
   updater-manifest 提升到 .67（previous=.66，脚本自验真实通过）——
   插件系统六块收官 + db M3 契约 0.9 全量交付。三连发 .65/.66/.67 完成。
