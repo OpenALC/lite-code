@@ -350,6 +350,13 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   B 类（soak/审计/签名/Win11）未触碰，按 §6 等待维护者。
 - **发布纪律**：M2/M3a 均未推 tag；preview.65 与 M3b/3c 留审查后。
 
+## preview.66 发版中（2026-11-11）
+
+- tag `v0.6.1-preview.66` 打在 `b8041b1`（版本变更+notes 提交，CI 绿、
+  check-version --release 通过）——打包 swarm 四轨道 + 设置模态浮层 +
+  lc-host M4 关闭；release notes `docs/releases/0.6.1-preview.66.md`；
+  workspace 692 项发版前复测全绿。后台发版任务进行中（draft→发布→manifest）。
+
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
 - **M3b 已按审查合并**（`be84ab6`）：冲突按意见解决（3b 取分支版 lc-core 落点
