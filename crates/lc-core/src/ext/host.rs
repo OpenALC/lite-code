@@ -368,6 +368,11 @@ impl ExtHost {
         workspace_root: &Path,
         plugins: &[HostPlugin],
     ) -> Result<(), ExtError> {
+        // 惰性 GC（marketplace 设计 §3.5）：宿主进程每次启动/重建顺带清理
+        // 超龄 `.tmp` 与 `*.uninstall-bak` 残留——best-effort，失败不阻塞。
+        if let Ok(paths) = super::ExtPaths::default_for(None) {
+            super::marketplace::gc_stale(&paths);
+        }
         if self.initialized.as_deref() != Some(plugins) {
             self.stop_host();
         } else if let Some(process) = self.process.as_mut() {
