@@ -25,7 +25,7 @@ test("initialize loads the example plugin and executes a command", async (t) => 
     assert.deepEqual(result.errors, []);
     assert.equal(path.resolve(result.workspaceRoot), path.resolve(fixture.workspaceRoot));
     assert.deepEqual(result.plugins, [
-      { id: "example.hello", commands: ["example.hello"], tools: ["example.hello.tool"] }
+      { id: "example.hello", commands: ["example.hello"], tools: ["example.hello.tool"], views: [] }
     ]);
 
     const first = await client.execute(
@@ -237,11 +237,12 @@ test("tool/execute dispatches to registered tools with command fallback", async 
     assert.equal(result.errors[0].pluginId, "test.undeclared-tool");
     assert.match(result.errors[0].message, /not declared/);
     assert.deepEqual(result.plugins, [
-      { id: "example.hello", commands: ["example.hello"], tools: ["example.hello.tool"] },
+      { id: "example.hello", commands: ["example.hello"], tools: ["example.hello.tool"], views: [] },
       {
         id: "test.agent-tools",
         commands: ["test.echo-command"],
-        tools: ["test.explicit", "test.fallback", "test.broken"]
+        tools: ["test.explicit", "test.fallback", "test.broken"],
+        views: []
       }
     ]);
 
@@ -572,6 +573,265 @@ test("lazy activation failure returns -32601 with reason and does not retry", as
 
     // 其它插件不受影响。
     const hello = await client.execute("example.hello", "example.hello", {}, "broken-4");
+    assert.equal(hello.result.calls, 1);
+    assert.deepEqual(client.protocolErrors, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("view/children round-trips nodes, validates shapes and unknown views", async (t) => {
+  const fixture = await createFixture(t);
+  const tree = await writePlugin(fixture.pluginsRoot, "test.tree", {
+    commands: [],
+    views: ["test.tree", "test.bad-shape", "test.throwing"],
+    source: `
+      export function activate(ctx) {
+        ctx.views.register("test.tree", {
+          getChildren(nodeId) {
+            if (nodeId === undefined) {
+              return [
+                { id: "a", label: "Alpha", icon: "file", command: "test.tree.open", tooltip: "open a", junk: 1 },
+                { id: "b", label: "Beta" }
+              ];
+            }
+            if (nodeId === "a") {
+              return Promise.resolve([{ id: "a-1", label: "Child" }]);
+            }
+            return [];
+          }
+        });
+        ctx.views.register("test.bad-shape", {
+          getChildren() {
+            return [{ id: "x" }, { id: "y", label: 42 }];
+          }
+        });
+        ctx.views.register("test.throwing", {
+          getChildren() {
+            throw new Error("getChildren exploded");
+          }
+        });
+      }
+      export function deactivate() {}
+    `
+  });
+  const nonArray = await writePlugin(fixture.pluginsRoot, "test.non-array-view", {
+    commands: [],
+    views: ["test.non-array"],
+    source: `
+      export function activate(ctx) {
+        ctx.views.register("test.non-array", {
+          getChildren() {
+            return { not: "an array" };
+          }
+        });
+      }
+    `
+  });
+
+  const client = new HostClient(fixture.workspaceRoot);
+  try {
+    const result = await initializeHost(client, fixture, [
+      fixture.spec,
+      { ...tree, main: path.join(tree.path, "index.mjs") },
+      { ...nonArray, main: path.join(nonArray.path, "index.mjs") }
+    ]);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.plugins.map((plugin) => plugin.id), [
+      "example.hello",
+      "test.tree",
+      "test.non-array-view"
+    ]);
+    const treePlugin = result.plugins.find((plugin) => plugin.id === "test.tree");
+    assert.deepEqual(treePlugin.views, ["test.tree", "test.bad-shape", "test.throwing"]);
+
+    // 根节点：多余键被丢弃，icon/command/tooltip 原样保留。
+    const roots = await client.viewChildren("test.tree", "test.tree", undefined, "v-root");
+    assert.deepEqual(roots.result, [
+      { id: "a", label: "Alpha", icon: "file", command: "test.tree.open", tooltip: "open a" },
+      { id: "b", label: "Beta" }
+    ]);
+
+    // 节点展开：Promise provider 与空数组合法。
+    const child = await client.viewChildren("test.tree", "test.tree", "a", "v-child");
+    assert.deepEqual(child.result, [{ id: "a-1", label: "Child" }]);
+    const leaf = await client.viewChildren("test.tree", "test.tree", "b", "v-leaf");
+    assert.deepEqual(leaf.result, []);
+
+    // 未声明的 viewId：-32601 带 reason。
+    const undeclared = await client.viewChildren("test.tree", "test.undeclared", undefined, "v-none");
+    assert.equal(undeclared.error.code, -32601);
+    assert.equal(undeclared.error.data.pluginId, "test.tree");
+    assert.equal(undeclared.error.data.viewId, "test.undeclared");
+    assert.equal(undeclared.error.data.reason, "view-not-declared");
+
+    // 未知插件：-32601 plugin-not-loaded。
+    const unknownPlugin = await client.viewChildren("test.nope", "test.tree", undefined, "v-nope");
+    assert.equal(unknownPlugin.error.code, -32601);
+    assert.equal(unknownPlugin.error.data.reason, "plugin-not-loaded");
+
+    // 形状非法：缺 label / label 非字符串 / 返回非数组 → -32000 reason=invalid-node。
+    const badShape = await client.viewChildren("test.tree", "test.bad-shape", undefined, "v-bad");
+    assert.equal(badShape.error.code, -32000);
+    assert.equal(badShape.error.data.reason, "invalid-node");
+    assert.match(badShape.error.message, /non-empty string label/);
+
+    const notArray = await client.viewChildren("test.non-array-view", "test.non-array", undefined, "v-narr");
+    assert.equal(notArray.error.code, -32000);
+    assert.equal(notArray.error.data.reason, "invalid-node");
+
+    // provider 抛错：-32000 带原始错误，宿主保持可用。
+    const thrown = await client.viewChildren("test.tree", "test.throwing", undefined, "v-throw");
+    assert.equal(thrown.error.code, -32000);
+    assert.match(thrown.error.message, /getChildren exploded/);
+    const afterThrow = await client.viewChildren("test.tree", "test.tree", undefined, "v-after");
+    assert.equal(afterThrow.error, undefined);
+
+    assert.deepEqual(client.protocolErrors, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("onView lazy-activates view providers; failures return -32601 without retry", async (t) => {
+  const fixture = await createFixture(t);
+  const lazyView = await writePlugin(fixture.pluginsRoot, "test.lazy-view", {
+    commands: ["test.lazy-view.run"],
+    views: ["test.lazy-view.tree"],
+    activationEvents: ["onView:test.lazy-view.tree"],
+    source: `
+      export function activate(ctx) {
+        ctx.log("test.lazy-view activated");
+        ctx.views.register("test.lazy-view.tree", {
+          getChildren(nodeId) {
+            return [{ id: "root", label: nodeId ?? "lazy root", command: "test.lazy-view.run" }];
+          }
+        });
+      }
+      export function deactivate() {
+        console.error("test.lazy-view deactivated");
+      }
+    `
+  });
+  const brokenView = await writePlugin(fixture.pluginsRoot, "test.broken-view", {
+    commands: ["test.broken-view.run"],
+    views: ["test.broken-view.tree"],
+    activationEvents: ["onView:test.broken-view.tree"],
+    source: `
+      export function activate() {
+        console.error("test.broken-view activating");
+        throw new Error("view activation exploded");
+      }
+    `
+  });
+  const eagerView = await writePlugin(fixture.pluginsRoot, "test.eager-view", {
+    commands: [],
+    views: ["test.eager-view.tree"],
+    activationEvents: ["*"],
+    source: `
+      export function activate(ctx) {
+        ctx.log("test.eager-view activated");
+        // 故意不注册 provider：view-not-registered。
+      }
+    `
+  });
+
+  const client = new HostClient(fixture.workspaceRoot);
+  try {
+    const result = await initializeHost(client, fixture, [
+      fixture.spec,
+      lazyView,
+      brokenView,
+      eagerView
+    ]);
+    assert.deepEqual(result.errors, []);
+    // 立即插件只有 eager-view 与示例插件；onView 插件不在 initialize 加载。
+    assert.deepEqual(
+      result.plugins.map((plugin) => plugin.id),
+      ["example.hello", "test.eager-view"]
+    );
+    assert.doesNotMatch(client.stderr, /test\.lazy-view activated/);
+
+    // view/children 命中延迟插件声明的视图：懒激活后返回节点。
+    const first = await client.viewChildren("test.lazy-view", "test.lazy-view.tree", undefined, "lv-1");
+    assert.equal(first.error, undefined);
+    assert.deepEqual(first.result, [
+      { id: "root", label: "lazy root", command: "test.lazy-view.run" }
+    ]);
+    assert.match(client.stderr, /test\.lazy-view activated/);
+
+    // nodeId 透传 provider。
+    const nested = await client.viewChildren("test.lazy-view", "test.lazy-view.tree", "n1", "lv-2");
+    assert.deepEqual(nested.result, [{ id: "root", label: "n1", command: "test.lazy-view.run" }]);
+
+    // 幂等：重复请求不再次激活。
+    await client.viewChildren("test.lazy-view", "test.lazy-view.tree", undefined, "lv-3");
+    assert.equal((client.stderr.match(/test\.lazy-view activated/g) ?? []).length, 1);
+
+    // activate 失败的延迟插件：-32601 + reason/stage，且不重试。
+    const broken = await client.viewChildren("test.broken-view", "test.broken-view.tree", undefined, "bv-1");
+    assert.equal(broken.error.code, -32601);
+    assert.equal(broken.error.data.reason, "activation-failed");
+    assert.equal(broken.error.data.stage, "activate");
+    assert.match(broken.error.message, /view activation exploded/);
+    const brokenAgain = await client.viewChildren("test.broken-view", "test.broken-view.tree", undefined, "bv-2");
+    assert.equal(brokenAgain.error.code, -32601);
+    assert.equal((client.stderr.match(/test\.broken-view activating/g) ?? []).length, 1);
+
+    // 立即插件未注册 provider：-32601 view-not-registered。
+    const eager = await client.viewChildren("test.eager-view", "test.eager-view.tree", undefined, "ev-1");
+    assert.equal(eager.error.code, -32601);
+    assert.equal(eager.error.data.reason, "view-not-registered");
+
+    // shutdown：已激活的延迟视图插件正常 deactivate。
+    const { response, exit } = await client.shutdown();
+    assert.deepEqual(response.result, { ok: true });
+    assert.equal(exit.code, 0);
+    assert.match(client.stderr, /test\.lazy-view deactivated/);
+    assert.deepEqual(client.protocolErrors, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("view/children provider timeout returns -32000 and host stays responsive", async (t) => {
+  const fixture = await createFixture(t);
+  const hanging = await writePlugin(fixture.pluginsRoot, "test.hanging-view", {
+    commands: [],
+    views: ["test.hanging-view.tree"],
+    source: `
+      export function activate(ctx) {
+        ctx.views.register("test.hanging-view.tree", {
+          getChildren() {
+            return new Promise(() => {});
+          }
+        });
+      }
+    `
+  });
+
+  // 短超时注入：默认 30s，测试用环境变量压到 150ms。
+  const client = new HostClient(fixture.workspaceRoot, {
+    env: { LC_EXT_HOST_VIEW_TIMEOUT_MS: "150" }
+  });
+  try {
+    await initializeHost(client, fixture, [
+      fixture.spec,
+      { ...hanging, main: path.join(hanging.path, "index.mjs") }
+    ]);
+
+    const timedOut = await client.viewChildren(
+      "test.hanging-view",
+      "test.hanging-view.tree",
+      undefined,
+      "vt-1"
+    );
+    assert.equal(timedOut.error.code, -32000);
+    assert.equal(timedOut.error.data.reason, "provider-timeout");
+    assert.match(timedOut.error.message, /timed out after 150ms/);
+
+    // 宿主在超时后仍可用（示例插件命令照常执行）。
+    const hello = await client.execute("example.hello", "example.hello", {}, "vt-2");
     assert.equal(hello.result.calls, 1);
     assert.deepEqual(client.protocolErrors, []);
   } finally {

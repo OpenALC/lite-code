@@ -29,6 +29,12 @@ pub struct ExtGrammarResult {
     pub json: Value,
 }
 
+/// `ext_view_children` 的返回：`{ "nodes": [<视图节点>] }`。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExtViewChildrenResult {
+    pub nodes: Vec<Value>,
+}
+
 /// 单宿主进程常驻：所有命令与 Agent 会话共享同一个 [`ExtHost`]，
 /// 首次使用时探测 Node。返回 Arc 以便 Agent worker 的工具执行器长期持有。
 pub(crate) fn shared_host() -> Arc<Mutex<ExtHost>> {
@@ -170,6 +176,31 @@ pub(crate) async fn ext_read_grammar(
 }
 
 #[tauri::command]
+pub(crate) async fn ext_view_children(
+    plugin_id: String,
+    view_id: String,
+    node_id: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<ExtViewChildrenResult, ErrorBody> {
+    let root = state.get().ok_or_else(crate::workspace_unavailable)?;
+    blocking(move || {
+        let host = shared_host();
+        let mut host = host.lock().map_err(|_| host_lock_error())?;
+        let value = host
+            .view_children(&root, &plugin_id, &view_id, node_id.as_deref())
+            .map_err(|error| error.to_error_body())?;
+        let nodes = value.as_array().cloned().ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Internal,
+                "ext_view_children 返回了非预期载荷（缺少节点数组）",
+            )
+        })?;
+        Ok(ExtViewChildrenResult { nodes })
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn ext_open_dir() -> Result<CommandResult, ErrorBody> {
     blocking(|| {
         let paths = ExtPaths::default_for(None).map_err(|error| error.to_error_body())?;
@@ -263,6 +294,16 @@ mod tests {
         })
         .expect("serialize");
         assert_eq!(value["json"]["tokenizer"]["root"][0][1], "keyword");
+    }
+
+    #[test]
+    fn view_children_result_serializes_nodes_field() {
+        let value = serde_json::to_value(ExtViewChildrenResult {
+            nodes: vec![json!({"id": "n1", "label": "Node 1"})],
+        })
+        .expect("serialize");
+        assert_eq!(value["nodes"][0]["id"], "n1");
+        assert_eq!(value["nodes"][0]["label"], "Node 1");
     }
 
     #[test]

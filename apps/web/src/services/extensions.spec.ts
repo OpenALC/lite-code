@@ -8,6 +8,7 @@ import {
   extensionsReadTheme,
   extensionsReload,
   extensionsSetEnabled,
+  extensionsViewChildren,
   type PluginList,
 } from './extensions'
 
@@ -53,6 +54,7 @@ const sampleList: PluginList = {
           grammar: './grammars/demo.json',
         },
       ],
+      views: [{ id: 'demo-tree', name: 'Demo Tree' }],
     },
   ],
   dir: 'C:\\Users\\demo\\.lite-code\\extensions',
@@ -143,6 +145,23 @@ describe('浏览器 fallback', () => {
       expect(ok.data.json).toMatchObject({ tokenizer: { root: expect.anything() } })
     }
     const missing = await extensionsReadGrammar('demo.notes', './grammars/demo.json')
+    expect(missing.ok).toBe(false)
+  })
+
+  it('extensionsViewChildren 返回演示节点；未声明视图进 error', async () => {
+    const roots = await extensionsViewChildren('demo.hello', 'demo-tree')
+    expect(roots.ok).toBe(true)
+    expect(roots.fallback).toBe(true)
+    if (roots.ok) {
+      expect(roots.data.nodes).toHaveLength(2)
+      expect(roots.data.nodes[0]).toMatchObject({ id: 'group', label: 'Group' })
+    }
+    const children = await extensionsViewChildren('demo.hello', 'demo-tree', 'group')
+    expect(children.ok).toBe(true)
+    if (children.ok) {
+      expect(children.data.nodes).toEqual([{ id: 'leaf', label: 'Leaf item' }])
+    }
+    const missing = await extensionsViewChildren('demo.notes', 'demo-tree')
     expect(missing.ok).toBe(false)
   })
 })
@@ -256,6 +275,40 @@ describe('Tauri 路径', () => {
     ])
     expect(res.ok).toBe(true)
     if (res.ok) expect(res.data.json).toMatchObject({ tokenizer: { root: [] } })
+  })
+
+  it('ext_view_children 传 pluginId/viewId/nodeId，校验 { nodes } 载荷', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { nodes: [{ id: 'n1', label: 'Node 1' }] }
+      },
+    })
+    const withNode = await extensionsViewChildren('example.hello', 'demo-tree', 'n1')
+    const withoutNode = await extensionsViewChildren('example.hello', 'demo-tree')
+    expect(calls).toEqual([
+      {
+        cmd: 'ext_view_children',
+        args: { pluginId: 'example.hello', viewId: 'demo-tree', nodeId: 'n1' },
+      },
+      {
+        cmd: 'ext_view_children',
+        args: { pluginId: 'example.hello', viewId: 'demo-tree', nodeId: null },
+      },
+    ])
+    expect(withNode.ok).toBe(true)
+    if (withNode.ok) {
+      expect(withNode.data.nodes).toEqual([{ id: 'n1', label: 'Node 1' }])
+    }
+    expect(withoutNode.ok).toBe(true)
+  })
+
+  it('ext_view_children 缺 nodes 字段归入 internal', async () => {
+    installTauri({ invoke: async () => ({ nope: true }) })
+    const res = await extensionsViewChildren('example.hello', 'demo-tree')
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error.message).toContain('ext_view_children')
   })
 })
 

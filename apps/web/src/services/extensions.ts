@@ -32,6 +32,23 @@ export interface PluginLanguage {
   grammar: string | null
 }
 
+/** 插件贡献的树视图（ext_list 携带，节点经 ext_view_children 拉取）。 */
+export interface PluginView {
+  /** 插件内唯一（小写字母/数字/线）。 */
+  id: string
+  /** 侧栏分区展示名（非空）。 */
+  name: string
+}
+
+/** 树视图节点（docs/EXTENSIONS.md §4）：id/label 必填，其余可空。 */
+export interface ViewNode {
+  id: string
+  label: string
+  icon?: string
+  command?: string
+  tooltip?: string
+}
+
 export interface PluginInfo {
   id: string
   name: string
@@ -46,6 +63,7 @@ export interface PluginInfo {
   languageServers: string[]
   themes: PluginTheme[]
   languages: PluginLanguage[]
+  views: PluginView[]
 }
 
 export interface PluginList {
@@ -129,6 +147,10 @@ function isPluginLanguage(value: unknown): value is PluginLanguage {
   )
 }
 
+function isPluginView(value: unknown): value is PluginView {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string'
+}
+
 function isPluginCommand(value: unknown): value is PluginCommand {
   return (
     isRecord(value) &&
@@ -155,7 +177,9 @@ function isPluginInfo(value: unknown): value is PluginInfo {
     Array.isArray(value.themes) &&
     value.themes.every(isPluginTheme) &&
     Array.isArray(value.languages) &&
-    value.languages.every(isPluginLanguage)
+    value.languages.every(isPluginLanguage) &&
+    Array.isArray(value.views) &&
+    value.views.every(isPluginView)
   )
 }
 
@@ -220,6 +244,7 @@ function demoPluginList(): PluginList {
             grammar: './grammars/demo.json',
           },
         ],
+        views: [{ id: 'demo-tree', name: 'Demo Tree' }],
       },
       {
         id: 'demo.notes',
@@ -235,6 +260,7 @@ function demoPluginList(): PluginList {
         languageServers: [],
         themes: [],
         languages: [],
+        views: [],
       },
     ],
     dir: DEMO_EXTENSIONS_DIR,
@@ -262,6 +288,16 @@ const DEMO_GRAMMAR_FILES: Record<string, unknown> = {
       root: [[/\w+/, 'keyword']],
     },
   },
+}
+
+// 浏览器 dev 演示树视图节点：键为 `${pluginId}>${viewId}>${nodeId ?? ''}`，
+// 未声明节点一律视为空数组（叶子）。
+const DEMO_VIEW_NODES: Record<string, unknown[]> = {
+  'demo.hello>demo-tree>': [
+    { id: 'group', label: 'Group', icon: 'folder', tooltip: '演示分组' },
+    { id: 'run', label: 'Run hello', command: 'demo.hello', tooltip: '执行演示命令' },
+  ],
+  'demo.hello>demo-tree>group': [{ id: 'leaf', label: 'Leaf item' }],
 }
 
 // ==== 命令包装 ====
@@ -426,6 +462,54 @@ export async function extensionsReadGrammar(
       }
     }
     return { ok: true, data: { json: raw.json }, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
+export interface ExtViewChildrenResult {
+  /** 子节点数组（可空）；形状由 pluginViews.ts 白名单归一。 */
+  nodes: unknown[]
+}
+
+/**
+ * 读取插件树视图的子节点（docs/EXTENSIONS.md §3/§4）。Rust 侧校验视图已
+ * 声明且插件启用（node runtime），经扩展宿主转发 view/children；浏览器 dev
+ * 返回演示节点；ohos shim 未转发该命令时按 reject 的 ErrorBody 进入 error
+ * 分支（分区显示错误态，可重试）。
+ */
+export async function extensionsViewChildren(
+  pluginId: string,
+  viewId: string,
+  nodeId?: string,
+): Promise<BridgeResult<ExtViewChildrenResult>> {
+  if (!isTauri()) {
+    const nodes =
+      DEMO_VIEW_NODES[`${pluginId}>${viewId}>${nodeId ?? ''}`] ??
+      DEMO_VIEW_NODES[`${pluginId}>${viewId}>`]
+    if (nodes === undefined) {
+      return {
+        ok: false,
+        error: internalError(`演示插件 ${pluginId} 未声明视图 ${viewId}`),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { nodes: [...nodes] }, fallback: true }
+  }
+  try {
+    const raw = await tauriInvoke<unknown>('ext_view_children', {
+      pluginId,
+      viewId,
+      nodeId: nodeId ?? null,
+    })
+    if (!isRecord(raw) || !Array.isArray(raw.nodes)) {
+      return {
+        ok: false,
+        error: internalError('ext_view_children 返回了非预期载荷'),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { nodes: raw.nodes }, fallback: false }
   } catch (error) {
     return { ok: false, error: asErrorBody(error), fallback: false }
   }

@@ -96,6 +96,17 @@
       "actionFailed": "操作失败"
     }
   },
+  "views": {
+    "loading": "读取中…",
+    "empty": "暂无条目",
+    "loadError": "无法读取该视图",
+    "retry": "重试",
+    "fromPlugin": "来自 {name}",
+    "expandSection": "展开分区 {name}",
+    "collapseSection": "折叠分区 {name}",
+    "expandNode": "展开 {label}",
+    "collapseNode": "折叠 {label}"
+  },
   "agent": {
     "placeholderTitle": "Agent 模式",
     "placeholderDesc": "P0 占位。会话流、工具卡片与内联审批在 P3（Agent 模式可用）落地。",

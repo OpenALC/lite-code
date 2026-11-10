@@ -824,6 +824,7 @@ pub fn run() {
             ext::ext_open_dir,
             ext::ext_read_theme,
             ext::ext_read_grammar,
+            ext::ext_view_children,
             lsp::lsp_start_all,
             lsp::lsp_did_open,
             lsp::lsp_did_change,

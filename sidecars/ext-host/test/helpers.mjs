@@ -13,10 +13,11 @@ export const BUILD_SCRIPT = path.join(REPO_ROOT, "sidecars", "ext-host", "build.
 const REQUEST_TIMEOUT_MS = 5000;
 
 export class HostClient {
-  constructor(cwd) {
+  constructor(cwd, { env } = {}) {
     this.child = spawn(process.execPath, [ASSET_PATH], {
       cwd,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      env: env ? { ...process.env, ...env } : undefined
     });
     this.buffer = "";
     this.stderr = "";
@@ -159,6 +160,12 @@ export class HostClient {
     return this.request("tool/execute", { pluginId, tool, args }, id);
   }
 
+  viewChildren(pluginId, viewId, nodeId, id) {
+    const params = { pluginId, viewId };
+    if (nodeId !== undefined && nodeId !== null) params.nodeId = nodeId;
+    return this.request("view/children", params, id);
+  }
+
   initialize(workspaceRoot, plugins, id = "initialize") {
     return this.request("initialize", { workspaceRoot, plugins }, id);
   }
@@ -214,7 +221,8 @@ export async function createFixture(t) {
     path: pluginDir,
     main: manifest.main,
     commands: manifest.contributes.commands,
-    tools: manifest.contributes.tools ?? []
+    tools: manifest.contributes.tools ?? [],
+    views: manifest.contributes.views ?? []
   };
 
   t.after(async () => {
@@ -227,7 +235,7 @@ export async function createFixture(t) {
 export async function writePlugin(
   pluginsRoot,
   id,
-  { main = "./index.mjs", source, commands = [], tools, activationEvents } = {}
+  { main = "./index.mjs", source, commands = [], tools, views, activationEvents } = {}
 ) {
   const dir = path.join(pluginsRoot, id);
   await fs.mkdir(dir, { recursive: true });
@@ -236,6 +244,7 @@ export async function writePlugin(
   }
   const spec = { id, path: dir, main, commands };
   if (tools !== undefined) spec.tools = tools;
+  if (views !== undefined) spec.views = views;
   if (activationEvents !== undefined) spec.activationEvents = activationEvents;
   return spec;
 }

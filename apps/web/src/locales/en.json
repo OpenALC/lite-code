@@ -96,6 +96,17 @@
       "actionFailed": "Action failed"
     }
   },
+  "views": {
+    "loading": "Loading…",
+    "empty": "No items",
+    "loadError": "Failed to read this view",
+    "retry": "Retry",
+    "fromPlugin": "from {name}",
+    "expandSection": "Expand section {name}",
+    "collapseSection": "Collapse section {name}",
+    "expandNode": "Expand {label}",
+    "collapseNode": "Collapse {label}"
+  },
   "agent": {
     "placeholderTitle": "Agent mode",
     "placeholderDesc": "P0 placeholder. Session stream, tool cards and inline approvals land in P3.",

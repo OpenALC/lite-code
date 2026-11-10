@@ -92,6 +92,15 @@ pub struct PluginLanguage {
     pub grammar: Option<String>,
 }
 
+/// 插件贡献的树视图（`PluginInfo.views` 元素，docs/EXTENSIONS.md §1）。
+/// `id` 插件内唯一（小写字母/数字/线）；`name` 是侧栏分区展示名。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginView {
+    pub id: String,
+    pub name: String,
+}
+
 /// 单个插件的展示信息（`PluginList.plugins` 元素）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +122,8 @@ pub struct PluginInfo {
     pub themes: Vec<PluginTheme>,
     /// 贡献的语言（无声明为空数组）。
     pub languages: Vec<PluginLanguage>,
+    /// 贡献的树视图（无声明为空数组）。
+    pub views: Vec<PluginView>,
 }
 
 /// 插件列表（`ext_list` / `ext_reload` / `ext_set_enabled` 的返回）。
@@ -185,6 +196,8 @@ pub enum ExtError {
         path: String,
         reason: String,
     },
+    #[error("插件 `{plugin}` 的树视图 `{view}` 不存在、未声明或所属插件已禁用")]
+    ViewNotFound { plugin: String, view: String },
 }
 
 impl ExtError {
@@ -216,6 +229,7 @@ impl ExtError {
             ExtError::GrammarOversized { .. } | ExtError::GrammarInvalid { .. } => {
                 ErrorCode::InvalidArgument
             }
+            ExtError::ViewNotFound { .. } => ErrorCode::NotFound,
         }
     }
 

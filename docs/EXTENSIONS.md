@@ -63,6 +63,12 @@
         "aliases": ["Foo"],               // 可空；展示别名
         "grammar": "./grammars/foo.json"  // 可空；插件目录内的语法 JSON（读取时限 64 KiB）
       }
+    ],
+    "views": [
+      {
+        "id": "example-tree",             // 视图 id（小写字母/数字/线，插件内唯一）
+        "name": "示例视图"                 // 资源管理器侧栏分区的展示名（非空）
+      }
     ]
   },
   "permissions": ["workspace.read"]    // 提示用；Node 插件本质是可信代码
@@ -105,10 +111,19 @@ Monaco 语言定义字段）；形状不符按无高亮处理。语言经
 失败时用空 tokenizer（`{ "tokenizer": {} }`）清高亮，语言注册与扩展名映射
 随下一次同步撤掉。任何 runtime（含 declarative）均可声明语言。
 
+树视图（v1）：`contributes.views` 声明的视图在资源管理器侧栏底部渲染为可折叠
+分区（分区头=视图 `name`，标注来源插件；不新增活动栏容器）。节点数据由插件
+activate 时 `ctx.views.register(viewId, provider)` 提供（§4）：provider 暴露
+`getChildren(nodeId?)`，返回 `[{ id, label, icon?, command?, tooltip? }]`——
+`id`/`label` 必填非空字符串，`command` 可空（空则节点纯展示），空数组合法
+（叶子）。`onView:<viewId>` 是隐式激活事件：视图首次被请求且插件是延迟插件时
+懒激活，语义与 `onCommand:` 一致（§4）。节点点击带 `command` 的项执行对应
+插件命令；读失败/插件禁用 → 分区错误态可重试。
+
 校验：`id` 唯一、`version` 非空、`runtime` 合法、`main` 必须落在插件目录内且存在
 （declarative 除外）、命令 id 唯一、清单大小 ≤ 256 KiB。`activationEvents` 另校验：
-每个事件必须是 `*` 或以 `onCommand:` 开头，非法事件只把该插件标记为 `error`
-（延迟激活语义见 §4）。`contributes.tools` 另校验：
+每个事件必须是 `*` 或以 `onCommand:` / `onView:` 开头，非法事件只把该插件标记为
+`error`（延迟激活语义见 §4）。`contributes.tools` 另校验：
 `name` 合法（小写字母/数字/点/线、插件内唯一）、`description` 非空、`parameters`
 必须是 object 类型 JSON Schema（带 `type` 字段时必须为 `"object"`）、`command`
 必须出现在 `contributes.commands` 中或与 `name` 一致（缺省即 `name`）。
@@ -120,6 +135,10 @@ Monaco 语言定义字段）；形状不符按无高亮处理。语言经
 插件目录内且为已存在的 `.json`（复用 themes.path 的 canonicalize 模式，可空）；
 扩展名插件间去重——先发现者占用，冲突插件整体标记 `error`，错误信息说明冲突
 扩展名、语言 id 与冲突方插件；语法文件在 `ext_read_grammar` 读取时限 64 KiB。
+`contributes.views` 另校验：`id` 合法（小写字母/数字/线，与语言 id 同规则）
+且插件内唯一、`name` 非空（trim 后）；节点数据不在清单里，由插件 activate 时
+注册的 provider 提供（§4）。任何 runtime（含 declarative）均可声明视图，
+但 v1 只在扩展宿主（node runtime）分发视图数据（模式同工具）。
 `extensionDependencies` 另校验：条目必须是合法插件 id 形态（小写字母/数字/
 点/线），去重、拒绝自依赖；被依赖 id 必须存在于已发现插件中（被禁用但已
 发现算存在），缺失只把声明方插件标记为 `error`，错误信息写明缺失 id。依赖
@@ -150,6 +169,7 @@ ext_reload() -> PluginList
 ext_execute_command(command, args?) -> { result: any }
 ext_read_theme(plugin_id, path) -> { json }
 ext_read_grammar(plugin_id, path) -> { json }
+ext_view_children(plugin_id, view_id, node_id?) -> { nodes: [{ id, label, icon?, command?, tooltip? }] }
 ext_open_dir() -> ack
 lsp_start_plugins() -> { servers: [{ id, languageIds }], errors: [] }
 lsp_start_all(configs?) -> { servers, errors }
@@ -193,6 +213,14 @@ lsp_definition(path, line, column) -> Location[]
 `invalid_argument`（语义与 `ext_read_theme` 完全一致）。鸿蒙 shim 未转发
 该命令，web 侧按 reject 的 ErrorBody 走读失败分支（清空该语言高亮）。
 
+`ext_view_children`：读取插件树视图的子节点（§1/§4）。`view_id` 必须是该
+插件清单 `contributes.views` 中声明过的视图 id、`plugin_id` 对应插件启用且为
+node runtime，否则一律 `not_found`；`node_id` 缺省拉根节点，否则拉该节点的
+子节点。请求经扩展宿主 `view/children` 转发（默认超时 30s），返回节点数组
+（可空）；宿主侧 JSON-RPC 错误（如视图未注册 `-32601`、provider 超时
+`-32000`）原样映射为结构错误。鸿蒙 shim 未转发该命令，web 侧按 reject 的
+ErrorBody 走分区错误态（可重试）。
+
 `PluginList`：
 
 ```jsonc
@@ -215,7 +243,8 @@ lsp_definition(path, line, column) -> Location[]
       "extensions": [".foo"],
       "aliases": ["Foo"],
       "grammar": "./grammars/foo.json"
-    }]
+    }],
+    "views": [{ "id": "example-tree", "name": "示例视图" }]
   }],
   "dir": "C:\\Users\\...\\extensions",
   "nodeAvailable": true
@@ -237,26 +266,31 @@ node ext-host.mjs
 stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
 
 - Rust → host：
-  - `initialize` `{ workspaceRoot, plugins: [{ id, path, main, commands, tools: [{ name, command }], activationEvents }] }`——`activationEvents` 为清单原样的字符串数组；空数组（缺省字段）或含 `"*"` 表示立即激活，否则该插件延迟激活。
+  - `initialize` `{ workspaceRoot, plugins: [{ id, path, main, commands, tools: [{ name, command }], views: [viewId], activationEvents }] }`——`activationEvents` 为清单原样的字符串数组；空数组（缺省字段）或含 `"*"` 表示立即激活，否则该插件延迟激活。`views` 为清单 `contributes.views` 的 id 列表。
   - `command/execute` `{ pluginId, command, args }`
   - `tool/execute` `{ pluginId, tool, args }` → `{ result: <插件返回值> }`（默认超时 30s）
-  - `shutdown` `{}`
+  - `view/children` `{ pluginId, viewId, nodeId? }` → 节点数组 `[{ id, label, icon?, command?, tooltip? }]`（空数组合法；默认超时 30s）
+  - `shutdown` {}
 - host → Rust：只使用 JSON-RPC response；v0 不反向调用 Rust。
 - 插件模块导出 `activate(ctx)` / `deactivate()`；ctx 提供：
   - `commands.register(id, handler)`
   - `tools.register(name, handler)`（插件级 Agent 工具，见下）
+  - `views.register(viewId, provider)`（树视图；provider = `{ getChildren(nodeId?): 节点数组 | Promise<节点数组> }`，节点形状见 §1）
   - `workspace.root`、`workspace.readFile(relPath)`（限制在 workspace 内）
   - `storage.get(key)` / `storage.set(key, value)`（宿主内存 + 插件级 JSON）
   - `window.showMessage(text)`（v0 记录日志）
   - `log(...)`
 - 延迟激活（v1）：`activationEvents` 生效。无 `activationEvents`（宿主收到空数组）
   或含 `"*"` 的插件在 `initialize` 时立即 import + activate（向后兼容）；仅含
-  `onCommand:<commandId>` 的插件记为「延迟」——不 import、不 activate，宿主只
-  登记其声明的 command/tool → pluginId 映射。`command/execute` 与 `tool/execute`
-  命中延迟插件的声明项时先懒激活（import + activate）再派发；v1 粒度为插件级，
-  事件串里的 commandId 不参与匹配，任一声明的 command/tool 被调用即激活整个插件。
-  懒激活幂等：同一插件只激活一次（并发/重复调用共享同一次激活）；激活失败返回
-  JSON-RPC `-32601`，`data.reason = "activation-failed"`（另含 `stage`/`message`），
+  `onCommand:<commandId>` / `onView:<viewId>` 的插件记为「延迟」——不 import、
+  不 activate，宿主只登记其声明的 command/tool/view → pluginId 映射。
+  `command/execute`、`tool/execute` 与 `view/children` 命中延迟插件的声明项时先
+  懒激活（import + activate）再派发；v1 粒度为插件级，事件串里的 commandId/
+  viewId 不参与匹配，任一声明的 command/tool/view 被调用即激活整个插件。
+  `onView:<viewId>` 无需插件额外处理：视图首次被请求展开且插件是延迟插件时，
+  宿主按 views 映射懒激活（隐式激活事件）。懒激活幂等：同一插件只激活一次
+  （并发/重复调用共享同一次激活）；激活失败返回 JSON-RPC `-32601`，
+  `data.reason = "activation-failed"`（另含 `stage`/`message`），
   失败状态记录到 stderr 且本会话不重试。未激活的延迟插件没有 deactivate；
   已激活插件的 deactivate 语义不变。延迟插件的加载错误不进 `initialize` 的
   `errors`（那时还没加载），经首次调用的 `-32601` 上报。
@@ -284,6 +318,18 @@ stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
 - 桌面端在 `session_create` 装配（执行器链由外到内：db → 插件 → MCP → 本地，
   按工具名路由分发）；鸿蒙端 plan 只读策略会拒绝 Mutating 工具，接入点见
   `lc-ohos` `read_only_registry` 的 TODO。
+
+### 4.2 树视图节点协议
+
+`view/children` 派发：先查 `ctx.views.register` 注册的 provider；未注册时按
+views → pluginId 映射懒激活延迟插件后再查；仍没有返回 JSON-RPC `-32601`，
+`data.reason` 区分 `plugin-not-loaded` / `view-not-declared`（清单未声明）/
+`view-not-registered`（已激活但 activate 未注册 provider）。provider 可返回
+Promise；宿主侧超时默认 30s（Rust 侧 `view_timeout` 另有 recv_timeout 兜底），
+超时返回 `-32000`、`data.reason = "provider-timeout"`。节点形状非法（`id`/
+`label` 缺字段或非字符串、返回非数组）返回 `-32000`、`data.reason =
+"invalid-node"`；provider 抛错同 `-32000`。注册范围受限：插件只能注册清单
+`contributes.views` 声明过的视图 id。
 
 ## 5. WASM 运行协议
 
@@ -322,13 +368,16 @@ node wasm-host.mjs --wasm <plugin.wasm> --command <id> --args <json> --workspace
 已实现：清单发现/校验、启用禁用、Node 命令、WASM 命令、MCP 声明、LSP 诊断、
 LSP 补全/悬停/跳转、插件管理页、命令面板入口、插件级 Agent 工具（清单 contributes.tools、
 `tool/execute` 协议、桌面端 AgentLoop 接线、一律 Risk::Mutating 走既有审批）、
-延迟激活（`activationEvents` 的 `onCommand:` / `*` 两类事件，§4）、
+延迟激活（`activationEvents` 的 `onCommand:` / `onView:` / `*` 三类事件，§4）、
 主题声明（`contributes.themes` 校验、`ext_read_theme` 读取、web 设置页切换、
 插件禁用/删除后回落 dark 并清理）、
 语言声明（`contributes.languages` 校验与插件间扩展名去重、`ext_read_grammar`
 读取、Monaco 语言注册与 Monarch 高亮、语法白名单防注入、声明消失/读失败降级
 空 tokenizer；内置映射与内置语言 id 优先）、
+树视图（`contributes.views` 校验、`ctx.views.register` 注册、`view/children`
+协议与 30s 超时、`onView:` 隐式懒激活、`ext_view_children` 转发、web 资源管理器
+侧栏底部可折叠分区渲染、节点命令执行、错误态可重试）、
 插件依赖（`extensionDependencies` 校验：格式/去重/自依赖/缺失依赖、环依赖
 整环报错并退出下发；initialize 插件列表按依赖拓扑排序，依赖先于被依赖者）。
 
-未实现：插件市场、Webview UI、树视图、插件签名、VS Code API 兼容。
+未实现：插件市场、Webview UI、插件签名、VS Code API 兼容。

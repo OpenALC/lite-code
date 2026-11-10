@@ -12,6 +12,7 @@ import DbPanel from './components/DbPanel.vue'
 import ExtensionsPanel from './components/ExtensionsPanel.vue'
 import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
+import PluginViews from './components/PluginViews.vue'
 import SearchView from './components/SearchView.vue'
 import SettingsPanel, { type SettingsSection } from './components/SettingsPanel.vue'
 import TabBar from './components/TabBar.vue'
@@ -76,6 +77,7 @@ import { createTaskController } from './services/taskStore'
 import { extensionsExecuteCommand, extensionsList } from './services/extensions'
 import { syncPluginThemes } from './services/pluginThemes'
 import { syncPluginLanguages } from './services/pluginLanguages'
+import { syncPluginViews } from './services/pluginViews'
 import { subscribeAgentContext } from './services/agentContext'
 import { requestReveal } from './services/editorReveal'
 import { resolveEditorStrategy } from './services/largeFile'
@@ -471,6 +473,7 @@ function onExtensionsChanged(): void {
   void refreshPluginCommands()
   void syncPluginThemes()
   void syncPluginLanguages()
+  void syncPluginViews()
   if (projectRoot.value) startLsp()
 }
 
@@ -981,6 +984,7 @@ onMounted(() => {
   void refreshPluginCommands()
   void syncPluginThemes()
   void syncPluginLanguages()
+  void syncPluginViews()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
@@ -1360,6 +1364,7 @@ onBeforeUnmount(() => {
               :refresh-token="treeRefresh"
             />
           </div>
+          <PluginViews />
         </div>
 
         <SearchView

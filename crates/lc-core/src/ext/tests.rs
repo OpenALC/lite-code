@@ -139,6 +139,14 @@ rl.on('line', (line) => {
     } else if (message.params.tool === 'test.toolhang') {
       // 故意不回复，测试 Rust 侧 tool/execute 超时。
     }
+  } else if (message.method === 'view/children') {
+    if (message.params.viewId === 'testview') {
+      reply([{ id: 'root', label: 'Root', pluginId: message.params.pluginId, nodeId: message.params.nodeId ?? null, plugins, workspaceRoot }]);
+    } else if (message.params.viewId === 'viewfail') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'view boom', data: { why: 'view' } } }) + '\n');
+    } else if (message.params.viewId === 'viewhang') {
+      // 故意不回复，测试 Rust 侧 view/children 超时。
+    }
   } else if (message.method === 'shutdown') {
     reply({});
     process.exit(0);
@@ -1598,6 +1606,10 @@ fn activation_events_are_validated_and_default_to_eager() {
     on_command["activationEvents"] = json!(["onCommand:oncommand.run"]);
     write_plugin(&paths.user_dir, "oncommand", on_command, &["index.mjs"]);
 
+    let mut on_view = node_manifest("example.onview", "./index.mjs", &["onview.run"]);
+    on_view["activationEvents"] = json!(["onView:onview.tree"]);
+    write_plugin(&paths.user_dir, "onview", on_view, &["index.mjs"]);
+
     let mut mixed = node_manifest("example.mixed", "./index.mjs", &["mixed.run"]);
     mixed["activationEvents"] = json!(["onCommand:mixed.run", "*", "onCommand:mixed.run"]);
     write_plugin(&paths.user_dir, "mixed", mixed, &["index.mjs"]);
@@ -1605,7 +1617,7 @@ fn activation_events_are_validated_and_default_to_eager() {
     write_node_plugin(&paths, "default", "example.default", &["default.run"]);
 
     let list = list_plugins_at(&paths, false, false).expect("list");
-    assert_eq!(list.plugins.len(), 4);
+    assert_eq!(list.plugins.len(), 5);
     assert!(
         list.plugins.iter().all(|plugin| plugin.error.is_none()),
         "{:?}",
@@ -1624,6 +1636,10 @@ fn activation_events_are_validated_and_default_to_eager() {
         events("example.oncommand"),
         Some(vec!["onCommand:oncommand.run".to_string()])
     );
+    assert_eq!(
+        events("example.onview"),
+        Some(vec!["onView:onview.tree".to_string()])
+    );
     // 列表去重，顺序稳定。
     assert_eq!(
         events("example.mixed"),
@@ -1633,9 +1649,10 @@ fn activation_events_are_validated_and_default_to_eager() {
 
     // 非法事件只把该插件标记为 error，不影响列表本身。
     for (tag, value) in [
-        ("bad-view", json!(["onView:explorer"])),
+        ("bad-webview", json!(["onWebview:panel"])),
         ("bad-workspace", json!(["workspaceContains:**/*.rs"])),
         ("bad-bare", json!(["onCommand"])),
+        ("bad-bare-view", json!(["onView"])),
         ("bad-empty", json!(["  "])),
     ] {
         let temp = TempDir::new(&format!("act-{tag}"));
@@ -2348,6 +2365,296 @@ fn read_grammar_enforces_size_cap_and_valid_json() {
         "{error:?}"
     );
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
+}
+
+// ---- 树视图声明与 view/children（docs/EXTENSIONS.md §1/§3/§4）----
+
+fn view_manifest(id: &str, views: Value) -> Value {
+    let mut manifest = node_manifest(id, "./index.mjs", &[]);
+    manifest["contributes"]["views"] = views;
+    manifest
+}
+
+#[test]
+fn manifest_views_are_validated_and_serialized() {
+    // 合法：node 插件携带视图声明，camelCase 序列化进 PluginInfo.views；
+    // id trim 后校验，name trim 后保留。
+    let temp = TempDir::new("views-valid");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "views",
+        view_manifest(
+            "example.views",
+            json!([
+                { "id": "tree-1", "name": " 示例树 " },
+                { "id": "tree-2", "name": "Second" }
+            ]),
+        ),
+        &["index.mjs"],
+    );
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert!(
+        list.plugins[0].error.is_none(),
+        "{:?}",
+        list.plugins[0].error
+    );
+    assert_eq!(list.plugins[0].views.len(), 2);
+    assert_eq!(list.plugins[0].views[0].id, "tree-1");
+    assert_eq!(list.plugins[0].views[0].name, "示例树");
+    assert_eq!(list.plugins[0].views[1].name, "Second");
+
+    let serialized = serde_json::to_value(&list).expect("serialize");
+    assert_eq!(serialized["plugins"][0]["views"][0]["id"], "tree-1");
+    assert_eq!(serialized["plugins"][0]["views"][0]["name"], "示例树");
+
+    // 非法项只把该插件标记为 error，不影响列表本身。
+    for (tag, views_value, expected) in [
+        (
+            "bad-id",
+            json!([{ "id": "Tree One", "name": "x" }]),
+            "views.id 无效",
+        ),
+        (
+            "dup-id",
+            json!([
+                { "id": "same", "name": "a" },
+                { "id": "same", "name": "b" }
+            ]),
+            "views.id 重复",
+        ),
+        (
+            "empty-name",
+            json!([{ "id": "x", "name": "  " }]),
+            "views.name 不能为空",
+        ),
+        (
+            "missing-name",
+            json!([{ "id": "x" }]),
+            "views.name 不能为空",
+        ),
+    ] {
+        let temp = TempDir::new(&format!("views-{tag}"));
+        let paths = test_paths(&temp);
+        write_plugin(
+            &paths.user_dir,
+            "bad",
+            view_manifest(&format!("example.bad-{tag}"), views_value),
+            &["index.mjs"],
+        );
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let error = list.plugins[0]
+            .error
+            .as_deref()
+            .unwrap_or_else(|| panic!("{tag}: 应标记 error"));
+        assert!(error.contains(expected), "{tag}: {error}");
+        assert!(!list.plugins[0].enabled);
+        assert!(list.plugins[0].views.is_empty());
+    }
+}
+
+#[test]
+fn view_children_requires_declared_view_and_enabled_node_plugin() {
+    // 不启动宿主的错误路径：视图/插件未声明或已禁用 → ViewNotFound；
+    // wasm/declarative 声明的视图同样拒绝（v1 只在扩展宿主分发）。
+    let temp = TempDir::new("view-not-found");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "node",
+        view_manifest("example.node", json!([{ "id": "tree", "name": "Tree" }])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "wasm",
+        json!({
+            "id": "example.wasm",
+            "name": "Wasm",
+            "version": "0.1.0",
+            "runtime": "wasm",
+            "main": "./plugin.wasm",
+            "contributes": {
+                "commands": [{ "command": "example.wasm.run", "title": "run" }],
+                "views": [{ "id": "tree", "name": "Tree" }]
+            }
+        }),
+        &["plugin.wasm"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "disabled",
+        view_manifest(
+            "example.disabled",
+            json!([{ "id": "tree", "name": "Tree" }]),
+        ),
+        &["index.mjs"],
+    );
+    set_enabled_at(&paths, false, "example.disabled", false, false).expect("disable");
+
+    let mut host = ExtHost::new(None);
+    let error = host
+        .view_children_with_paths(
+            &paths,
+            false,
+            &temp.path,
+            "example.node",
+            "missing.view",
+            None,
+        )
+        .expect_err("undeclared view");
+    assert!(
+        matches!(
+            error,
+            ExtError::ViewNotFound { ref plugin, ref view } if plugin == "example.node" && view == "missing.view"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::NotFound);
+
+    let error = host
+        .view_children_with_paths(&paths, false, &temp.path, "example.nope", "tree", None)
+        .expect_err("unknown plugin");
+    assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
+
+    let error = host
+        .view_children_with_paths(&paths, false, &temp.path, "example.wasm", "tree", None)
+        .expect_err("wasm view");
+    assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
+
+    let error = host
+        .view_children_with_paths(&paths, false, &temp.path, "example.disabled", "tree", None)
+        .expect_err("disabled plugin");
+    assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
+
+    // Node 缺失在目标校验之后报告。
+    let error = host
+        .view_children_with_paths(&paths, false, &temp.path, "example.node", "tree", None)
+        .expect_err("node unavailable");
+    assert_eq!(error, ExtError::NodeUnavailable);
+}
+
+#[test]
+fn initialize_payload_carries_view_declarations() {
+    let Some(node) = test_node() else {
+        return;
+    };
+    let temp = TempDir::new("view-payload");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "views",
+        view_manifest("example.views", json!([{ "id": "tree", "name": "Tree" }])),
+        &["index.mjs"],
+    );
+    write_node_plugin(&paths, "plain", "example.plain", &["test.echo"]);
+    let workspace = temp.path.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let marker = temp.path.join("init-marker.txt");
+    let script = write_fake_host(&temp, &marker);
+
+    let mut host = ExtHost::new(Some(node));
+    host.set_host_script(Some(script));
+    let result = host
+        .execute_with_paths(&paths, false, &workspace, "test.echo", json!({}))
+        .expect("execute");
+    // initialize 载荷带视图声明（id 列表）。
+    let plugins = result["plugins"].as_array().expect("plugins echo");
+    let views = plugins
+        .iter()
+        .find(|plugin| plugin["id"] == "example.views")
+        .expect("views plugin echo");
+    assert_eq!(views["views"], json!(["tree"]));
+    let plain = plugins
+        .iter()
+        .find(|plugin| plugin["id"] == "example.plain")
+        .expect("plain plugin echo");
+    assert_eq!(plain["views"], json!([]));
+    host.shutdown();
+}
+
+#[test]
+fn node_host_view_children_round_trips_and_maps_errors() {
+    let Some(node) = test_node() else {
+        return;
+    };
+    let temp = TempDir::new("view-host");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "views",
+        view_manifest(
+            "example.views",
+            json!([
+                { "id": "testview", "name": "View" },
+                { "id": "viewfail", "name": "Fail" },
+                { "id": "viewhang", "name": "Hang" }
+            ]),
+        ),
+        &["index.mjs"],
+    );
+    let workspace = temp.path.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let marker = temp.path.join("init-marker.txt");
+    let script = write_fake_host(&temp, &marker);
+
+    let mut host = ExtHost::new(Some(node));
+    host.set_host_script(Some(script));
+
+    let result = host
+        .view_children_with_paths(&paths, false, &workspace, "example.views", "testview", None)
+        .expect("view children");
+    let nodes = result.as_array().expect("节点数组");
+    assert_eq!(nodes[0]["id"], "root");
+    assert_eq!(nodes[0]["label"], "Root");
+    assert_eq!(nodes[0]["pluginId"], "example.views");
+    assert_eq!(nodes[0]["nodeId"], Value::Null);
+    assert_eq!(
+        nodes[0]["workspaceRoot"],
+        crate::fs::display_path(&workspace)
+    );
+
+    // nodeId 透传宿主。
+    let result = host
+        .view_children_with_paths(
+            &paths,
+            false,
+            &workspace,
+            "example.views",
+            "testview",
+            Some("n1"),
+        )
+        .expect("view children with node");
+    assert_eq!(result[0]["nodeId"], "n1");
+
+    // 宿主返回 JSON-RPC error → HostRpc 结构化错误。
+    let error = host
+        .view_children_with_paths(&paths, false, &workspace, "example.views", "viewfail", None)
+        .expect_err("view error");
+    match error {
+        ExtError::HostRpc { code, message, .. } => {
+            assert_eq!(code, -32000);
+            assert!(message.contains("view boom"), "{message}");
+        }
+        other => panic!("expected HostRpc, got {other:?}"),
+    }
+
+    // 超时可注入（默认 30s），超时后宿主仍可服务。
+    host.set_view_timeout(Duration::from_millis(150));
+    let error = host
+        .view_children_with_paths(&paths, false, &workspace, "example.views", "viewhang", None)
+        .expect_err("view timeout");
+    assert!(
+        matches!(error, ExtError::HostTimeout { timeout_ms: 150 }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::Timeout);
+
+    host.set_view_timeout(Duration::from_secs(5));
+    host.view_children_with_paths(&paths, false, &workspace, "example.views", "testview", None)
+        .expect("host recovers after view timeout");
+    host.shutdown();
 }
 
 // ---- 插件依赖 extensionDependencies（docs/EXTENSIONS.md §1）----

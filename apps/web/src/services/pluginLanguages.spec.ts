@@ -92,6 +92,7 @@ function plugin(partial: Partial<PluginInfo> & { id: string }): PluginInfo {
     languageServers: [],
     themes: [],
     languages: [],
+    views: [],
     ...partial,
   }
 }

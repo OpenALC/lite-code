@@ -30,6 +30,8 @@ pub const INIT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 /// `tool/execute` 默认超时（插件级 Agent 工具，docs/EXTENSIONS.md §4）。
 pub const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+/// `view/children` 默认超时（插件树视图，docs/EXTENSIONS.md §4）。
+pub const VIEW_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const STDERR_TAIL_LINES: usize = 40;
 const HOST_ENV: &str = "LC_EXT_HOST";
@@ -49,8 +51,11 @@ struct HostPlugin {
     main: String,
     commands: Vec<String>,
     tools: Vec<HostTool>,
+    /// 清单声明的树视图 id 列表（docs/EXTENSIONS.md §1）：initialize 载荷
+    /// 下发，宿主据此登记 view → pluginId 映射并校验注册范围。
+    views: Vec<String>,
     /// 激活事件（docs/EXTENSIONS.md §4 延迟激活）：空数组或含 `*` 表示
-    /// 立即激活，否则宿主延迟到首次命令/工具调用。
+    /// 立即激活，否则宿主延迟到首次命令/工具/视图请求。
     activation_events: Vec<String>,
     /// 清单声明的插件依赖（docs/EXTENSIONS.md §1）：仅用于拓扑排序，
     /// 不下发 initialize 载荷。
@@ -68,6 +73,7 @@ pub struct ExtHost {
     next_id: u64,
     command_timeout: Duration,
     tool_timeout: Duration,
+    view_timeout: Duration,
 }
 
 impl ExtHost {
@@ -82,6 +88,7 @@ impl ExtHost {
             next_id: 0,
             command_timeout: COMMAND_TIMEOUT,
             tool_timeout: TOOL_TIMEOUT,
+            view_timeout: VIEW_TIMEOUT,
         }
     }
 
@@ -121,6 +128,11 @@ impl ExtHost {
     /// 测试/嵌入方覆盖 `tool/execute` 超时（默认 [`TOOL_TIMEOUT`] = 30s）。
     pub fn set_tool_timeout(&mut self, timeout: Duration) {
         self.tool_timeout = timeout;
+    }
+
+    /// 测试/嵌入方覆盖 `view/children` 超时（默认 [`VIEW_TIMEOUT`] = 30s）。
+    pub fn set_view_timeout(&mut self, timeout: Duration) {
+        self.view_timeout = timeout;
     }
 
     /// `initialize` 返回的插件加载错误（单个插件失败不影响其它插件）。
@@ -277,6 +289,79 @@ impl ExtHost {
         )
     }
 
+    /// 默认目录布局下读取插件树视图的子节点（`ext_view_children`）。
+    pub fn view_children(
+        &mut self,
+        workspace_root: &Path,
+        plugin_id: &str,
+        view_id: &str,
+        node_id: Option<&str>,
+    ) -> Result<Value, ExtError> {
+        let paths = ExtPaths::default_for(Some(workspace_root))?;
+        self.view_children_with_paths(
+            &paths,
+            project_allowed(),
+            workspace_root,
+            plugin_id,
+            view_id,
+            node_id,
+        )
+    }
+
+    /// 指定布局下读取插件树视图的子节点（docs/EXTENSIONS.md §4）：向扩展
+    /// 宿主发送 `view/children`。视图不存在/插件禁用/非 node runtime 返回
+    /// [`ExtError::ViewNotFound`]；宿主未运行时按 node 插件命令的既有逻辑
+    /// 惰性启动，Node 缺失返回 [`ExtError::NodeUnavailable`]；默认超时 30s。
+    pub fn view_children_with_paths(
+        &mut self,
+        paths: &ExtPaths,
+        allow_project: bool,
+        workspace_root: &Path,
+        plugin_id: &str,
+        view_id: &str,
+        node_id: Option<&str>,
+    ) -> Result<Value, ExtError> {
+        let plugins = enabled_plugins(paths, allow_project)?;
+        let target = plugins
+            .iter()
+            .find(|plugin| {
+                plugin.info.enabled
+                    && plugin.info.id == plugin_id
+                    && plugin.manifest.as_ref().is_some_and(|manifest| {
+                        manifest
+                            .contributes
+                            .views
+                            .iter()
+                            .any(|view| view.id == view_id)
+                    })
+            })
+            .ok_or_else(|| ExtError::ViewNotFound {
+                plugin: plugin_id.to_string(),
+                view: view_id.to_string(),
+            })?;
+        // v1 树视图只在扩展宿主（node runtime）分发；wasm/declarative 插件
+        // 声明的视图返回未找到（模式同工具）。
+        if target.manifest.as_ref().map(|manifest| manifest.runtime) != Some(PluginRuntime::Node) {
+            return Err(ExtError::ViewNotFound {
+                plugin: plugin_id.to_string(),
+                view: view_id.to_string(),
+            });
+        }
+
+        let node = self.node.clone().ok_or(ExtError::NodeUnavailable)?;
+        let host_plugins = host_plugins(&plugins);
+        self.ensure_host(&node, workspace_root, &host_plugins)?;
+        let mut params = json!({
+            "pluginId": target.info.id,
+            "viewId": view_id,
+        });
+        if let Some(node_id) = node_id {
+            params["nodeId"] = Value::String(node_id.to_string());
+        }
+        let timeout = self.view_timeout;
+        self.request("view/children", params, timeout)
+    }
+
     fn ensure_host(
         &mut self,
         node: &Path,
@@ -314,6 +399,7 @@ impl ExtHost {
                             "command": tool.command,
                         }))
                         .collect::<Vec<_>>(),
+                    "views": plugin.views,
                     "activationEvents": plugin.activation_events,
                 }))
                 .collect::<Vec<_>>(),
@@ -415,6 +501,12 @@ fn host_plugins(plugins: &[DiscoveredPlugin]) -> Vec<HostPlugin> {
                         name: tool.name.clone(),
                         command: tool.command.clone().unwrap_or_else(|| tool.name.clone()),
                     })
+                    .collect(),
+                views: manifest
+                    .contributes
+                    .views
+                    .iter()
+                    .map(|view| view.id.clone())
                     .collect(),
                 activation_events: manifest.activation_events.clone(),
                 dependencies: manifest.extension_dependencies.clone(),

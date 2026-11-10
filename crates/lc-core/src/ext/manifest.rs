@@ -16,6 +16,7 @@ use crate::fs::{FsError, RealPathResolver, display_path, ensure_within_root};
 
 use super::{
     ExtError, ExtPaths, PluginCommand, PluginInfo, PluginLanguage, PluginRuntime, PluginTheme,
+    PluginView,
 };
 
 pub(crate) const MANIFEST_FILE: &str = "plugin.json";
@@ -76,6 +77,21 @@ pub(crate) struct Contributes {
     /// 语言声明（docs/EXTENSIONS.md §1）：UI 注册 Monaco 语言并拉取语法 JSON。
     #[serde(default)]
     pub languages: Vec<LanguageDecl>,
+    /// 树视图声明（docs/EXTENSIONS.md §1）：UI 在资源管理器侧栏渲染可折叠
+    /// 分区，节点数据由插件 `ctx.views.register` 提供（§4）。
+    #[serde(default)]
+    pub views: Vec<ViewDecl>,
+}
+
+/// 树视图声明。`id` 是插件内唯一的视图标识（小写字母/数字/线，与语言
+/// id 同规则）；`name` 是侧栏分区的展示名（非空）。节点数据不在清单里，
+/// 由插件 activate 时注册的 provider 提供（docs/EXTENSIONS.md §4）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewDecl {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 /// 语言声明。`id` 是 Monaco language id（小写字母/数字/线，插件内唯一）；
@@ -518,14 +534,15 @@ fn validate_manifest(
         manifest.name = manifest.id.clone();
     }
 
-    // 激活事件校验（docs/EXTENSIONS.md §4）：v1 仅支持 `*` 与
-    // `onCommand:<commandId>`；非法事件只把该插件标记为 error。
+    // 激活事件校验（docs/EXTENSIONS.md §4）：v1 仅支持 `*`、
+    // `onCommand:<commandId>` 与 `onView:<viewId>`；非法事件只把该插件
+    // 标记为 error。
     let mut activation_events = Vec::new();
     for event in &manifest.activation_events {
         let event = event.trim();
-        if event != "*" && !event.starts_with("onCommand:") {
+        if event != "*" && !event.starts_with("onCommand:") && !event.starts_with("onView:") {
             return Err(format!(
-                "activationEvents 无效：`{event}`（仅支持 `*` 或 `onCommand:<commandId>`）"
+                "activationEvents 无效：`{event}`（仅支持 `*`、`onCommand:<commandId>` 或 `onView:<viewId>`）"
             ));
         }
         if !activation_events.iter().any(|existing| existing == event) {
@@ -744,6 +761,26 @@ fn validate_manifest(
         language.grammar = grammar;
     }
 
+    // 树视图声明校验（docs/EXTENSIONS.md §1）：id 合法（小写字母/数字/线，
+    // 与语言 id 同规则）且插件内唯一；name 非空（trim 后）。
+    let mut view_ids = HashSet::new();
+    for view in &mut manifest.contributes.views {
+        view.id = view.id.trim().to_string();
+        if !valid_language_id(&view.id) {
+            return Err(format!(
+                "views.id 无效：`{}`（仅允许小写字母、数字、线）",
+                view.id
+            ));
+        }
+        if !view_ids.insert(view.id.clone()) {
+            return Err(format!("views.id 重复：`{}`", view.id));
+        }
+        view.name = view.name.trim().to_string();
+        if view.name.is_empty() {
+            return Err(format!("views.name 不能为空：`{}`", view.id));
+        }
+    }
+
     let mut mcp_names = HashSet::new();
     let mut normalized_mcp = BTreeMap::new();
     for (name, declared) in std::mem::take(&mut manifest.contributes.mcp_servers) {
@@ -908,6 +945,15 @@ fn info_from_manifest(manifest: &PluginManifest, dir: &Path, enabled: bool) -> P
             .languages
             .iter()
             .map(language_from_decl)
+            .collect(),
+        views: manifest
+            .contributes
+            .views
+            .iter()
+            .map(|view| PluginView {
+                id: view.id.clone(),
+                name: view.name.clone(),
+            })
             .collect(),
     }
 }
@@ -1074,6 +1120,7 @@ fn error_info(
         language_servers,
         themes: Vec::new(),
         languages: Vec::new(),
+        views: Vec::new(),
     }
 }
 

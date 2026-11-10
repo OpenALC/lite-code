@@ -4,21 +4,31 @@ import { pathToFileURL } from "node:url";
 import { createCommandRegistry } from "./commands.mjs";
 import { createPluginStorage } from "./storage.mjs";
 import { createToolRegistry } from "./tools.mjs";
+import { createViewRegistry } from "./views.mjs";
 import { createWorkspace, isPathInside } from "./workspace.mjs";
 import { RPC_INVALID_PARAMS, RPC_INVALID_REQUEST, RPC_INTERNAL_ERROR, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR, errorResponse, resultResponse, serializableResult, thrownDetails } from "./jsonrpc.mjs";
 
 const DEACTIVATE_BUDGET_MS = 1500;
 const STDOUT_FLUSH_GRACE_MS = 500;
+// view/children provider 超时（docs/EXTENSIONS.md §4，与 tool/execute 同为
+// 30s，Rust 侧另有 recv_timeout 兜底）；测试可经 LC_EXT_HOST_VIEW_TIMEOUT_MS
+// 注入短超时。
+const VIEW_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.LC_EXT_HOST_VIEW_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 30_000;
+})();
 
 const stderrLog = console.error.bind(console);
 const commandRegistry = createCommandRegistry();
 const toolRegistry = createToolRegistry();
+const viewRegistry = createViewRegistry();
 
 let loadedPlugins = [];
 let pluginWorkspace = null;
 const pendingPlugins = new Map(); // pluginId -> { descriptor, state, promise, stage, message }
 const pendingCommands = new Map(); // command -> pluginId（仅延迟插件声明的命令）
 const pendingTools = new Map(); // tool name -> pluginId（仅延迟插件声明的工具）
+const pendingViews = new Map(); // viewId -> pluginId（仅延迟插件声明的视图）
 let initialized = false;
 let shuttingDown = false;
 let deactivated = false;
@@ -157,8 +167,55 @@ function normalizeActivationEvents(pluginId, events) {
   return normalized;
 }
 
+// initialize 载荷里的视图声明：接受纯 id 字符串或 { id, name } 对象，
+// 宿主只按 id 登记与查找（docs/EXTENSIONS.md §4）。
+function normalizeViews(pluginId, views) {
+  if (views === undefined || views === null) return [];
+  if (!Array.isArray(views)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" views must be an array`);
+  }
+
+  const ids = [];
+  for (const item of views) {
+    if (typeof item === "string" && item.length > 0) {
+      ids.push(item);
+    } else if (item && typeof item === "object" && typeof item.id === "string" && item.id.length > 0) {
+      ids.push(item.id);
+    } else {
+      throw pluginError("manifest", `Plugin "${pluginId}" has an invalid view entry`);
+    }
+  }
+  return [...new Set(ids)];
+}
+
+// 视图节点形状校验（docs/EXTENSIONS.md §4）：id/label 必填非空字符串，
+// icon/command/tooltip 可空字符串；其余键一律丢弃。形状非法抛错。
+function normalizeViewNodes(pluginId, viewId, raw) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw pluginError("manifest", `View "${viewId}" of plugin "${pluginId}" must return an array of nodes`);
+  }
+
+  return raw.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw pluginError("manifest", `View "${viewId}" of plugin "${pluginId}" returned an invalid node at index ${index}`);
+    }
+    if (typeof item.id !== "string" || item.id.length === 0) {
+      throw pluginError("manifest", `View "${viewId}" of plugin "${pluginId}" returned a node without a non-empty string id at index ${index}`);
+    }
+    if (typeof item.label !== "string" || item.label.length === 0) {
+      throw pluginError("manifest", `View "${viewId}" of plugin "${pluginId}" returned node "${item.id}" without a non-empty string label`);
+    }
+    const node = { id: item.id, label: item.label };
+    if (typeof item.icon === "string" && item.icon.length > 0) node.icon = item.icon;
+    if (typeof item.command === "string" && item.command.length > 0) node.command = item.command;
+    if (typeof item.tooltip === "string" && item.tooltip.length > 0) node.tooltip = item.tooltip;
+    return node;
+  });
+}
+
 // 延迟判定是插件级的：activationEvents 非空且不含 `*` 即为延迟插件，
-// 任一声明的 command/tool 被调用时激活整个插件（docs/EXTENSIONS.md §4）。
+// 任一声明的 command/tool/view 被调用时激活整个插件（docs/EXTENSIONS.md §4）。
 function isLazyDescriptor(descriptor) {
   return descriptor.activationEvents.length > 0 && !descriptor.activationEvents.includes("*");
 }
@@ -189,6 +246,7 @@ function describePlugin(spec) {
     entry,
     commands: normalizeCommands(spec.id, spec.commands),
     tools: normalizeTools(spec.id, spec.tools),
+    views: normalizeViews(spec.id, spec.views),
     activationEvents: normalizeActivationEvents(spec.id, spec.activationEvents)
   };
 }
@@ -210,9 +268,11 @@ async function loadPlugin(descriptor, pluginWorkspace) {
 
   let register;
   let registerTool;
+  let registerView;
   try {
     register = commandRegistry.createPlugin(descriptor.id, descriptor.commands);
     registerTool = toolRegistry.createPlugin(descriptor.id, descriptor.tools);
+    registerView = viewRegistry.createPlugin(descriptor.id, descriptor.views);
   } catch (error) {
     throw pluginError("manifest", `Cannot register plugin "${descriptor.id}": ${messageOf(error)}`);
   }
@@ -222,6 +282,7 @@ async function loadPlugin(descriptor, pluginWorkspace) {
     const ctx = Object.freeze({
       commands: Object.freeze({ register }),
       tools: Object.freeze({ register: registerTool }),
+      views: Object.freeze({ register: registerView }),
       workspace: pluginWorkspace,
       storage,
       window: Object.freeze({
@@ -236,6 +297,7 @@ async function loadPlugin(descriptor, pluginWorkspace) {
   } catch (error) {
     commandRegistry.remove(descriptor.id);
     toolRegistry.remove(descriptor.id);
+    viewRegistry.remove(descriptor.id);
     throw pluginError("activate", `Plugin "${descriptor.id}" failed to activate: ${messageOf(error)}`);
   }
 
@@ -247,7 +309,7 @@ async function loadPlugin(descriptor, pluginWorkspace) {
   };
 }
 
-// 延迟插件不 import/activate，只登记 command/tool -> pluginId 映射，
+// 延迟插件不 import/activate，只登记 command/tool/view -> pluginId 映射，
 // 首次命中时由 activatePendingPlugin 懒激活（docs/EXTENSIONS.md §4）。
 function registerPendingPlugin(descriptor) {
   if (pendingPlugins.has(descriptor.id)) {
@@ -265,6 +327,12 @@ function registerPendingPlugin(descriptor) {
       throw pluginError("manifest", `Tool "${tool.name}" is already declared by pending plugin "${owner}"`);
     }
   }
+  for (const view of descriptor.views) {
+    const owner = pendingViews.get(view);
+    if (owner && owner !== descriptor.id) {
+      throw pluginError("manifest", `View "${view}" is already declared by pending plugin "${owner}"`);
+    }
+  }
 
   pendingPlugins.set(descriptor.id, {
     descriptor,
@@ -275,6 +343,7 @@ function registerPendingPlugin(descriptor) {
   });
   for (const command of descriptor.commands) pendingCommands.set(command, descriptor.id);
   for (const tool of descriptor.tools) pendingTools.set(tool.name, descriptor.id);
+  for (const view of descriptor.views) pendingViews.set(view, descriptor.id);
 }
 
 function forgetPendingPlugin(pluginId) {
@@ -284,6 +353,9 @@ function forgetPendingPlugin(pluginId) {
   }
   for (const [tool, owner] of pendingTools) {
     if (owner === pluginId) pendingTools.delete(tool);
+  }
+  for (const [view, owner] of pendingViews) {
+    if (owner === pluginId) pendingViews.delete(view);
   }
 }
 
@@ -369,7 +441,8 @@ async function handleInitialize(id, params) {
     plugins: plugins.map((plugin) => ({
       id: plugin.id,
       commands: commandRegistry.list(plugin.id),
-      tools: toolRegistry.list(plugin.id)
+      tools: toolRegistry.list(plugin.id),
+      views: viewRegistry.list(plugin.id)
     })),
     errors
   });
@@ -493,6 +566,91 @@ async function handleToolExecute(id, params) {
   }
 }
 
+async function handleViewChildren(id, params) {
+  if (!initialized) {
+    return errorResponse(id, RPC_INTERNAL_ERROR, "Extension host is not initialized");
+  }
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "view/children expects an object with pluginId and viewId");
+  }
+
+  const { pluginId, viewId } = params;
+  if (typeof pluginId !== "string" || pluginId.length === 0) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "view/children.pluginId must be a non-empty string");
+  }
+  if (typeof viewId !== "string" || viewId.length === 0) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "view/children.viewId must be a non-empty string");
+  }
+  const nodeId =
+    typeof params.nodeId === "string" && params.nodeId.length > 0 ? params.nodeId : undefined;
+
+  // 延迟插件：命中其声明的视图（pendingViews 维度，docs/EXTENSIONS.md §4）
+  // 时先懒激活再派发，语义与 onCommand 一致。
+  let found = viewRegistry.lookup(pluginId, viewId);
+  if (!found.found && pendingViews.get(viewId) === pluginId) {
+    const activation = await activatePendingPlugin(pluginId);
+    if (activation && !activation.ok) {
+      return errorResponse(
+        id,
+        RPC_METHOD_NOT_FOUND,
+        `Plugin "${pluginId}" failed to activate: ${activation.message}`,
+        { pluginId, viewId, reason: "activation-failed", stage: activation.stage }
+      );
+    }
+    found = viewRegistry.lookup(pluginId, viewId);
+  }
+  if (!found.found) {
+    return errorResponse(id, RPC_METHOD_NOT_FOUND, `View not found: ${pluginId}/${viewId}`, {
+      pluginId,
+      viewId,
+      reason: found.reason
+    });
+  }
+
+  const provider = found.provider;
+  let timer;
+  try {
+    // provider 可返回 Promise；超时（默认 30s，测试可注入短超时）返回
+    // -32000 reason=provider-timeout。Rust 侧另有 recv_timeout 兜底。
+    const raw = await Promise.race([
+      Promise.resolve().then(() => provider.getChildren(nodeId)),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(pluginError("timeout", `View provider timed out after ${VIEW_TIMEOUT_MS}ms`)),
+          VIEW_TIMEOUT_MS
+        );
+      })
+    ]);
+    const nodes = normalizeViewNodes(pluginId, viewId, raw);
+    return resultResponse(id, nodes);
+  } catch (error) {
+    const details = thrownDetails(error);
+    if (error && error.pluginStage === "timeout") {
+      return errorResponse(id, RPC_INTERNAL_ERROR, details.message, {
+        pluginId,
+        viewId,
+        reason: "provider-timeout"
+      });
+    }
+    if (error && error.pluginStage === "manifest") {
+      // 节点形状非法：id/label 必填，属插件缺陷，按内部错误上报。
+      return errorResponse(id, RPC_INTERNAL_ERROR, details.message, {
+        pluginId,
+        viewId,
+        reason: "invalid-node"
+      });
+    }
+    return errorResponse(id, RPC_INTERNAL_ERROR, `View failed: ${pluginId}/${viewId}: ${details.message}`, {
+      pluginId,
+      viewId,
+      name: details.name,
+      stack: details.stack
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function dispatch(message, id) {
   switch (message.method) {
     case "initialize":
@@ -501,6 +659,8 @@ function dispatch(message, id) {
       return handleExecute(id, message.params);
     case "tool/execute":
       return handleToolExecute(id, message.params);
+    case "view/children":
+      return handleViewChildren(id, message.params);
     case "shutdown":
       return resultResponse(id, { ok: true });
     default:
@@ -577,6 +737,7 @@ async function deactivatePlugins() {
   pendingPlugins.clear();
   pendingCommands.clear();
   pendingTools.clear();
+  pendingViews.clear();
   initialized = false;
 
   for (const plugin of plugins) {
