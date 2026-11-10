@@ -355,7 +355,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 - tag `v0.6.1-preview.66` 打在 `b8041b1`（版本变更+notes 提交，CI 绿、
   check-version --release 通过）——打包 swarm 四轨道 + 设置模态浮层 +
   lc-host M4 关闭；release notes `docs/releases/0.6.1-preview.66.md`；
-  workspace 692 项发版前复测全绿。后台发版任务进行中（draft→发布→manifest）。
+  workspace 692 项发版前复测全绿。后台发版任务完成：**v0.6.1-preview.66 已发布**（10 资产，SHA256SUMS
+  随附；updater-manifest 提升到 .66，previous=.65 回滚通道，signed:false
+  与既有披露一致）。插件延迟激活已合（`5bf0c2b`，activationEvents 生效：
+  onCommand 懒激活 + `*` 向后兼容，ext 29/29 + host 11/11）。
 
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
