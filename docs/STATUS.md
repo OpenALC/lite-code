@@ -384,6 +384,19 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   （agent-82，含契约 bump）；Track B MySQL/PG 设计文档（agent-83）。
 - **preview.65 发版中**：tag `v0.6.1-preview.65` 打在 `b69cf33`（final 复审
   建议提交），release 工作流后台执行（等 draft→发布→updater-manifest）；
+- **preview.65 已发布**（2026-11-11）：tag `v0.6.1-preview.65`（打在
+  `b69cf33`，final 复审建议提交）；release 工作流 10 资产已发布（draft=false，
+  SHA256SUMS 随附）；updater-manifest 已提升到 .65（signed:false 与既有披露
+  一致，3 平台含回滚通道 previous=.64）。
+- **Track B-M1 已合**（`50a81e3`）：MySQL/PG 连接管理 UI——远程表单
+  （host/port 校验/env 密码名 secret_ref/数据库必填）、dbStore 放开四 kind、
+  dbConnectionForm 纯函数 +30 单测，web 462 项全绿；已知限制（M3）：
+  DbConnectionInfo 不带 port/user/secret_ref，编辑回填回落默认。
+  注意：本轮子代理并发期间发生 stash 误操作事故（agent-84 误 git stash
+  卷走他轨在途改动，后已被 pop 还原），主 agent 已外科手术隔离提交，
+  各轨道最终状态以验收时全量门禁为准。
+- **Track B-M2 待派**（下一切片）：字节截断加固（MAX_CELL_BYTES/
+  MAX_RESULT_BYTES）+ CI PG/MySQL 服务容器集成测试。
   perf.yml 已在最新 main 触发（run 42858384352），观测 final 复审记录
   的窗口开关残留计数问题。
 - **perf 残留观测结论**（run 42858384352，main `dea9568`）：窗口开关 20 次
