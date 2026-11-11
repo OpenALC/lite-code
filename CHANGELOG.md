@@ -139,6 +139,7 @@
 - 插件市场 M3：签名强制档（minisign-verify，sha256 文本签名+trusted comment 三重绑定防跨包挪用）+ 多镜像回退（sha 不符也换镜像）——市场线 M1-M3 全部关闭（agent-96）
 - 插件 Webview UI M1：数据驱动声明（markdown/form/list/kv 闭集+命令闭包）+ 静态渲染（markdown 唯一 v-html 点走 renderMarkdown、openCommand 别名零 invoke 拦截）+ 编辑器区 __ui__ 标签；桌面运行时 e2e 全链路透（磁盘插件→palette 别名→节渲染，web 584 项）（agent-98）
 - 插件 Webview UI M2：交互回传（表单 ext_execute_command + list/kv ui/values 动态回读 + 行点击 rowCommand，与 view/children 全同构）；桌面运行时 e2e 连抓三缺陷并修复：表单成功后回读刷新缺失（行命令路径同款已有）、store patch 不换根对象致 `ref.value=next` 订阅不重渲染（提交后行列表原地不刷新）、pluginViews 树视图同款一并修；web 601 项 + vue-tsc 零错（agent-99）
+- 插件 Webview UI M2-R：协议整改单切片迁移——稳定节 id（1–64 位 [a-z0-9-] 首字符字母，视图内唯一）替代数组序号、initialize 完整节描述 DTO 替代 sectionKinds、`source:"provider"` 替代 valuesCommand（旧声明明确报错不猜测转换）、声明级动态值归一（列过滤/500 行/64 对/16 KiB 字符串/256 KiB 总量）、web 侧同步代次+在途请求令牌+语义指纹生命周期；Rust 795 / web 609 / ext-host 21 全绿，桌面运行时 e2e 双演示插件通过（agent-100/101/102）
 
 ## [0.6.1-preview.64] - 2026-11-10
 

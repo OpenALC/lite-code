@@ -430,6 +430,20 @@ iframe 沙箱 v2 规格化（附 §7 修订建议文本）——EXTENSIONS §8 �
 - M3（iframe 沙箱）默认不做：字面违反 EXTENSIONS §7 红线，需用户决策 +
   §7 修订（建议文本在 plugin-webview.md §4）。
 
+### Webview M2-R 协议整改（2026-11-11 午后，main `d854b15`，用户已批准设计）
+
+- 三 subagent 并行单切片迁移（agent-100 Rust / 101 Node 宿主 / 102 Web）：
+  稳定节 id（1–64 位 `[a-z0-9-]` 首字母，视图内唯一）替代数组序号；initialize
+  完整节描述 DTO 替代 sectionKinds；`source:"provider"` 替代 valuesCommand
+  （旧声明明确报错、不猜测转换）；声明级动态值归一（列过滤/≤500 行/≤64 对/
+  单串 16 KiB/总量 256 KiB）；web 同步代次+在途请求令牌+语义指纹（节重排草稿
+  归属、乱序只采最新、语义变更重置、关闭清理、password 草稿不进持久化）。
+- 验收：Rust fmt+clippy+795 全绿 · web 609+vue-tsc+lint 全绿 · ext-host 21 全绿；
+  桌面运行时 e2e：demo.ui-live 经稳定 id 'tasks' 回读、提交 m2r9 后 200ms
+  原地刷新；demo.ui-board 静态 markdown+kv 正常渲染。
+- 本切片关闭后 M3（iframe 沙箱）前置条件只剩：§7 修订合入 + 双平台 §5 验证。
+  用户 2026-11-11 已批准设计文档并指示执行 M3。
+
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
 - **M3b 已按审查合并**（`be84ab6`）：冲突按意见解决（3b 取分支版 lc-core 落点
