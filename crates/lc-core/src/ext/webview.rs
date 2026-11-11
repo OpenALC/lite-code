@@ -175,7 +175,19 @@ pub struct ParsedPluginAsset {
 /// 按当前平台解析 handler 收到的请求 URI（Windows 预期
 /// `http://lc-plugin.localhost/...`，Linux 预期 `lc-plugin://localhost/...`）。
 pub fn parse_asset_uri(uri: &str) -> Option<ParsedPluginAsset> {
-    parse_asset_uri_for(uri, platform_scheme(), platform_authority())
+    // Windows 实测（WebView2/tauri 2.12）：handler 回调收到的是自定义 scheme
+    // 原生形式 `lc-plugin://localhost/...`——页面侧 URL 为 http://lc-plugin.
+    // localhost（webview 内部做映射），两种形式都接受；Linux 只有原生形式。
+    // URL 生成器不受此影响（页面/CSP 仍用平台基地址）。
+    #[cfg(windows)]
+    {
+        parse_asset_uri_for(uri, platform_scheme(), platform_authority())
+            .or_else(|| parse_asset_uri_for(uri, PLUGIN_ASSET_SCHEME, "localhost"))
+    }
+    #[cfg(not(windows))]
+    {
+        parse_asset_uri_for(uri, platform_scheme(), platform_authority())
+    }
 }
 
 /// 指定预期 scheme/authority 的解析（测试用它覆盖双平台；scheme/authority

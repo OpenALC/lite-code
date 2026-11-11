@@ -362,6 +362,9 @@ export function createWebviewBridge(options: CreateWebviewBridgeOptions): Webvie
   let expectedNonce: string | null = options.nonce ?? defaultNonce()
   const bridgeNonce = expectedNonce
   let port: MessagePort | null = null
+  // 每代次首次 load 是初始文档自身完成（子页解析期即发 ready，握手先于
+  // load）——登记但不杀桥；第二次起的 load 才是子 frame 导航（§3.8）。
+  let initialLoadSettled = false
 
   const notify = (): void => onStatus?.(status, closeReason)
 
@@ -501,9 +504,15 @@ export function createWebviewBridge(options: CreateWebviewBridgeOptions): Webvie
       return closeReason
     },
     notifyLoaded() {
-      // iframe 每次 load 触发（初始加载 + 导航/重载）。握手后的 load 只能是
-      // 子 frame 导航/重载（§3.8 宿主必须拒绝其离开批准入口）→ 桥立即失效；
-      // 握手前的 load 是初始加载或父侧受控重载的新代次，由新桥接管。
+      // iframe 每次 load 触发。每代次第一次 load 是 src 导航进来的初始文档
+      // 自身完成加载——子页脚本在解析期就发 ready（VS Code webview 同款
+      // 惯例），握手完成先于 load 到达，不能把这次 load 误判为导航；只有
+      // 第二次起的 load 才可能是子 frame 离开批准入口（§3.8 导航/重载 →
+      // 桥失效）。握手前的首次 load 同理只作初始加载登记。
+      if (!initialLoadSettled) {
+        initialLoadSettled = true
+        return
+      }
       if (status !== 'ready') return
       teardown('navigation')
     },

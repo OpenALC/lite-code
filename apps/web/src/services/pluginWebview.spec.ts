@@ -674,7 +674,31 @@ describe('MessagePort 桥（§3.8 op 闭集）', () => {
 // ==== 生命周期（§3.8：导航/重载/卸载 → 桥失效；在途响应丢弃） ====
 
 describe('桥生命周期（§3.8）', () => {
-  it('握手前 load（初始加载）不杀桥；握手后 load（导航）→ 桥失效且端口静默', async () => {
+  it('快脚本（握手先于 load，真实子页惯例）：首次 load 不杀桥、请求可用；第二次 load（导航）才失效', async () => {
+    const h = harness()
+    h.handshake()
+    expect(h.bridge.status).toBe('ready')
+
+    // 子页解析期握手 → 本代次文档的 load 在握手之后到达：不得误判为导航。
+    h.bridge.notifyLoaded()
+    expect(h.bridge.status).toBe('ready')
+    h.childRequest({ source: 'lc-plugin', protocol: 1, op: 'getState', seq: 1, key: 'k' })
+    await flush()
+    expect(h.responses).toEqual([
+      { source: 'lc-host', seq: 1, ok: true, value: null },
+    ])
+
+    // 第二次 load 只能是子 frame 离开批准入口（§3.8）→ 桥失效。
+    h.bridge.notifyLoaded()
+    expect(h.bridge.status).toBe('closed')
+    expect(h.bridge.closeReason).toBe('navigation')
+
+    h.childRequest({ source: 'lc-plugin', protocol: 1, op: 'getState', seq: 2, key: 'k' })
+    await flush()
+    expect(h.responses).toHaveLength(1)
+  })
+
+  it('慢脚本（load 先于握手）：首次 load 只登记；握手后第二次 load 仍是导航失效', () => {
     const h = harness()
     h.bridge.notifyLoaded()
     expect(h.bridge.status).toBe('awaiting')
@@ -684,10 +708,6 @@ describe('桥生命周期（§3.8）', () => {
     h.bridge.notifyLoaded()
     expect(h.bridge.status).toBe('closed')
     expect(h.bridge.closeReason).toBe('navigation')
-
-    h.childRequest({ source: 'lc-plugin', protocol: 1, op: 'getState', seq: 1, key: 'k' })
-    await flush()
-    expect(h.responses).toEqual([])
   })
 
   it('iframe error → closed(error)；dispose 后一切消息静默', () => {

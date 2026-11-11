@@ -3977,6 +3977,24 @@ fn webview_asset_url_is_generated_by_host_rules() {
     // 本机 parse_asset_uri 覆盖 handler 实际收到的形状。
     let parsed = parse_asset_uri(&asset_uri("/a.b/panel/index.html")).expect("host uri");
     assert_eq!(parsed.asset, "index.html");
+    // Windows 运行时实测（WebView2 回调收到自定义 scheme 原生形式，页面侧
+    // URL 才是 http://lc-plugin.localhost）——两种形式都必须解析成功。
+    #[cfg(windows)]
+    {
+        let native = parse_asset_uri("lc-plugin://localhost/a.b/panel/index.html")
+            .expect("windows native custom-scheme uri");
+        assert_eq!(
+            (
+                native.plugin_id.as_str(),
+                native.webview_id.as_str(),
+                native.asset.as_str()
+            ),
+            ("a.b", "panel", "index.html")
+        );
+        let mapped = parse_asset_uri("http://lc-plugin.localhost/a.b/panel/index.html")
+            .expect("windows mapped http uri");
+        assert_eq!(mapped.asset, "index.html");
+    }
 }
 
 #[test]
