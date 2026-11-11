@@ -386,6 +386,26 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   与既有披露一致）。插件延迟激活已合（`5bf0c2b`，activationEvents 生效：
   onCommand 懒激活 + `*` 向后兼容，ext 29/29 + host 11/11）。
 
+## 通宵总结（2026-11-11 晨，供审查；main 见 git log）
+
+**四连发**：preview.65（审查后首版）→ .66（swarm 四轨道）→ .67（插件系统
+v0 收官）→ .68（插件市场全链路）。测试基线 654→784（workspace）/
+431→563（web）/ext 12→90。
+
+**本日三大线全关**：
+1. lc-host 宿主抽取 M1→M4（d4cb324 起）。
+2. 插件系统 v0（EXTENSIONS §8 从 8 项收敛到 2 项：Webview/API 兼容）：
+   工具/延迟激活/主题/语言/依赖/树视图。
+3. 插件市场 M1-M3（`a1cc559`/`d073d2a`/`5a17798`/`c8ce356`）：
+   静态 index+多源+原子安装+deps 自动装+minisign 强制档+多镜像+浏览 UI。
+
+**过程资产**：8 份子代理实施报告全部入库（agents 81-96）；两次 CI 红均
+当日根因修复（ptr_arg 教训/clippy 必检入档；file:// Unix 路径按平台断言）；
+发版脚本 `/tmp` 坑修复。
+
+**待维护者/用户**：真机签名、2in1、B 类门禁、市场发布端仓库（约定已入
+plan §3.7）、Webview/API 兼容设计。
+
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
 - **M3b 已按审查合并**（`be84ab6`）：冲突按意见解决（3b 取分支版 lc-core 落点
