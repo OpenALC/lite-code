@@ -136,6 +136,7 @@
 - 插件依赖声明 extensionDependencies：缺失依赖/Tarjan 环检测标记 error，稳定 Kahn 拓扑加载顺序（agent-90）
 - 插件树视图 v1：contributes.views 端到端（view/children 协议 + onView 懒激活 + 侧栏可折叠分区 + 节点命令路由）（agent-91）
 - 插件市场 M1+M2：静态 index/多源/原子安装/GC 挂启动/deps 自动安装（同源优先/深度 8/Tarjan 环复用）；浏览 tab+§3.7 确认对话框（web 563 项）——市场设计见 `docs/plans/plugin-marketplace.md`（agent-93/94/95）
+- 插件市场 M3：签名强制档（minisign-verify，sha256 文本签名+trusted comment 三重绑定防跨包挪用）+ 多镜像回退（sha 不符也换镜像）——市场线 M1-M3 全部关闭（agent-96）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
