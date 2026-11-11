@@ -229,6 +229,7 @@ function demoPluginList(): PluginList {
     themes: [],
     languages: [],
     views: [],
+    uiViews: [],
   }))
   return { plugins, dir: DEMO_EXTENSIONS_DIR, nodeAvailable: true }
 }

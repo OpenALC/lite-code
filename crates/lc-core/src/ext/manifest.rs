@@ -10,13 +10,15 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
+use serde_json::json;
 
 use crate::fs::{FsError, RealPathResolver, display_path, ensure_within_root};
 
 use super::{
     ExtError, ExtPaths, PluginCommand, PluginInfo, PluginLanguage, PluginRuntime, PluginTheme,
-    PluginView,
+    PluginUiView, PluginView,
 };
 
 pub(crate) const MANIFEST_FILE: &str = "plugin.json";
@@ -25,6 +27,20 @@ pub(crate) const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 pub(crate) const MAX_THEME_BYTES: u64 = 64 * 1024;
 /// 语法文件大小上限（docs/EXTENSIONS.md §1）：读取时由 `ext_read_grammar` 校验。
 pub(crate) const MAX_GRAMMAR_BYTES: u64 = 64 * 1024;
+/// UI 视图节数上限（docs/plans/plugin-webview.md §3.1）。
+pub(crate) const MAX_UI_SECTIONS: usize = 16;
+/// form 节字段数上限（docs/plans/plugin-webview.md §3.1）。
+pub(crate) const MAX_UI_FIELDS: usize = 32;
+/// list 节列数上限（docs/plans/plugin-webview.md §3.1）。
+pub(crate) const MAX_UI_COLUMNS: usize = 8;
+/// markdown 节文本上限（docs/plans/plugin-webview.md §3.1）。
+pub(crate) const MAX_UI_TEXT_BYTES: usize = 16 * 1024;
+/// kv 节静态/动态条目上限（docs/plans/plugin-webview.md §3.2）。
+pub(crate) const MAX_UI_ITEMS: usize = 64;
+/// select 字段 options 上限（docs/plans/plugin-webview.md §3.1）。
+pub(crate) const MAX_UI_OPTIONS: usize = 32;
+/// 整棵 `contributes.ui` 块序列化上限（docs/plans/plugin-webview.md §3.1）。
+pub(crate) const MAX_UI_BLOCK_BYTES: usize = 32 * 1024;
 
 /// 一个已发现条目。`manifest` 为 `None` 表示该目录的清单无效或 id 冲突，
 /// 只用于列表展示，不能执行命令或参与 MCP 合并。
@@ -81,6 +97,35 @@ pub(crate) struct Contributes {
     /// 分区，节点数据由插件 `ctx.views.register` 提供（§4）。
     #[serde(default)]
     pub views: Vec<ViewDecl>,
+    /// UI 视图声明（docs/plans/plugin-webview.md §3.1）：编辑器区标签页的
+    /// 声明式节集合（markdown/form/list/kv 闭集），静态节 M1 渲染，动态
+    /// 数据走 ui/values（M2）。
+    #[serde(default)]
+    pub ui: UiContrib,
+}
+
+/// UI 视图块（`contributes.ui`）。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UiContrib {
+    #[serde(default)]
+    pub views: Vec<UiViewDecl>,
+}
+
+/// UI 视图声明。`id` 插件内唯一（小写字母/数字/线，与 views.id 同规则）；
+/// `name` 是标签页标题（非空）；`open_command` 可空，声明时必须出现在
+/// contributes.commands（palette 别名拦截用，纯 web 打开本视图）。
+/// `sections` 的原始 JSON 由 validate_ui 白名单校验后原样进 DTO。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UiViewDecl {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub open_command: Option<String>,
+    #[serde(default)]
+    pub sections: Value,
 }
 
 /// 树视图声明。`id` 是插件内唯一的视图标识（小写字母/数字/线，与语言
@@ -537,15 +582,19 @@ fn validate_manifest(
         manifest.name = manifest.id.clone();
     }
 
-    // 激活事件校验（docs/EXTENSIONS.md §4）：v1 仅支持 `*`、
-    // `onCommand:<commandId>` 与 `onView:<viewId>`；非法事件只把该插件
-    // 标记为 error。
+    // 激活事件校验（docs/EXTENSIONS.md §4 / docs/plans/plugin-webview.md §3.2）：
+    // v1 仅支持 `*`、`onCommand:<commandId>`、`onView:<viewId>` 与
+    // `onUiView:<viewId>`；非法事件只把该插件标记为 error。
     let mut activation_events = Vec::new();
     for event in &manifest.activation_events {
         let event = event.trim();
-        if event != "*" && !event.starts_with("onCommand:") && !event.starts_with("onView:") {
+        if event != "*"
+            && !event.starts_with("onCommand:")
+            && !event.starts_with("onView:")
+            && !event.starts_with("onUiView:")
+        {
             return Err(format!(
-                "activationEvents 无效：`{event}`（仅支持 `*`、`onCommand:<commandId>` 或 `onView:<viewId>`）"
+                "activationEvents 无效：`{event}`（仅支持 `*`、`onCommand:<commandId>`、`onView:<viewId>` 或 `onUiView:<viewId>`）"
             ));
         }
         if !activation_events.iter().any(|existing| existing == event) {
@@ -784,6 +833,10 @@ fn validate_manifest(
         }
     }
 
+    // UI 视图声明校验（docs/plans/plugin-webview.md §3.1）：节 kind 闭集、
+    // field type 闭集、命令闭包、规模上限；失败只把该插件标记为 error。
+    validate_ui(&mut manifest.contributes.ui, &command_ids)?;
+
     let mut mcp_names = HashSet::new();
     let mut normalized_mcp = BTreeMap::new();
     for (name, declared) in std::mem::take(&mut manifest.contributes.mcp_servers) {
@@ -830,6 +883,420 @@ fn validate_manifest(
     };
 
     Ok((manifest, main_path))
+}
+
+/// UI 视图声明校验（docs/plans/plugin-webview.md §3.1）：视图 id 合法
+/// （小写字母/数字/线，与 views.id 同规则）且插件内唯一、name 非空；
+/// openCommand 必须出现在 contributes.commands；节 kind 闭集
+/// （markdown|form|list|kv），field type 闭集（text|number|boolean|select|
+/// password）且 default 类型合法；command/valuesCommand/rowCommand 一律
+/// 闭包校验（tools.command 模式）；规模上限 sections≤16、fields≤32、
+/// columns≤8、kv items≤64、markdown text≤16 KiB，整棵 ui 块序列化 ≤32 KiB。
+/// 节在校验时按 kind 重建为白名单键集合，多余键丢弃；任一失败只把该插件
+/// 标记为 error（既有 validate_manifest 全局语义）。
+fn validate_ui(ui: &mut UiContrib, command_ids: &HashSet<&str>) -> Result<(), String> {
+    // 整棵 ui 块序列化上限：校验形状前先兜体积，避免超大块浪费校验开销。
+    let block = serde_json::to_string(&*ui).map_err(|error| format!("ui 块序列化失败：{error}"))?;
+    if block.len() > MAX_UI_BLOCK_BYTES {
+        return Err(format!(
+            "contributes.ui 块超过 {} KiB 上限",
+            MAX_UI_BLOCK_BYTES / 1024
+        ));
+    }
+
+    let mut view_ids = HashSet::new();
+    for view in &mut ui.views {
+        view.id = view.id.trim().to_string();
+        if !valid_language_id(&view.id) {
+            return Err(format!(
+                "ui.views.id 无效：`{}`（仅允许小写字母、数字、线）",
+                view.id
+            ));
+        }
+        if !view_ids.insert(view.id.clone()) {
+            return Err(format!("ui.views.id 重复：`{}`", view.id));
+        }
+        view.name = view.name.trim().to_string();
+        if view.name.is_empty() {
+            return Err(format!("ui.views.name 不能为空：`{}`", view.id));
+        }
+        let open_command = view
+            .open_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty());
+        match open_command {
+            Some(command) => {
+                if !command_ids.contains(command) {
+                    return Err(format!(
+                        "ui.views.openCommand 引用的命令 `{command}` 未在 contributes.commands 中声明"
+                    ));
+                }
+                view.open_command = Some(command.to_string());
+            }
+            None => view.open_command = None,
+        }
+        validate_ui_sections(&view.id, &mut view.sections, command_ids)?;
+    }
+    Ok(())
+}
+
+/// 视图节数组校验：闭集 kind 分派 + 按 kind 白名单重建。节序号（1 起）进
+/// 错误文案，方便插件作者定位。
+fn validate_ui_sections(
+    view_id: &str,
+    sections: &mut Value,
+    command_ids: &HashSet<&str>,
+) -> Result<(), String> {
+    let Some(list) = sections.as_array_mut() else {
+        return Err(format!("ui.views `{view_id}` 的 sections 必须是数组"));
+    };
+    if list.len() > MAX_UI_SECTIONS {
+        return Err(format!(
+            "ui.views `{view_id}` 的 sections 超过 {MAX_UI_SECTIONS} 个上限"
+        ));
+    }
+    for (index, section) in list.iter_mut().enumerate() {
+        let label = format!("ui.views `{view_id}` 第 {} 节", index + 1);
+        let Some(kind) = section.get("kind").and_then(Value::as_str) else {
+            return Err(format!("{label} 缺少 kind"));
+        };
+        let kind = kind.trim();
+        let normalized = match kind {
+            "markdown" => validate_ui_markdown(&label, section)?,
+            "form" => validate_ui_form(&label, section, command_ids)?,
+            "list" => validate_ui_list(&label, section, command_ids)?,
+            "kv" => validate_ui_kv(&label, section, command_ids)?,
+            other => {
+                return Err(format!(
+                    "{label} kind 非法：`{other}`（仅支持 markdown/form/list/kv）"
+                ));
+            }
+        };
+        *section = normalized;
+    }
+    Ok(())
+}
+
+/// 取可空字符串字段：trim 后为空视为缺省（调用方丢弃该键）。
+fn optional_string(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    map.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// 命令引用闭包校验（tools.command 模式）：trim 后必须出现在
+/// contributes.commands；空串视为缺省。
+fn optional_command(
+    map: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+    command_ids: &HashSet<&str>,
+) -> Result<Option<String>, String> {
+    let command = map.get(key).and_then(Value::as_str).map(str::trim);
+    match command {
+        Some("") | None => Ok(None),
+        Some(command) => {
+            if !command_ids.contains(command) {
+                return Err(format!(
+                    "{label} 的 `{key}` 引用的命令 `{command}` 未在 contributes.commands 中声明"
+                ));
+            }
+            Ok(Some(command.to_string()))
+        }
+    }
+}
+
+/// markdown 节：text 必须是字符串且 ≤16 KiB；无回读（§3.2），纯静态渲染。
+fn validate_ui_markdown(label: &str, section: &Value) -> Result<Value, String> {
+    let Some(map) = section.as_object() else {
+        return Err(format!("{label} 必须是对象"));
+    };
+    let text = map
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label}（markdown）缺少 text"))?;
+    if text.len() > MAX_UI_TEXT_BYTES {
+        return Err(format!(
+            "{label}（markdown）的 text 超过 {} KiB 上限",
+            MAX_UI_TEXT_BYTES / 1024
+        ));
+    }
+    Ok(json!({ "kind": "markdown", "text": text }))
+}
+
+/// form 节：fields 1..=32 个；field key/label 非空、key 节内唯一；type 闭集；
+/// default 必须是该类型的合法 JSON 值；select 必须有 1..=32 个非空字符串
+/// options；number 的 min/max 必须是数字；command 闭包校验。
+fn validate_ui_form(
+    label: &str,
+    section: &Value,
+    command_ids: &HashSet<&str>,
+) -> Result<Value, String> {
+    let Some(map) = section.as_object() else {
+        return Err(format!("{label} 必须是对象"));
+    };
+    let title = optional_string(map, "title");
+    let command = optional_command(map, "command", label, command_ids)?;
+    let fields = map
+        .get("fields")
+        .and_then(Value::as_array)
+        .filter(|fields| !fields.is_empty())
+        .ok_or_else(|| format!("{label}（form）的 fields 必须是非空数组"))?;
+    if fields.len() > MAX_UI_FIELDS {
+        return Err(format!(
+            "{label}（form）的 fields 超过 {MAX_UI_FIELDS} 个上限"
+        ));
+    }
+
+    let mut field_keys = HashSet::new();
+    let mut normalized_fields = Vec::with_capacity(fields.len());
+    for field in fields {
+        let field_label = format!("{label}（form）字段");
+        let Some(field_map) = field.as_object() else {
+            return Err(format!("{field_label}必须是对象"));
+        };
+        let key = field_map
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| format!("{field_label}缺少 key"))?;
+        if !field_keys.insert(key.to_string()) {
+            return Err(format!("{field_label}`{key}` 重复"));
+        }
+        let field_label_name = field_map
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| format!("{field_label}`{key}` 缺少 label"))?;
+        let field_type = field_map
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .ok_or_else(|| format!("{field_label}`{key}` 缺少 type"))?;
+        match field_type {
+            "text" | "number" | "boolean" | "select" | "password" => {}
+            other => {
+                return Err(format!(
+                    "{field_label}`{key}` 的 type 非法：`{other}`（仅支持 text/number/boolean/select/password）"
+                ));
+            }
+        }
+
+        let mut normalized = serde_json::Map::new();
+        normalized.insert("key".into(), json!(key));
+        normalized.insert("label".into(), json!(field_label_name));
+        normalized.insert("type".into(), json!(field_type));
+        if let Some(placeholder) = optional_string(field_map, "placeholder") {
+            normalized.insert("placeholder".into(), json!(placeholder));
+        }
+        // default 必须是该 field type 的合法 JSON 值（§3.1）。
+        if let Some(default) = field_map.get("default") {
+            let valid = match field_type {
+                "text" | "password" | "select" => default.is_string(),
+                "number" => default.is_number(),
+                "boolean" => default.is_boolean(),
+                _ => unreachable!("field type 闭集已校验"),
+            };
+            if !valid {
+                return Err(format!(
+                    "{field_label}`{key}` 的 default 必须是 {field_type} 类型的 JSON 值"
+                ));
+            }
+            normalized.insert("default".into(), default.clone());
+        }
+        if field_type == "select" {
+            let options = field_map
+                .get("options")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("{field_label}`{key}`（select）缺少 options"))?;
+            if options.is_empty() || options.len() > MAX_UI_OPTIONS {
+                return Err(format!(
+                    "{field_label}`{key}`（select）的 options 必须是 1..={MAX_UI_OPTIONS} 个字符串"
+                ));
+            }
+            let mut seen = HashSet::new();
+            let mut normalized_options = Vec::with_capacity(options.len());
+            for option in options {
+                let option = option
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|option| !option.is_empty())
+                    .ok_or_else(|| {
+                        format!("{field_label}`{key}`（select）的 options 必须是非空字符串")
+                    })?;
+                if seen.insert(option.to_string()) {
+                    normalized_options.push(option);
+                }
+            }
+            normalized.insert("options".into(), json!(normalized_options));
+        }
+        // min/max 只对 number 有意义：非 number 字段静默丢弃；number 字段
+        // 类型非法则报错。
+        if field_type == "number" {
+            for bound in ["min", "max"] {
+                match field_map.get(bound) {
+                    Some(value) if !value.is_number() => {
+                        return Err(format!("{field_label}`{key}` 的 {bound} 必须是数字"));
+                    }
+                    Some(value) => {
+                        normalized.insert(bound.to_string(), value.clone());
+                    }
+                    None => {}
+                }
+            }
+        }
+        normalized_fields.push(Value::Object(normalized));
+    }
+
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("kind".into(), json!("form"));
+    if let Some(title) = title {
+        normalized.insert("title".into(), json!(title));
+    }
+    if let Some(command) = command {
+        normalized.insert("command".into(), json!(command));
+    }
+    normalized.insert("fields".into(), json!(normalized_fields));
+    Ok(Value::Object(normalized))
+}
+
+/// list 节：columns 1..=8 个，key/label 非空、key 节内唯一，width 缺省 1、
+/// 声明时必须是 1..=5 的整数权重；valuesCommand/rowCommand 闭包校验。
+fn validate_ui_list(
+    label: &str,
+    section: &Value,
+    command_ids: &HashSet<&str>,
+) -> Result<Value, String> {
+    let Some(map) = section.as_object() else {
+        return Err(format!("{label} 必须是对象"));
+    };
+    let title = optional_string(map, "title");
+    let values_command = optional_command(map, "valuesCommand", label, command_ids)?;
+    let row_command = optional_command(map, "rowCommand", label, command_ids)?;
+    let columns = map
+        .get("columns")
+        .and_then(Value::as_array)
+        .filter(|columns| !columns.is_empty())
+        .ok_or_else(|| format!("{label}（list）的 columns 必须是非空数组"))?;
+    if columns.len() > MAX_UI_COLUMNS {
+        return Err(format!(
+            "{label}（list）的 columns 超过 {MAX_UI_COLUMNS} 个上限"
+        ));
+    }
+
+    let mut column_keys = HashSet::new();
+    let mut normalized_columns = Vec::with_capacity(columns.len());
+    for column in columns {
+        let column_label = format!("{label}（list）列");
+        let Some(column_map) = column.as_object() else {
+            return Err(format!("{column_label}必须是对象"));
+        };
+        let key = column_map
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| format!("{column_label}缺少 key"))?;
+        if !column_keys.insert(key.to_string()) {
+            return Err(format!("{column_label}`{key}` 重复"));
+        }
+        let column_name = column_map
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| format!("{column_label}`{key}` 缺少 label"))?;
+        // width=1..5 权重（§3.1），缺省 1；JSON 1.0 这类浮点整数按 as_f64
+        // 收敛后取整接受。
+        let width = match column_map.get("width") {
+            Some(value) => {
+                let Some(width) = value.as_f64() else {
+                    return Err(format!("{column_label}`{key}` 的 width 必须是数字"));
+                };
+                if width.fract() != 0.0 || !(1.0..=5.0).contains(&width) {
+                    return Err(format!(
+                        "{column_label}`{key}` 的 width 必须是 1..=5 的整数"
+                    ));
+                }
+                width as i64
+            }
+            None => 1,
+        };
+        normalized_columns.push(json!({
+            "key": key,
+            "label": column_name,
+            "width": width,
+        }));
+    }
+
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("kind".into(), json!("list"));
+    if let Some(title) = title {
+        normalized.insert("title".into(), json!(title));
+    }
+    if let Some(command) = values_command {
+        normalized.insert("valuesCommand".into(), json!(command));
+    }
+    normalized.insert("columns".into(), json!(normalized_columns));
+    if let Some(command) = row_command {
+        normalized.insert("rowCommand".into(), json!(command));
+    }
+    Ok(Value::Object(normalized))
+}
+
+/// kv 节：静态 items（0..=64 对，key 非空字符串、value 字符串）与
+/// valuesCommand（M2 动态回读）至少结构合法；M1 只渲染静态 items。
+fn validate_ui_kv(
+    label: &str,
+    section: &Value,
+    command_ids: &HashSet<&str>,
+) -> Result<Value, String> {
+    let Some(map) = section.as_object() else {
+        return Err(format!("{label} 必须是对象"));
+    };
+    let title = optional_string(map, "title");
+    let values_command = optional_command(map, "valuesCommand", label, command_ids)?;
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("kind".into(), json!("kv"));
+    if let Some(title) = title {
+        normalized.insert("title".into(), json!(title));
+    }
+    if let Some(items) = map.get("items") {
+        let items = items
+            .as_array()
+            .ok_or_else(|| format!("{label}（kv）的 items 必须是数组"))?;
+        if items.len() > MAX_UI_ITEMS {
+            return Err(format!("{label}（kv）的 items 超过 {MAX_UI_ITEMS} 个上限"));
+        }
+        let mut normalized_items = Vec::with_capacity(items.len());
+        for item in items {
+            let item_label = format!("{label}（kv）条目");
+            let Some(item_map) = item.as_object() else {
+                return Err(format!("{item_label}必须是对象"));
+            };
+            let key = item_map
+                .get("key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| format!("{item_label}的 key 必须是非空字符串"))?;
+            let value = item_map
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("{item_label}`{key}` 的 value 必须是字符串"))?;
+            normalized_items.push(json!({ "key": key, "value": value }));
+        }
+        normalized.insert("items".into(), json!(normalized_items));
+    }
+    if let Some(command) = values_command {
+        normalized.insert("valuesCommand".into(), json!(command));
+    }
+    Ok(Value::Object(normalized))
 }
 
 /// 插件 id 形态（反向域名）：非空、≤128 字符、非 `.`/`..`、不含空白/控制字符
@@ -958,6 +1425,22 @@ fn info_from_manifest(manifest: &PluginManifest, dir: &Path, enabled: bool) -> P
             .map(|view| PluginView {
                 id: view.id.clone(),
                 name: view.name.clone(),
+            })
+            .collect(),
+        ui_views: manifest
+            .contributes
+            .ui
+            .views
+            .iter()
+            .map(|view| PluginUiView {
+                id: view.id.clone(),
+                name: view.name.clone(),
+                open_command: view.open_command.clone(),
+                sections: view
+                    .sections
+                    .as_array()
+                    .map(|sections| sections.to_vec())
+                    .unwrap_or_default(),
             })
             .collect(),
     }
@@ -1126,6 +1609,7 @@ fn error_info(
         themes: Vec::new(),
         languages: Vec::new(),
         views: Vec::new(),
+        ui_views: Vec::new(),
     }
 }
 

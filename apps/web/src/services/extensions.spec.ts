@@ -55,6 +55,14 @@ const sampleList: PluginList = {
         },
       ],
       views: [{ id: 'demo-tree', name: 'Demo Tree' }],
+      uiViews: [
+        {
+          id: 'demo-board',
+          name: 'Demo Board',
+          openCommand: 'example.hello.board',
+          sections: [{ kind: 'markdown', text: '# Demo' }],
+        },
+      ],
     },
   ],
   dir: 'C:\\Users\\demo\\.lite-code\\extensions',
@@ -309,6 +317,24 @@ describe('Tauri 路径', () => {
     const res = await extensionsViewChildren('example.hello', 'demo-tree')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error.message).toContain('ext_view_children')
+  })
+
+  it('ext_list 的 uiViews 守卫：节级形状由 pluginUi 归一，视图级形状非法整包拒绝', async () => {
+    // 视图级合法（sections 只要求是数组）→ 通过；
+    const valid = structuredClone(sampleList)
+    installTauri({ invoke: async () => valid })
+    const ok = await extensionsList()
+    expect(ok.ok).toBe(true)
+
+    // 视图级非法（sections 不是数组）→ 整包归入 internal（fail-closed）。
+    const broken = structuredClone(sampleList)
+    broken.plugins[0].uiViews = [
+      { id: 'x', name: 'X', openCommand: null, sections: 'nope' as unknown as unknown[] },
+    ]
+    installTauri({ invoke: async () => broken })
+    const res = await extensionsList()
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error.code).toBe('internal')
   })
 })
 

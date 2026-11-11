@@ -40,6 +40,21 @@ export interface PluginView {
   name: string
 }
 
+/**
+ * 插件贡献的 UI 视图（ext_list 携带，docs/plans/plugin-webview.md §3.1）。
+ * sections 的节级形状由 pluginUi.ts 守卫归一（isUiSection/normalizeUiSection）。
+ */
+export interface PluginUiView {
+  /** 插件内唯一（小写字母/数字/线）。 */
+  id: string
+  /** 编辑器区标签页标题（Rust 校验非空）。 */
+  name: string
+  /** palette 别名命令 id；无声明为 null。 */
+  openCommand: string | null
+  /** 节数组（kind ∈ markdown|form|list|kv，Rust 已白名单校验）。 */
+  sections: unknown[]
+}
+
 /** 树视图节点（docs/EXTENSIONS.md §4）：id/label 必填，其余可空。 */
 export interface ViewNode {
   id: string
@@ -64,6 +79,8 @@ export interface PluginInfo {
   themes: PluginTheme[]
   languages: PluginLanguage[]
   views: PluginView[]
+  /** 贡献的 UI 视图（无声明为空数组，docs/plans/plugin-webview.md §3.1）。 */
+  uiViews: PluginUiView[]
 }
 
 export interface PluginList {
@@ -151,6 +168,16 @@ function isPluginView(value: unknown): value is PluginView {
   return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string'
 }
 
+function isPluginUiView(value: unknown): value is PluginUiView {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    (value.openCommand === null || typeof value.openCommand === 'string') &&
+    Array.isArray(value.sections)
+  )
+}
+
 function isPluginCommand(value: unknown): value is PluginCommand {
   return (
     isRecord(value) &&
@@ -179,7 +206,9 @@ function isPluginInfo(value: unknown): value is PluginInfo {
     Array.isArray(value.languages) &&
     value.languages.every(isPluginLanguage) &&
     Array.isArray(value.views) &&
-    value.views.every(isPluginView)
+    value.views.every(isPluginView) &&
+    Array.isArray(value.uiViews) &&
+    value.uiViews.every(isPluginUiView)
   )
 }
 
@@ -231,6 +260,7 @@ function demoPluginList(): PluginList {
         commands: [
           { command: 'demo.hello', title: 'Say hello' },
           { command: 'demo.hello.time', title: 'Show demo time' },
+          { command: 'demo.hello.board', title: 'Open demo board' },
         ],
         mcpServers: [],
         languageServers: [],
@@ -246,6 +276,25 @@ function demoPluginList(): PluginList {
           },
         ],
         views: [{ id: 'demo-tree', name: 'Demo Tree' }],
+        // 演示 UI 视图：markdown + kv 静态节；openCommand 走 palette 别名。
+        uiViews: [
+          {
+            id: 'demo-board',
+            name: 'Demo Board',
+            openCommand: 'demo.hello.board',
+            sections: [
+              { kind: 'markdown', text: '# Demo Board\n\n静态 **markdown** 节。' },
+              {
+                kind: 'kv',
+                title: '统计',
+                items: [
+                  { key: '版本', value: '0.1.0' },
+                  { key: '运行时', value: 'node' },
+                ],
+              },
+            ],
+          },
+        ],
       },
       {
         id: 'demo.notes',
@@ -262,6 +311,44 @@ function demoPluginList(): PluginList {
         themes: [],
         languages: [],
         views: [],
+        // 声明式插件的演示视图：form 静态 default 只读渲染 + list 空态注记。
+        uiViews: [
+          {
+            id: 'notes-panel',
+            name: 'Notes Panel',
+            openCommand: null,
+            sections: [
+              {
+                kind: 'form',
+                title: '筛选',
+                command: 'demo.notes.open',
+                fields: [
+                  { key: 'q', label: '关键词', type: 'text', placeholder: '搜索…', default: '' },
+                  { key: 'limit', label: '条数', type: 'number', min: 1, max: 200, default: 50 },
+                  { key: 'done', label: '含已完成', type: 'boolean', default: false },
+                  {
+                    key: 'sort',
+                    label: '排序',
+                    type: 'select',
+                    options: ['new', 'old'],
+                    default: 'new',
+                  },
+                  { key: 'token', label: '令牌', type: 'password' },
+                ],
+              },
+              {
+                kind: 'list',
+                title: '任务',
+                valuesCommand: 'demo.notes.open',
+                columns: [
+                  { key: 'title', label: '标题', width: 3 },
+                  { key: 'state', label: '状态', width: 1 },
+                ],
+                rowCommand: 'demo.notes.open',
+              },
+            ],
+          },
+        ],
       },
     ],
     dir: DEMO_EXTENSIONS_DIR,

@@ -107,6 +107,15 @@
     "expandNode": "Expand {label}",
     "collapseNode": "Collapse {label}"
   },
+  "ui": {
+    "unavailable": "This view is no longer available (plugin disabled or view removed).",
+    "sectionError": "This section cannot be rendered.",
+    "formReadonly": "Read-only preview; form interaction ships in a later version.",
+    "listNeedsNode": "List data requires the Node runtime and ships in a later version.",
+    "kvNeedsNode": "Key-value data requires the Node runtime and ships in a later version.",
+    "booleanOn": "On",
+    "booleanOff": "Off"
+  },
   "agent": {
     "placeholderTitle": "Agent mode",
     "placeholderDesc": "P0 placeholder. Session stream, tool cards and inline approvals land in P3.",
@@ -743,7 +752,10 @@
     "noResult": "Command finished with no output",
     "nodeUnavailable": "No usable Node.js detected: Node plugins are unavailable, while declarative plugins still work.",
     "disabledHint": "Plugin is disabled; enable it before running commands",
-    "nodeHint": "Node is unavailable, so this command cannot run"
+    "nodeHint": "Node is unavailable, so this command cannot run",
+    "uiViews": "Views",
+    "openView": "Open View",
+    "viewDisabledHint": "Plugin is disabled; enable it before opening views"
   },
   "marketplace": {
     "tabInstalled": "Installed",

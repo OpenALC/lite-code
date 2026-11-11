@@ -14,7 +14,9 @@ import {
   type PluginInfo,
   type PluginList,
   type PluginRuntime,
+  type PluginUiView,
 } from '../services/extensions'
+import { openPluginUiView } from '../services/pluginUi'
 import {
   marketplaceInstall,
   marketplaceSearch,
@@ -177,6 +179,12 @@ function feedbackFor(pluginId: string, command: string): CommandFeedback | null 
   const current = commandFeedback.value
   if (current && current.pluginId === pluginId && current.command === command) return current
   return null
+}
+
+/** 「打开视图」：打开（或激活）该 UI 视图的编辑器区标签（§3.4 入口②）。 */
+function openUiView(plugin: PluginInfo, view: PluginUiView): void {
+  if (!plugin.enabled || plugin.error !== null) return
+  openPluginUiView(plugin.id, view.id)
 }
 
 // ==== 浏览市场 tab（§3.8）：搜索/安装/更新/卸载状态由本组件自持 ====
@@ -553,6 +561,40 @@ onMounted(load)
                       </span>
                     </div>
                     <pre class="result-body">{{ feedbackFor(plugin.id, command.command)?.text }}</pre>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 插件 UI 视图（docs/plans/plugin-webview.md §3.4 入口②） -->
+            <section
+              v-if="plugin.uiViews.length > 0"
+              class="commands"
+            >
+              <div class="commands-head">
+                <h3>{{ t('extensions.uiViews') }}</h3>
+                <span class="command-count">{{ plugin.uiViews.length }}</span>
+              </div>
+              <div class="command-list">
+                <div
+                  v-for="view in plugin.uiViews"
+                  :key="view.id"
+                  class="command-item"
+                >
+                  <div class="command-row">
+                    <div class="command-copy">
+                      <span class="command-title">{{ view.name }}</span>
+                      <code class="command-id">{{ view.id }}</code>
+                    </div>
+                    <button
+                      type="button"
+                      class="ghost small run-button"
+                      :disabled="!plugin.enabled || plugin.error !== null"
+                      :title="(!plugin.enabled || plugin.error !== null) ? t('extensions.viewDisabledHint') : undefined"
+                      @click="openUiView(plugin, view)"
+                    >
+                      {{ t('extensions.openView') }}
+                    </button>
                   </div>
                 </div>
               </div>

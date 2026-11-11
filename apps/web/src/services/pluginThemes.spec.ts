@@ -105,6 +105,7 @@ function plugin(partial: Partial<PluginInfo> & { id: string }): PluginInfo {
     themes: [],
     languages: [],
     views: [],
+    uiViews: [],
     ...partial,
   }
 }

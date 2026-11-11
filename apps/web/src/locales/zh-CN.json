@@ -107,6 +107,15 @@
     "expandNode": "展开 {label}",
     "collapseNode": "折叠 {label}"
   },
+  "ui": {
+    "unavailable": "该视图已不可用（插件被禁用或视图声明已移除）。",
+    "sectionError": "该节数据无法渲染。",
+    "formReadonly": "表单为只读预览，交互将在后续版本提供。",
+    "listNeedsNode": "列表数据需要 Node 运行时，将在后续版本提供。",
+    "kvNeedsNode": "键值数据需要 Node 运行时，将在后续版本提供。",
+    "booleanOn": "开",
+    "booleanOff": "关"
+  },
   "agent": {
     "placeholderTitle": "Agent 模式",
     "placeholderDesc": "P0 占位。会话流、工具卡片与内联审批在 P3（Agent 模式可用）落地。",
@@ -743,7 +752,10 @@
     "noResult": "命令已完成，没有返回内容",
     "nodeUnavailable": "未检测到可用的 Node.js：Node 插件暂时不可用，声明式插件仍可使用。",
     "disabledHint": "插件已禁用，先启用再运行命令",
-    "nodeHint": "Node 不可用，暂时无法运行该命令"
+    "nodeHint": "Node 不可用，暂时无法运行该命令",
+    "uiViews": "视图",
+    "openView": "打开视图",
+    "viewDisabledHint": "插件已禁用，先启用再打开视图"
   },
   "marketplace": {
     "tabInstalled": "已安装",

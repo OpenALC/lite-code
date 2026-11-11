@@ -102,6 +102,23 @@ pub struct PluginView {
     pub name: String,
 }
 
+/// 插件贡献的 UI 视图（`PluginInfo.uiViews` 元素，
+/// docs/plans/plugin-webview.md §3.1）：编辑器区标签页的声明式节集合。
+/// `id` 插件内唯一（小写字母/数字/线，与 views.id 同规则）；`name` 是
+/// 标签页标题；`openCommand` 可空，声明时必须是该插件 contributes.commands
+/// 中的命令（palette 别名拦截，纯 web 打开本视图）。`sections` 是经
+/// validate_ui 白名单校验后的节 JSON（kind ∈ markdown|form|list|kv），
+/// 原样下发，web 侧再过一次守卫归一（§3.4 双端白名单）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginUiView {
+    pub id: String,
+    pub name: String,
+    /// 缺省 `null`（camelCase DTO 序列化为 JSON `null`）。
+    pub open_command: Option<String>,
+    pub sections: Vec<Value>,
+}
+
 /// 单个插件的展示信息（`PluginList.plugins` 元素）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +142,8 @@ pub struct PluginInfo {
     pub languages: Vec<PluginLanguage>,
     /// 贡献的树视图（无声明为空数组）。
     pub views: Vec<PluginView>,
+    /// 贡献的 UI 视图（无声明为空数组，docs/plans/plugin-webview.md §3.1）。
+    pub ui_views: Vec<PluginUiView>,
 }
 
 /// 插件列表（`ext_list` / `ext_reload` / `ext_set_enabled` 的返回）。

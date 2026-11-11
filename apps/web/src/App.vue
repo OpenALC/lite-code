@@ -12,6 +12,7 @@ import DbPanel from './components/DbPanel.vue'
 import ExtensionsPanel from './components/ExtensionsPanel.vue'
 import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
+import PluginUiView from './components/PluginUiView.vue'
 import PluginViews from './components/PluginViews.vue'
 import SearchView from './components/SearchView.vue'
 import SettingsPanel, { type SettingsSection } from './components/SettingsPanel.vue'
@@ -78,6 +79,15 @@ import { extensionsExecuteCommand, extensionsList } from './services/extensions'
 import { syncPluginThemes } from './services/pluginThemes'
 import { syncPluginLanguages } from './services/pluginLanguages'
 import { syncPluginViews } from './services/pluginViews'
+import {
+  getPluginUiState,
+  openPluginUiView,
+  openPluginUiViewByCommand,
+  parseUiTabId,
+  subscribePluginUi,
+  syncPluginUiViews,
+  type PluginUiState,
+} from './services/pluginUi'
 import { subscribeAgentContext } from './services/agentContext'
 import { requestReveal } from './services/editorReveal'
 import { resolveEditorStrategy } from './services/largeFile'
@@ -392,6 +402,10 @@ const unsubTabs = tabsStore.subscribe(state => {
 })
 const openTabs = computed(() => tabsState.value.tabs)
 const activeTabId = computed(() => tabsState.value.activeId)
+/** 激活标签是插件 UI 视图标签（`__ui__:<pluginId>:<viewId>`）时的视图引用。 */
+const activeUiTab = computed(() =>
+  activeTabId.value ? parseUiTabId(activeTabId.value) : null,
+)
 
 function activateEditor(id: string): void {
   activateTab(id)
@@ -469,11 +483,20 @@ interface PluginCommandItem {
 
 const pluginCommands = ref<PluginCommandItem[]>([])
 
+// 插件 UI 视图声明（docs/plans/plugin-webview.md §3.4）：palette「插件视图」
+// 分组与 openCommand 别名拦截都从这里取数；标签生命周期由
+// syncPluginUiViews 维护（插件禁用/删除 → 关标签）。
+const pluginUiState = ref<PluginUiState>(getPluginUiState())
+const unsubPluginUi = subscribePluginUi(next => {
+  pluginUiState.value = next
+})
+
 function onExtensionsChanged(): void {
   void refreshPluginCommands()
   void syncPluginThemes()
   void syncPluginLanguages()
   void syncPluginViews()
+  void syncPluginUiViews()
   if (projectRoot.value) startLsp()
 }
 
@@ -516,7 +539,25 @@ const commands = computed<QuickItem[]>(() => [
     id: `ext:${item.command}`,
     label: item.title,
     detail: item.pluginName,
-    action: () => { void extensionsExecuteCommand(item.command) },
+    action: () => {
+      // openCommand 别名：palette 纯 web 拦截，打开 UI 视图标签而非
+      // ext_execute_command（宿主 handler 不执行，零 invoke；§3.4）。
+      if (openPluginUiViewByCommand(item.command)) {
+        setAppMode('editor')
+        return
+      }
+      void extensionsExecuteCommand(item.command)
+    },
+  })),
+  // 「插件视图」分组：label=视图 name、detail=插件名（§3.4 入口①）。
+  ...pluginUiState.value.views.map(view => ({
+    id: `uiview:${view.key}`,
+    label: view.viewName,
+    detail: view.pluginName,
+    action: () => {
+      setAppMode('editor')
+      openPluginUiView(view.pluginId, view.viewId)
+    },
   })),
 ])
 
@@ -985,6 +1026,7 @@ onMounted(() => {
   void syncPluginThemes()
   void syncPluginLanguages()
   void syncPluginViews()
+  void syncPluginUiViews()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
@@ -1007,6 +1049,7 @@ onBeforeUnmount(() => {
   unsubAgentContext()
   unsubTabs()
   unsubGit()
+  unsubPluginUi()
   unsubscribeDiagnostics()
   historyRecorder.dispose()
   agentSession.dispose()
@@ -1404,7 +1447,15 @@ onBeforeUnmount(() => {
             v-show="activeTabId === '__extensions__'"
             @changed="onExtensionsChanged"
           />
-          <template v-if="activeTabId !== '__extensions__'">
+          <!-- 插件 UI 视图标签容器（§3.4：id `__ui__:<pluginId>:<viewId>`，
+            照 __extensions__ 先例；key=标签 id，切换标签重挂载静态渲染）。 -->
+          <PluginUiView
+            v-if="activeUiTab"
+            :key="`${activeUiTab.pluginId}:${activeUiTab.viewId}`"
+            :plugin-id="activeUiTab.pluginId"
+            :view-id="activeUiTab.viewId"
+          />
+          <template v-if="activeTabId !== '__extensions__' && !activeUiTab">
             <CodeEditor v-if="openTabs.length > 0" />
             <div
               v-else

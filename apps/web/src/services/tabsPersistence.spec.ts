@@ -100,6 +100,14 @@ describe('serialize / parse', () => {
     expect(back?.tabs.map(t => t.id)).toEqual(['main.rs'])
     expect(back?.activeId).toBe('main.rs')
   })
+
+  it('插件 UI 视图标签（__ui__:）不跨会话持久化，恢复时丢弃并回落激活页', () => {
+    const back = parseTabs(
+      '{"activeId":"__ui__:demo.hello:board","tabs":[{"id":"__ui__:demo.hello:board","title":"Demo Board","content":""},{"id":"main.rs","title":"main.rs","content":"fn main(){}"}]}',
+    )
+    expect(back?.tabs.map(t => t.id)).toEqual(['main.rs'])
+    expect(back?.activeId).toBe('main.rs')
+  })
 })
 
 describe('load / save', () => {

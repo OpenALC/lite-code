@@ -2980,3 +2980,406 @@ fn initialize_orders_plugins_by_dependencies_stably() {
     );
     host.shutdown();
 }
+
+// ---- UI 视图声明 contributes.ui.views（docs/plans/plugin-webview.md §3.1/§5）----
+
+fn ui_manifest(id: &str, views: Value) -> Value {
+    // 声明 UI 节闭包校验引用的全部命令目标。
+    let mut manifest = node_manifest(
+        id,
+        "./index.mjs",
+        &[
+            "demo.open",
+            "demo.filter",
+            "demo.list",
+            "demo.stats",
+            "demo.board",
+        ],
+    );
+    manifest["contributes"]["ui"] = json!({ "views": views });
+    manifest
+}
+
+/// §3.1 示例形状的完整合法视图：四种节 + 五种 field type 全覆盖。
+fn valid_ui_view() -> Value {
+    json!({
+        "id": "task-board",
+        "name": "任务看板",
+        "openCommand": "demo.board",
+        "sections": [
+            { "kind": "markdown", "text": "# 说明\n\n**任务看板** 使用手册。" },
+            {
+                "kind": "form",
+                "title": "筛选",
+                "command": "demo.filter",
+                "fields": [
+                    { "key": "q", "label": "关键词", "type": "text", "placeholder": "搜索…", "default": "" },
+                    { "key": "limit", "label": "条数", "type": "number", "min": 1, "max": 200, "default": 50 },
+                    { "key": "done", "label": "含已完成", "type": "boolean", "default": false },
+                    { "key": "sort", "label": "排序", "type": "select", "options": ["new", "old"], "default": "new" },
+                    { "key": "token", "label": "令牌", "type": "password" }
+                ]
+            },
+            {
+                "kind": "list",
+                "title": "任务",
+                "valuesCommand": "demo.list",
+                "columns": [
+                    { "key": "title", "label": "标题", "width": 3 },
+                    { "key": "state", "label": "状态" }
+                ],
+                "rowCommand": "demo.open"
+            },
+            {
+                "kind": "kv",
+                "title": "统计",
+                "valuesCommand": "demo.stats",
+                "items": [
+                    { "key": "总数", "value": "42" },
+                    { "key": "进行中", "value": "7" }
+                ]
+            }
+        ]
+    })
+}
+
+#[test]
+fn ui_views_are_validated_and_serialized() {
+    // 合法：camelCase 序列化进 PluginInfo.uiViews；id/name trim；节按 kind
+    // 白名单归一（多余键丢弃），命令引用 trim 后保留。
+    let temp = TempDir::new("ui-valid");
+    let paths = test_paths(&temp);
+    let mut view = valid_ui_view();
+    view["id"] = json!(" task-board ");
+    view["name"] = json!(" 任务看板 ");
+    view["sections"][0]["evil"] = json!({ "x": 1 });
+    view["sections"][1]["fields"][0]["onload"] = json!("alert(1)");
+    write_plugin(
+        &paths.user_dir,
+        "ui",
+        ui_manifest("example.ui", json!([view])),
+        &["index.mjs"],
+    );
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert!(
+        list.plugins[0].error.is_none(),
+        "{:?}",
+        list.plugins[0].error
+    );
+    let ui_view = &list.plugins[0].ui_views[0];
+    assert_eq!(ui_view.id, "task-board");
+    assert_eq!(ui_view.name, "任务看板");
+    assert_eq!(ui_view.open_command.as_deref(), Some("demo.board"));
+    assert_eq!(ui_view.sections.len(), 4);
+
+    let serialized = serde_json::to_value(&list).expect("serialize");
+    let dto = &serialized["plugins"][0]["uiViews"][0];
+    assert_eq!(dto["openCommand"], json!("demo.board"));
+    // markdown 节：text 原样保留（渲染层转义，不归 Rust trim）。
+    assert_eq!(dto["sections"][0]["kind"], json!("markdown"));
+    assert_eq!(
+        dto["sections"][0]["text"],
+        json!("# 说明\n\n**任务看板** 使用手册。")
+    );
+    assert!(dto["sections"][0].get("evil").is_none());
+    // form 节：五种 field type 归一，select 带 options，number 带 min/max，
+    // 缺省 width 的列回落 1，多余键丢弃。
+    let form = &dto["sections"][1];
+    assert_eq!(form["fields"].as_array().expect("fields").len(), 5);
+    assert!(form["fields"][0].get("onload").is_none());
+    assert_eq!(form["fields"][3]["options"], json!(["new", "old"]));
+    assert_eq!(form["fields"][1]["min"], json!(1));
+    assert_eq!(form["fields"][1]["max"], json!(200));
+    let list_section = &dto["sections"][2];
+    assert_eq!(list_section["valuesCommand"], json!("demo.list"));
+    assert_eq!(list_section["rowCommand"], json!("demo.open"));
+    assert_eq!(list_section["columns"][1]["width"], json!(1));
+    // kv 节：静态 items 与 valuesCommand 并存（M1 渲染静态 items）。
+    assert_eq!(dto["sections"][3]["items"][0]["key"], json!("总数"));
+}
+
+#[test]
+fn ui_section_kinds_and_fields_are_validated() {
+    let oversize_text = "x".repeat(16 * 1024 + 1);
+    let many_sections: Value = (0..17)
+        .map(|index| json!({ "kind": "markdown", "text": format!("{index}") }))
+        .collect::<Vec<_>>()
+        .into();
+    // 单节 text ≤16 KiB 合法，但三块合计 36 KiB 超过 ui 块 32 KiB 上限。
+    let fat_block: Value = (0..3)
+        .map(|_| json!({ "kind": "markdown", "text": "x".repeat(12_000) }))
+        .collect::<Vec<_>>()
+        .into();
+    let many_fields: Value = (0..33)
+        .map(|index| json!({ "key": format!("f{index}"), "label": "F", "type": "text" }))
+        .collect::<Vec<_>>()
+        .into();
+    let many_columns: Value = (0..9)
+        .map(|index| json!({ "key": format!("c{index}"), "label": "C" }))
+        .collect::<Vec<_>>()
+        .into();
+    let many_items: Value = (0..65)
+        .map(|index| json!({ "key": format!("k{index}"), "value": "v" }))
+        .collect::<Vec<_>>()
+        .into();
+
+    for (tag, sections_value, expected) in [
+        ("sections-not-array", json!("nope"), "sections 必须是数组"),
+        ("missing-kind", json!([{ "text": "x" }]), "缺少 kind"),
+        (
+            "unknown-kind",
+            json!([{ "kind": "html", "text": "x" }]),
+            "kind 非法",
+        ),
+        (
+            "markdown-no-text",
+            json!([{ "kind": "markdown" }]),
+            "缺少 text",
+        ),
+        (
+            "markdown-text-oversize",
+            json!([{ "kind": "markdown", "text": oversize_text }]),
+            "16 KiB 上限",
+        ),
+        (
+            "sections-oversize",
+            many_sections,
+            "sections 超过 16 个上限",
+        ),
+        ("ui-block-oversize", fat_block, "32 KiB 上限"),
+        (
+            "form-no-fields",
+            json!([{ "kind": "form", "fields": [] }]),
+            "fields 必须是非空数组",
+        ),
+        (
+            "form-fields-oversize",
+            json!([{ "kind": "form", "fields": many_fields }]),
+            "fields 超过 32 个上限",
+        ),
+        (
+            "form-dup-key",
+            json!([{ "kind": "form", "fields": [
+                { "key": "q", "label": "A", "type": "text" },
+                { "key": "q", "label": "B", "type": "text" }
+            ] }]),
+            "重复",
+        ),
+        (
+            "form-bad-type",
+            json!([{ "kind": "form", "fields": [{ "key": "d", "label": "D", "type": "date" }] }]),
+            "type 非法",
+        ),
+        (
+            "form-default-mismatch",
+            json!([{ "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "default": "x" }] }]),
+            "default 必须是 number 类型",
+        ),
+        (
+            "form-select-no-options",
+            json!([{ "kind": "form", "fields": [{ "key": "s", "label": "S", "type": "select", "default": "a" }] }]),
+            "缺少 options",
+        ),
+        (
+            "form-min-not-number",
+            json!([{ "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "min": "1" }] }]),
+            "min 必须是数字",
+        ),
+        (
+            "list-no-columns",
+            json!([{ "kind": "list" }]),
+            "columns 必须是非空数组",
+        ),
+        (
+            "list-columns-oversize",
+            json!([{ "kind": "list", "columns": many_columns }]),
+            "columns 超过 8 个上限",
+        ),
+        (
+            "list-width-zero",
+            json!([{ "kind": "list", "columns": [{ "key": "t", "label": "T", "width": 0 }] }]),
+            "width 必须是 1..=5 的整数",
+        ),
+        (
+            "list-width-six",
+            json!([{ "kind": "list", "columns": [{ "key": "t", "label": "T", "width": 6 }] }]),
+            "width 必须是 1..=5 的整数",
+        ),
+        (
+            "kv-items-oversize",
+            json!([{ "kind": "kv", "items": many_items }]),
+            "items 超过 64 个上限",
+        ),
+        (
+            "kv-item-empty-key",
+            json!([{ "kind": "kv", "items": [{ "key": "  ", "value": "v" }] }]),
+            "key 必须是非空字符串",
+        ),
+        (
+            "kv-item-bad-value",
+            json!([{ "kind": "kv", "items": [{ "key": "k", "value": 1 }] }]),
+            "value 必须是字符串",
+        ),
+    ] {
+        let temp = TempDir::new(&format!("ui-{tag}"));
+        let paths = test_paths(&temp);
+        write_plugin(
+            &paths.user_dir,
+            "bad",
+            ui_manifest(
+                &format!("example.bad-{tag}"),
+                json!([{
+                    "id": "panel",
+                    "name": "Panel",
+                    "sections": sections_value,
+                }]),
+            ),
+            &["index.mjs"],
+        );
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let error = list.plugins[0]
+            .error
+            .as_deref()
+            .unwrap_or_else(|| panic!("{tag}: 应标记 error"));
+        assert!(error.contains(expected), "{tag}: {error}");
+        assert!(!list.plugins[0].enabled, "{tag}");
+        assert!(list.plugins[0].ui_views.is_empty(), "{tag}");
+    }
+}
+
+#[test]
+fn ui_view_command_closures_are_validated() {
+    // command / valuesCommand / rowCommand / openCommand 一律做
+    // 「出现在 contributes.commands」闭包校验（tools.command 模式）。
+    for (tag, view_patch, expected) in [
+        (
+            "open-command",
+            json!({ "openCommand": "demo.undeclared" }),
+            "openCommand 引用的命令",
+        ),
+        (
+            "form-command",
+            json!({ "sections": [{ "kind": "form", "command": "demo.undeclared", "fields": [{ "key": "q", "label": "Q", "type": "text" }] }] }),
+            "`command` 引用的命令",
+        ),
+        (
+            "list-values-command",
+            json!({ "sections": [{ "kind": "list", "valuesCommand": "demo.undeclared", "columns": [{ "key": "t", "label": "T" }] }] }),
+            "`valuesCommand` 引用的命令",
+        ),
+        (
+            "list-row-command",
+            json!({ "sections": [{ "kind": "list", "columns": [{ "key": "t", "label": "T" }], "rowCommand": "demo.undeclared" }] }),
+            "`rowCommand` 引用的命令",
+        ),
+        (
+            "kv-values-command",
+            json!({ "sections": [{ "kind": "kv", "valuesCommand": "demo.undeclared" }] }),
+            "`valuesCommand` 引用的命令",
+        ),
+    ] {
+        let temp = TempDir::new(&format!("ui-cmd-{tag}"));
+        let paths = test_paths(&temp);
+        let mut view = json!({
+            "id": "panel",
+            "name": "Panel",
+            "sections": [{ "kind": "markdown", "text": "x" }],
+        });
+        for (key, value) in view_patch.as_object().expect("patch object") {
+            view[key.clone()] = value.clone();
+        }
+        write_plugin(
+            &paths.user_dir,
+            "bad",
+            ui_manifest(&format!("example.bad-{tag}"), json!([view])),
+            &["index.mjs"],
+        );
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let error = list.plugins[0]
+            .error
+            .as_deref()
+            .unwrap_or_else(|| panic!("{tag}: 应标记 error"));
+        assert!(error.contains(expected), "{tag}: {error}");
+        assert!(
+            error.contains("未在 contributes.commands 中声明"),
+            "{tag}: {error}"
+        );
+    }
+}
+
+#[test]
+fn ui_view_activation_events_are_accepted_and_validated() {
+    // onUiView:<viewId> 进白名单（§3.2 懒激活事件的声明面，M1 只放行校验）。
+    let temp = TempDir::new("ui-event-valid");
+    let paths = test_paths(&temp);
+    let mut manifest = ui_manifest("example.ui-event", json!([valid_ui_view()]));
+    manifest["activationEvents"] = json!(["onUiView:task-board", "onUiView:task-board"]);
+    write_plugin(&paths.user_dir, "ui", manifest, &["index.mjs"]);
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert!(
+        list.plugins[0].error.is_none(),
+        "{:?}",
+        list.plugins[0].error
+    );
+    // trim 去重后保留事件。
+    let discovered = enabled_plugins(&paths, false).expect("enabled");
+    let manifest = discovered[0].manifest.as_ref().expect("manifest");
+    assert_eq!(
+        manifest.activation_events,
+        vec!["onUiView:task-board".to_string()]
+    );
+
+    let temp = TempDir::new("ui-event-invalid");
+    let paths = test_paths(&temp);
+    let mut manifest = ui_manifest("example.ui-event-bad", json!([valid_ui_view()]));
+    manifest["activationEvents"] = json!(["onUiView"]);
+    write_plugin(&paths.user_dir, "bad", manifest, &["index.mjs"]);
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    let error = list.plugins[0].error.as_deref().expect("应标记 error");
+    assert!(error.contains("activationEvents"), "{error}");
+    assert!(error.contains("onUiView"), "{error}");
+}
+
+#[test]
+fn ui_view_errors_do_not_poison_other_plugins() {
+    // 任一失败只标该插件 error：同列表里的合法插件照常下发 uiViews。
+    let temp = TempDir::new("ui-isolated");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "aaa-good",
+        ui_manifest("example.good", json!([valid_ui_view()])),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "zzz-bad",
+        ui_manifest(
+            "example.bad",
+            json!([{ "id": "panel", "name": "Panel", "sections": [{ "kind": "html" }] }]),
+        ),
+        &["index.mjs"],
+    );
+
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert_eq!(list.plugins.len(), 2);
+    let good = list
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == "example.good")
+        .expect("good");
+    assert!(good.error.is_none());
+    assert_eq!(good.ui_views.len(), 1);
+    assert_eq!(good.ui_views[0].sections.len(), 4);
+    let bad = list
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == "example.bad")
+        .expect("bad");
+    let error = bad.error.as_deref().expect("error");
+    assert!(error.contains("kind 非法"), "{error}");
+    assert!(!bad.enabled);
+    assert!(bad.ui_views.is_empty());
+}
