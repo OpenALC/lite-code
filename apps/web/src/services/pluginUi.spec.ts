@@ -24,6 +24,7 @@ import {
   retryUiSection,
   runUiRowCommand,
   submitUiForm,
+  subscribePluginUi,
   syncPluginUiViews,
   uiSectionDataKey,
   uiTabId,
@@ -526,6 +527,24 @@ describe('M2 节数据回读（ui/values）', () => {
     const retried = getPluginUiState().sectionData[key]
     expect(retried?.status).toBe('ready')
     expect(retried?.values?.rows).toHaveLength(1)
+  })
+
+  it('回归：每次 patch 换根 state 引用（ref.value=next 订阅方靠身份变化触发渲染）', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    const seen: unknown[] = []
+    const unsubscribe = subscribePluginUi(next => seen.push(next))
+    try {
+      await ensureUiSectionLoaded('demo.tree', 'board', 1)
+      // loading + ready 至少两次 emit；相邻根引用必须不同，
+      // 否则组件 ref.set 判 hasChanged=false 不重渲染（运行时 e2e 真缺陷）。
+      expect(seen.length).toBeGreaterThanOrEqual(2)
+      for (let i = 1; i < seen.length; i += 1) {
+        expect(seen[i]).not.toBe(seen[i - 1])
+      }
+    } finally {
+      unsubscribe()
+    }
   })
 
   it('形状非法回读 → internal 节错误态', async () => {

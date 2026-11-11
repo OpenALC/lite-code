@@ -415,7 +415,7 @@ export async function syncPluginUiViews(): Promise<PluginList | null> {
 export function applyPluginUiList(list: PluginList): void {
   const views = declaredUiViews(list)
   const alive = new Set(views.map(view => view.key))
-  state.views = views
+  state = { views, sectionData: state.sectionData }
   emit()
   for (const tab of [...tabsStore.get().tabs]) {
     const ref = parseUiTabId(tab.id)
@@ -498,8 +498,14 @@ function sectionDataOf(key: string): UiSectionDataState {
   return state.sectionData[key] ?? emptySectionData()
 }
 
+/** 节数据 patch。必须整体换根 state 对象：订阅方（App/PluginUiView）用
+ * `ref.value = next` 接 emit，同根对象引用 ref.set 判 hasChanged 为 false
+ * 不触发渲染（运行时 e2e 抓到：提交后 store 已新、DOM 停旧）。 */
 function patchSectionData(key: string, patch: Partial<UiSectionDataState>): void {
-  state.sectionData = { ...state.sectionData, [key]: { ...sectionDataOf(key), ...patch } }
+  state = {
+    views: state.views,
+    sectionData: { ...state.sectionData, [key]: { ...sectionDataOf(key), ...patch } },
+  }
   emit()
 }
 
