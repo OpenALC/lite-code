@@ -388,8 +388,9 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 
 ## 通宵总结（2026-11-11 晨，供审查；main 见 git log）
 
-**四连发**：preview.65（审查后首版）→ .66（swarm 四轨道）→ .67（插件系统
-v0 收官）→ .68（插件市场全链路）。测试基线 654→784（workspace）/
+**四连发全部已发布**：preview.65（审查后首版）→ .66（swarm 四轨道）→
+.67（插件系统 v0 收官）→ .68（插件市场全链路，10 资产+manifest .68 自验
+通过）。测试基线 654→784（workspace）/
 431→563（web）/ext 12→90。
 
 **本日三大线全关**：
