@@ -441,8 +441,32 @@ iframe 沙箱 v2 规格化（附 §7 修订建议文本）——EXTENSIONS §8 �
 - 验收：Rust fmt+clippy+795 全绿 · web 609+vue-tsc+lint 全绿 · ext-host 21 全绿；
   桌面运行时 e2e：demo.ui-live 经稳定 id 'tasks' 回读、提交 m2r9 后 200ms
   原地刷新；demo.ui-board 静态 markdown+kv 正常渲染。
-- 本切片关闭后 M3（iframe 沙箱）前置条件只剩：§7 修订合入 + 双平台 §5 验证。
-  用户 2026-11-11 已批准设计文档并指示执行 M3。
+
+### Webview M3 iframe 沙箱（2026-11-11 傍晚，main `aad0106` 区域，用户已批准设计+§7 修订）
+
+- 两 subagent 并行（agent-103 Rust+桌面 / 104 Web）：`ui.webviews` 声明+
+  洁净路径 fail-closed（空段/点段/绝对/反斜杠/盘符先行拒绝）；`lc-plugin`
+  协议 handler（register_uri_scheme_protocol；白名单 canonical 相等/Content-
+  Type 闭集/nosniff/HTML 子文档 CSP 钉死视图资源前缀）；bridge 状态存储
+  （<data>/ext-webview-state.json，键 64/值 64 KiB/插件 256 KiB）；postCommand
+  经既有 ext_execute_command + 可选 pluginId 归属双校验；web 一次性 nonce
+  握手 + MessageChannel 专属端口（ops 闭集 getState/setState/postCommand；
+  错误 source/nonce/代次/重复握手/旧端口/跨插件命令全拒；重载/导航/禁用
+  → 关端口清 nonce）；EXTENSIONS §7 按批准文本修订；市场 webviews 派生+
+  安装确认固定文案。
+- **运行时 e2e 又抓两真缺陷并修复**（单测抓不到、桌面 CDP 实测才暴露）：
+  1. Windows WebView2 handler 回调实收 `lc-plugin://localhost/...` 原生形式
+     （页面侧才是 http://lc-plugin.localhost）——parse 需双形接受（aad0106）。
+  2. 子页脚本解析期即发 ready（VS Code webview 惯例），握手先于本代次文档
+     load 到达——原实现把这次 load 误判为导航杀桥；改为每代次首次 load
+     容忍、第二次起才判导航（aad0106）。
+- **Windows WebView2 全链绿**（demo.webview-sandbox）：资产加载（HTML+CSS+
+  JS）→ 精确 sandbox=allow-scripts → 握手 → port-ready → getState(null) →
+  setState=ok → getState="hello-from-sandbox"（Rust 存储直读复核）→
+  postCommand={"from":"sandbox","pong":true} → 跨插件命令 rejected=true。
+- **基线**：workspace 810 / web 639 / ext-host 21 全绿 + fmt/clippy/vue-tsc。
+- **遗留**：Linux WebKitGTK 运行时复验（形状单测已覆盖双平台；真实 iframe
+  加载需 Linux 环境按 §5 M3 清单执行后 M3 方可宣称双平台启用）。
 
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
