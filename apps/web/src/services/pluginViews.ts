@@ -174,10 +174,23 @@ export async function syncPluginViews(): Promise<PluginList | null> {
  * 展开状态与已加载缓存；声明消失（插件禁用/删除）的分区整体移除。 */
 export function applyPluginViewList(list: PluginList): void {
   const previous = new Map(state.sections.map(section => [section.section.key, section]))
-  state.sections = declaredViews(list).map(section => {
-    const kept = previous.get(section.key)
-    return kept ? { ...kept, section } : { section, collapsed: true, slots: {}, expanded: {} }
-  })
+  state = {
+    sections: declaredViews(list).map(section => {
+      const kept = previous.get(section.key)
+      return kept ? { ...kept, section } : { section, collapsed: true, slots: {}, expanded: {} }
+    }),
+  }
+  emit()
+}
+
+/** 分区级不可变 patch：整体换根 state（订阅方 ref.value=next 靠身份变化
+ * 触发渲染；照 pluginUi.ts 运行时 e2e 缺陷同款修复）。 */
+function patchSection(key: string, patch: Partial<ViewSectionState>): void {
+  state = {
+    sections: state.sections.map(section =>
+      section.section.key === key ? { ...section, ...patch } : section,
+    ),
+  }
   emit()
 }
 
@@ -191,9 +204,9 @@ function findSection(key: string): ViewSectionState | undefined {
 export async function togglePluginViewSection(key: string): Promise<void> {
   const section = findSection(key)
   if (!section) return
-  section.collapsed = !section.collapsed
-  emit()
-  if (!section.collapsed && !section.slots['']) {
+  const collapsed = !section.collapsed
+  patchSection(key, { collapsed })
+  if (!collapsed && !section.slots['']) {
     await loadSlot(key, '', null)
   }
 }
@@ -206,9 +219,9 @@ export async function togglePluginViewNode(
 ): Promise<void> {
   const section = findSection(key)
   if (!section) return
-  section.expanded[path] = section.expanded[path] !== true
-  emit()
-  if (section.expanded[path] && !section.slots[path]) {
+  const expanded = { ...section.expanded, [path]: section.expanded[path] !== true }
+  patchSection(key, { expanded })
+  if (expanded[path] && !section.slots[path]) {
     await loadSlot(key, path, nodeId)
   }
 }
@@ -226,8 +239,9 @@ async function loadSlot(key: string, path: string, nodeId: string | null): Promi
   const section = findSection(key)
   if (!section) return
   const slot = section.slots[path] ?? emptySlot()
-  section.slots[path] = { ...slot, status: 'loading', error: null }
-  emit()
+  patchSection(key, {
+    slots: { ...section.slots, [path]: { ...slot, status: 'loading', error: null } },
+  })
   const res = await extensionsViewChildren(
     section.section.pluginId,
     section.section.viewId,
@@ -238,24 +252,35 @@ async function loadSlot(key: string, path: string, nodeId: string | null): Promi
   const target = current.slots[path] ?? emptySlot()
   if (!res.ok) {
     // 读失败/插件禁用 → 错误态（code 进 tooltip，界面可重试）。
-    current.slots[path] = {
-      ...target,
-      status: 'error',
-      error: { code: res.error.code, message: res.error.message },
-    }
+    patchSection(key, {
+      slots: {
+        ...current.slots,
+        [path]: {
+          ...target,
+          status: 'error',
+          error: { code: res.error.code, message: res.error.message },
+        },
+      },
+    })
   } else {
     const nodes = normalizeViewNodes(res.data.nodes)
     if (nodes === null) {
-      current.slots[path] = {
-        ...target,
-        status: 'error',
-        error: { code: 'internal', message: '视图返回了非法节点' },
-      }
+      patchSection(key, {
+        slots: {
+          ...current.slots,
+          [path]: {
+            ...target,
+            status: 'error',
+            error: { code: 'internal', message: '视图返回了非法节点' },
+          },
+        },
+      })
     } else {
-      current.slots[path] = { ...target, status: 'ready', nodes, error: null }
+      patchSection(key, {
+        slots: { ...current.slots, [path]: { ...target, status: 'ready', nodes, error: null } },
+      })
     }
   }
-  emit()
 }
 
 /** 点击带 command 的节点：复用既有命令执行；失败仅注记（结果不进树）。 */

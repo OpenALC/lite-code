@@ -645,9 +645,9 @@ export async function submitUiForm(
   // 全部可回读节（行命令路径 runUiRowCommand 已带同款刷新）。
   const entry = findUiView(pluginId, viewId)
   entry?.sections.forEach((s, idx) => {
-    if ((s.kind === 'list' || s.kind === 'kv') && s.valuesCommand) {
-      void retryUiSection(pluginId, viewId, idx)
-    }
+    if (s === null) return
+    if (s.kind !== 'list' && s.kind !== 'kv') return
+    if (s.valuesCommand) void retryUiSection(pluginId, viewId, idx)
   })
   return true
 }
