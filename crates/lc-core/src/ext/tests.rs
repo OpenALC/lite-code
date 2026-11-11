@@ -3865,3 +3865,631 @@ fn node_host_ui_values_round_trips_and_maps_errors() {
     .expect("host recovers after ui timeout");
     host.shutdown();
 }
+
+// ---- webview UI（docs/plans/plugin-webview.md §3.8/§5，M3）----
+
+/// 带 webview 声明的 node 清单（命令 demo.run 供 bridge postCommand 归属校验）。
+fn webview_manifest(id: &str, webviews: Value) -> Value {
+    let mut manifest = node_manifest(id, "./index.mjs", &["demo.run"]);
+    manifest["contributes"]["ui"] = json!({ "webviews": webviews });
+    manifest
+}
+
+/// 本机平台 handler 收到的请求 URI（Windows `http://lc-plugin.localhost`，
+/// Linux `lc-plugin://localhost`，§3.8 统一 URL 与路由）。
+fn asset_uri(path: &str) -> String {
+    #[cfg(windows)]
+    return format!("http://lc-plugin.localhost{path}");
+    #[cfg(not(windows))]
+    return format!("lc-plugin://localhost{path}");
+}
+
+/// 标准 webview 插件：panel 视图（entry + 显式 assets，含白名单内但
+/// Content-Type 不受支持的 data/note.txt）与 bare 视图（省略 assets，
+/// 只允许 entry）。磁盘另有未声明的 ui/secret.js 与插件外 outside.txt。
+fn write_webview_plugin(paths: &ExtPaths) -> PathBuf {
+    let dir = write_plugin(
+        &paths.user_dir,
+        "web",
+        webview_manifest(
+            "example.web",
+            json!([
+                {
+                    "id": "panel",
+                    "entry": "ui/index.html",
+                    "assets": [
+                        "ui/app.js",
+                        "ui/style.css",
+                        "ui/icon.png",
+                        "ui/font.woff2",
+                        "data/note.txt"
+                    ]
+                },
+                { "id": "bare", "entry": "bare.html" }
+            ]),
+        ),
+        &[
+            "index.mjs",
+            "ui/index.html",
+            "ui/app.js",
+            "ui/style.css",
+            "ui/icon.png",
+            "ui/font.woff2",
+            "data/note.txt",
+            "bare.html",
+            "ui/secret.js",
+        ],
+    );
+    fs::write(dir.join("ui/index.html"), b"<html>panel</html>").expect("写入口");
+    fs::write(dir.join("ui/app.js"), b"console.log(1)").expect("写脚本");
+    fs::write(dir.join("ui/style.css"), b"body{}").expect("写样式");
+    // 插件外文件：用户插件目录的上一级（temp 根），穿越目标。
+    let outside = paths
+        .user_dir
+        .parent()
+        .expect("temp 根")
+        .join("outside.txt");
+    fs::write(outside, b"leak").expect("写插件外文件");
+    dir
+}
+
+#[test]
+fn webview_asset_url_is_generated_by_host_rules() {
+    // 双平台基地址 + 固定逻辑路径（pluginId/webviewId 不放 authority）。
+    assert_eq!(
+        plugin_asset_url_with_base(LINUX_ASSET_BASE, "a.b", "panel", "index.html"),
+        "lc-plugin://localhost/a.b/panel/index.html"
+    );
+    assert_eq!(
+        plugin_asset_url_with_base(WINDOWS_ASSET_BASE, "a.b", "panel", "js/app.js"),
+        "http://lc-plugin.localhost/a.b/panel/js/app.js"
+    );
+    // 本机平台生成器：空 asset 得到该视图资源目录前缀（含尾斜杠，子文档 CSP 用）。
+    let prefix = plugin_asset_url("a.b", "panel", "");
+    assert!(prefix.ends_with("/a.b/panel/"), "{prefix}");
+    assert_eq!(
+        plugin_asset_url("a.b", "panel", "index.html"),
+        format!("{prefix}index.html")
+    );
+
+    // 双平台 parse（统一解码一次，path 前两段 = pluginId/webviewId）。
+    let win = parse_asset_uri_for(
+        "http://lc-plugin.localhost/a.b/panel/index.html",
+        "http",
+        "lc-plugin.localhost",
+    )
+    .expect("windows uri");
+    assert_eq!(
+        (
+            win.plugin_id.as_str(),
+            win.webview_id.as_str(),
+            win.asset.as_str()
+        ),
+        ("a.b", "panel", "index.html")
+    );
+    let linux = parse_asset_uri_for(
+        "lc-plugin://localhost/a.b/panel/js/app.js",
+        "lc-plugin",
+        "localhost",
+    )
+    .expect("linux uri");
+    assert_eq!(linux.asset, "js/app.js");
+    // 本机 parse_asset_uri 覆盖 handler 实际收到的形状。
+    let parsed = parse_asset_uri(&asset_uri("/a.b/panel/index.html")).expect("host uri");
+    assert_eq!(parsed.asset, "index.html");
+}
+
+#[test]
+fn webview_content_type_whitelist_is_closed() {
+    // §3.8 Content-Type 白名单：大小写不敏感、支持子目录路径；表外拒绝。
+    assert_eq!(content_type_for("a.html"), Some("text/html"));
+    assert_eq!(content_type_for("a.css"), Some("text/css"));
+    assert_eq!(content_type_for("a.js"), Some("application/javascript"));
+    assert_eq!(content_type_for("a.mjs"), Some("application/javascript"));
+    assert_eq!(content_type_for("a.png"), Some("image/png"));
+    assert_eq!(content_type_for("a.jpg"), Some("image/jpeg"));
+    assert_eq!(content_type_for("a.jpeg"), Some("image/jpeg"));
+    assert_eq!(content_type_for("a.gif"), Some("image/gif"));
+    assert_eq!(content_type_for("a.webp"), Some("image/webp"));
+    assert_eq!(content_type_for("a.woff2"), Some("font/woff2"));
+    assert_eq!(content_type_for("deep/dir/a.CSS"), Some("text/css"));
+    assert_eq!(content_type_for("a.svg"), None);
+    assert_eq!(content_type_for("a.htm"), None);
+    assert_eq!(content_type_for("a.json"), None);
+    assert_eq!(content_type_for("noext"), None);
+}
+
+#[test]
+fn webview_child_csp_locks_to_view_resource_prefix() {
+    // §3.8 子文档 CSP：四个 'none' 指令 + script/style/img/font 各用该视图
+    // 资源目录完整 URL 前缀（含尾斜杠）；无通配符、无 'self'、无任意 http:。
+    let csp = webview_child_csp("a.b", "panel");
+    for directive in [
+        "default-src 'none'",
+        "connect-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+    ] {
+        assert!(csp.contains(directive), "{csp}");
+    }
+    let prefix = plugin_asset_url("a.b", "panel", "");
+    for directive in ["script-src", "style-src", "img-src", "font-src"] {
+        assert!(csp.contains(&format!("{directive} {prefix}")), "{csp}");
+    }
+    assert!(!csp.contains('*'), "{csp}");
+    assert!(!csp.contains("'self'"), "{csp}");
+}
+
+#[test]
+fn webview_handler_routes_declared_assets_with_types_and_csp() {
+    let temp = TempDir::new("wv-serve");
+    let paths = test_paths(&temp);
+    write_webview_plugin(&paths);
+
+    // entry：200 text/html + 子文档 CSP；asset 目录前缀含尾斜杠。
+    let entry = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/panel/ui/index.html"),
+        "GET",
+    );
+    assert_eq!(entry.status, WebviewAssetStatus::Ok);
+    assert_eq!(entry.content_type, Some("text/html"));
+    assert_eq!(entry.body, b"<html>panel</html>");
+    let csp = entry.csp.expect("html 附 csp");
+    assert!(csp.contains(&format!(
+        "script-src {}",
+        plugin_asset_url("example.web", "panel", "")
+    )));
+
+    // 白名单资产：Content-Type 按扩展名。
+    for (asset, mime) in [
+        ("ui/app.js", "application/javascript"),
+        ("ui/style.css", "text/css"),
+        ("ui/icon.png", "image/png"),
+        ("ui/font.woff2", "font/woff2"),
+    ] {
+        let response = serve_webview_asset_at(
+            &paths,
+            false,
+            &asset_uri(&format!("/example.web/panel/{asset}")),
+            "GET",
+        );
+        assert_eq!(response.status, WebviewAssetStatus::Ok, "{asset}");
+        assert_eq!(response.content_type, Some(mime), "{asset}");
+        assert!(response.csp.is_none(), "{asset}");
+    }
+
+    // 省略 assets 的视图：只允许 entry。
+    let bare = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/bare/bare.html"),
+        "GET",
+    );
+    assert_eq!(bare.status, WebviewAssetStatus::Ok);
+    assert_eq!(bare.content_type, Some("text/html"));
+}
+
+#[test]
+fn webview_handler_rejects_everything_outside_the_whitelist() {
+    let temp = TempDir::new("wv-reject");
+    let paths = test_paths(&temp);
+    let plugin_dir = write_webview_plugin(&paths);
+
+    // 未声明资源（磁盘存在但不在 entry+assets 白名单）：404。
+    let secret = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/panel/ui/secret.js"),
+        "GET",
+    );
+    assert_eq!(secret.status, WebviewAssetStatus::NotFound);
+
+    // 其它视图的资产：bare 的 entry 对 panel 不可见，panel 的 asset 对 bare 不可见。
+    for uri in [
+        asset_uri("/example.web/panel/bare.html"),
+        asset_uri("/example.web/bare/ui/app.js"),
+        asset_uri("/example.web/bare/ui/index.html"),
+    ] {
+        let response = serve_webview_asset_at(&paths, false, &uri, "GET");
+        assert_eq!(response.status, WebviewAssetStatus::NotFound, "{uri}");
+    }
+
+    // 白名单内但 Content-Type 不受支持（note.txt）：404，fail-closed。
+    let note = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/panel/data/note.txt"),
+        "GET",
+    );
+    assert_eq!(note.status, WebviewAssetStatus::NotFound);
+
+    // 编码/点段/反斜杠/NUL/盘符前缀：parse 层一律 404。
+    for raw in [
+        "/example.web/panel/..%2f..%2foutside.txt", // 编码斜杠穿越
+        "/example.web/panel/%2e%2e/%2e%2e/outside.txt", // 编码点段
+        "/example.web/panel/../../outside.txt",     // 明文点段
+        "/example.web/panel/ui%5csecret.js",        // 编码反斜杠
+        "/example.web/panel/ui\\secret.js",         // 明文反斜杠
+        "/example.web/panel/%00.css",               // NUL
+        "/example.web/panel/C:evil.js",             // 盘符前缀
+        "/example.web/panel//ui/app.js",            // 空段（// 与绝对路径形态）
+        "/example.web/panel/ui/app.js/evil",        // 子路径落到不存在的文件
+        "/example.web/unknown/ui/index.html",       // 未声明视图
+        "/unknown.plugin/panel/ui/index.html",      // 未知插件
+    ] {
+        let uri = asset_uri(raw);
+        let response = serve_webview_asset_at(&paths, false, &uri, "GET");
+        assert_eq!(response.status, WebviewAssetStatus::NotFound, "{uri}");
+    }
+    // 穿越尝试未读取插件外文件。
+    assert_eq!(
+        fs::read(temp.path.join("outside.txt")).expect("outside"),
+        b"leak"
+    );
+
+    // 目录：404（declared 文件之外的一切，含目录本身）。
+    let dir = serve_webview_asset_at(&paths, false, &asset_uri("/example.web/panel/ui"), "GET");
+    assert_eq!(dir.status, WebviewAssetStatus::NotFound);
+
+    // 非 GET：405（即便资产白名单内）。
+    for method in ["POST", "HEAD", "OPTIONS", "post"] {
+        let response = serve_webview_asset_at(
+            &paths,
+            false,
+            &asset_uri("/example.web/panel/ui/index.html"),
+            method,
+        );
+        assert_eq!(
+            response.status,
+            WebviewAssetStatus::MethodNotAllowed,
+            "{method}"
+        );
+    }
+    // 小写 get 仍接受。
+    let lower = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/panel/ui/app.js"),
+        "get",
+    );
+    assert_eq!(lower.status, WebviewAssetStatus::Ok);
+
+    // scheme/authority 不符：404。
+    #[cfg(windows)]
+    let wrong = "http://evil.localhost/example.web/panel/ui/index.html";
+    #[cfg(not(windows))]
+    let wrong = "lc-plugin://evil/example.web/panel/ui/index.html";
+    let wrong = serve_webview_asset_at(&paths, false, wrong, "GET");
+    assert_eq!(wrong.status, WebviewAssetStatus::NotFound);
+
+    // 插件禁用后：404。
+    let plugin_dir_check = plugin_dir.join("ui/index.html");
+    assert!(plugin_dir_check.is_file());
+    set_enabled_at(&paths, false, "example.web", false, false).expect("disable");
+    let disabled = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/panel/ui/index.html"),
+        "GET",
+    );
+    assert_eq!(disabled.status, WebviewAssetStatus::NotFound);
+}
+
+#[test]
+fn webview_handler_symlinks_cannot_widen_the_whitelist() {
+    let temp = TempDir::new("wv-symlink");
+    let paths = test_paths(&temp);
+    let plugin_dir = write_webview_plugin(&paths);
+    // 插件内软链 → 插件外文件：canonicalize 后落在根外，白名单不含 → 404。
+    let link = plugin_dir.join("ui/link.js");
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_file(temp.path.join("outside.txt"), &link).is_ok();
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(temp.path.join("outside.txt"), &link).is_ok();
+    if !created {
+        eprintln!("跳过：本机无法创建符号链接");
+        return;
+    }
+    let leaked = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/panel/ui/link.js"),
+        "GET",
+    );
+    assert_eq!(leaked.status, WebviewAssetStatus::NotFound);
+    // 软链 → 白名单内文件：canonical 与声明资产相等，服务同一文件（范围未扩大）。
+    let alias = plugin_dir.join("ui/alias.js");
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_file(plugin_dir.join("ui/app.js"), &alias).is_ok();
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(plugin_dir.join("ui/app.js"), &alias).is_ok();
+    if !created {
+        eprintln!("跳过：本机无法创建符号链接");
+        return;
+    }
+    let aliased = serve_webview_asset_at(
+        &paths,
+        false,
+        &asset_uri("/example.web/panel/ui/alias.js"),
+        "GET",
+    );
+    assert_eq!(aliased.status, WebviewAssetStatus::Ok);
+    assert_eq!(aliased.body, b"console.log(1)");
+}
+
+#[test]
+fn webview_manifest_declaration_is_validated_and_serialized() {
+    let temp = TempDir::new("wv-manifest");
+    let paths = test_paths(&temp);
+    // bad-entry-dir 是插件目录内的真实目录（entry 指向目录 → 不是文件）。
+    fs::create_dir_all(paths.user_dir.join("bad").join("bad-entry-dir")).expect("目录");
+    let valid = webview_manifest(
+        "example.ok",
+        json!([
+            { "id": "panel", "entry": "ui/index.html", "assets": ["ui/app.js", "ui/app.js", " ui/style.css "] },
+            { "id": "bare", "entry": " bare.html " }
+        ]),
+    );
+    write_plugin(
+        &paths.user_dir,
+        "bad",
+        valid,
+        &[
+            "index.mjs",
+            "ui/index.html",
+            "ui/app.js",
+            "ui/style.css",
+            "bare.html",
+        ],
+    );
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    let plugin = &list.plugins[0];
+    assert!(plugin.error.is_none(), "{:?}", plugin.error);
+    assert_eq!(plugin.webviews.len(), 2);
+    // trim + assets 去重保留顺序。
+    assert_eq!(plugin.webviews[0].id, "panel");
+    assert_eq!(plugin.webviews[0].entry, "ui/index.html");
+    assert_eq!(plugin.webviews[0].assets, vec!["ui/app.js", "ui/style.css"]);
+    // 省略 assets：空数组（只允许 entry，不开放整个目录）。
+    assert_eq!(plugin.webviews[1].id, "bare");
+    assert_eq!(plugin.webviews[1].entry, "bare.html");
+    assert!(plugin.webviews[1].assets.is_empty());
+    // camelCase 下发（安装确认 UI 固定文案用）。
+    let serialized = serde_json::to_value(&list).expect("serialize");
+    let dto = &serialized["plugins"][0]["webviews"][0];
+    assert_eq!(dto["id"], json!("panel"));
+    assert_eq!(dto["entry"], json!("ui/index.html"));
+    assert_eq!(dto["assets"], json!(["ui/app.js", "ui/style.css"]));
+}
+
+#[test]
+fn webview_manifest_rejects_bad_entry_assets_and_ids() {
+    // 任一失败只标该插件 error；同列表合法插件不受影响。
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            json!([{ "id": "p", "entry": "../out.html" }]),
+            "空段/`.`/`..` 段",
+        ),
+        (json!([{ "id": "p", "entry": "ui/missing.html" }]), "不存在"),
+        (json!([{ "id": "p", "entry": "bad-entry-dir" }]), "不是文件"),
+        (json!([{ "id": "p", "entry": "" }]), "不能为空"),
+        (
+            json!([{ "id": "p", "entry": "bare.html", "assets": ["../out.html"] }]),
+            "空段/`.`/`..` 段",
+        ),
+        (
+            json!([{ "id": "p", "entry": "bare.html", "assets": ["ui/missing.js"] }]),
+            "不存在",
+        ),
+        (
+            json!([{ "id": "p", "entry": "bare.html", "assets": ["  "] }]),
+            "不能为空",
+        ),
+        (json!([{ "id": "Bad Id", "entry": "bare.html" }]), "无效"),
+        // 洁净度（clean_webview_path，§3.8 URL 白名单前置 fail-closed）：
+        // handler 按段路由拒空段/点段/绝对路径/反斜杠/盘符，声明期先行拒绝。
+        (json!([{ "id": "p", "entry": "./bare.html" }]), "`.`"),
+        (
+            json!([{ "id": "p", "entry": "ui/../bare.html" }]),
+            "空段/`.`/`..` 段",
+        ),
+        (
+            json!([{ "id": "p", "entry": "/abs/bare.html" }]),
+            "洁净相对路径",
+        ),
+        (
+            json!([{ "id": "p", "entry": "ui\\app.js" }]),
+            "洁净相对路径",
+        ),
+        (json!([{ "id": "p", "entry": "C:/evil.html" }]), "盘符前缀"),
+        (json!([{ "id": "p", "entry": "ui//app.js" }]), "空段"),
+        (
+            json!([{ "id": "p", "entry": "bare.html", "assets": ["./x.js"] }]),
+            "`.`",
+        ),
+        (
+            json!([
+                { "id": "p", "entry": "bare.html" },
+                { "id": "p", "entry": "bare.html" }
+            ]),
+            "重复",
+        ),
+    ];
+    for (index, (webviews, expected)) in cases.into_iter().enumerate() {
+        let temp = TempDir::new(&format!("wv-bad-{index}"));
+        let paths = test_paths(&temp);
+        // entry 指向目录的用例：插件目录内先备好真实目录；越界目标
+        // `../out.html` 解析到 user_dir/out.html。
+        fs::create_dir_all(paths.user_dir.join("bad").join("bad-entry-dir")).expect("目录");
+        fs::write(paths.user_dir.join("out.html"), b"x").expect("写插件外文件");
+        write_plugin(
+            &paths.user_dir,
+            "bad",
+            webview_manifest("example.bad", webviews),
+            &["index.mjs", "bare.html"],
+        );
+        let list = list_plugins_at(&paths, false, false).expect("list");
+        let plugin = &list.plugins[0];
+        let error = plugin.error.as_deref().expect("error");
+        assert!(error.contains(expected), "case {index}: {error}");
+        assert!(!plugin.enabled);
+        assert!(plugin.webviews.is_empty());
+    }
+}
+
+#[test]
+fn webview_state_store_enforces_size_limits_and_persists() {
+    let temp = TempDir::new("wv-state");
+    let path = temp.path.join("ext-webview-state.json");
+    let store = WebviewStateStore::new(path.clone());
+    assert_eq!(store.get("p1", "k").expect("get"), None);
+
+    // roundtrip + 跨实例持久化 + null 值。
+    store.set("p1", "k", &json!({ "a": 1 })).expect("set");
+    store.set("p1", "n", &Value::Null).expect("set null");
+    drop(store);
+    let store = WebviewStateStore::new(path);
+    assert_eq!(store.get("p1", "k").expect("get"), Some(json!({ "a": 1 })));
+    assert_eq!(store.get("p1", "n").expect("get"), Some(Value::Null));
+    assert_eq!(store.get("p2", "k").expect("get"), None);
+
+    // 键：空与 >64 字符拒绝；64 字符接受（按字符计）。
+    let long_key = "x".repeat(MAX_WEBVIEW_STATE_KEY_CHARS + 1);
+    let error = store.set("p1", &long_key, &json!(1)).expect_err("long key");
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    let empty = store.set("p1", "", &json!(1)).expect_err("empty key");
+    assert_eq!(empty.code(), ErrorCode::InvalidArgument);
+    let key_64 = "y".repeat(MAX_WEBVIEW_STATE_KEY_CHARS);
+    store.set("p1", &key_64, &json!(1)).expect("64 字符键");
+
+    // 单值：序列化后 ≤64 KiB；边界外拒绝、边界内接受。
+    let fits = "v".repeat(MAX_WEBVIEW_STATE_VALUE_BYTES - 2); // JSON 字符串含两个引号
+    store.set("p1", "big", &json!(fits)).expect("64 KiB 边界值");
+    let too_big = "v".repeat(MAX_WEBVIEW_STATE_VALUE_BYTES - 1);
+    let error = store
+        .set("p1", "big2", &json!(too_big))
+        .expect_err("超大值");
+    assert!(
+        matches!(error, ExtError::WebviewStateValueTooLarge { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+
+    // 每插件总量：4 个 65532 字符的值（各序列化 65534 B）+ 键后恰为
+    // 4×65536 = 256 KiB 边界内；第 5 个键触发总量上限且不落盘。
+    let temp2 = TempDir::new("wv-state-quota");
+    let store2 = WebviewStateStore::new(temp2.path.join("state.json"));
+    let large = "q".repeat(MAX_WEBVIEW_STATE_VALUE_BYTES - 4);
+    for index in 0..4 {
+        store2
+            .set("p1", &format!("k{index}"), &json!(large))
+            .expect("大值 {index}");
+    }
+    let error = store2.set("p1", "k4", &json!(1)).expect_err("总量超限");
+    assert!(
+        matches!(error, ExtError::WebviewStateTotalTooLarge { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    // 超限不落盘：超限前的 4 个键仍可全量读回。
+    drop(store2);
+    let store2 = WebviewStateStore::new(temp2.path.join("state.json"));
+    for index in 0..4 {
+        let value = store2.get("p1", &format!("k{index}")).expect("get");
+        assert_eq!(value, Some(json!(large)), "k{index}");
+    }
+    assert_eq!(store2.get("p1", "k4").expect("get"), None);
+
+    // 非法插件 id 拒绝写入。
+    let bad = store
+        .set("bad id", "k", &json!(1))
+        .expect_err("非法插件 id");
+    assert_eq!(bad.code(), ErrorCode::NotFound);
+}
+
+#[test]
+fn webview_command_binding_is_validated_before_forwarding() {
+    let temp = TempDir::new("wv-command");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "web",
+        webview_manifest("example.web", json!([{ "id": "p", "entry": "bare.html" }])),
+        &["index.mjs", "bare.html"],
+    );
+    let mut other = node_manifest("example.other", "./index.mjs", &["other.run"]);
+    other["contributes"]["ui"] = json!({ "webviews": [{ "id": "o", "entry": "bare.html" }] });
+    write_plugin(&paths.user_dir, "other", other, &["index.mjs", "bare.html"]);
+
+    // 绑定插件声明的命令：通过。
+    validate_webview_command(&paths, false, "example.web", "demo.run").expect("bound command");
+    // 跨插件命令（全局唯一映射属于别的插件）：拒绝。
+    let error =
+        validate_webview_command(&paths, false, "example.web", "other.run").expect_err("cross");
+    assert!(
+        matches!(error, ExtError::CommandNotFound { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::NotFound);
+    // 未声明的命令：拒绝。
+    let error = validate_webview_command(&paths, false, "example.web", "demo.nope")
+        .expect_err("undeclared");
+    assert!(
+        matches!(error, ExtError::CommandNotFound { .. }),
+        "{error:?}"
+    );
+    // 未知插件/禁用插件：拒绝。
+    let error =
+        validate_webview_command(&paths, false, "unknown", "demo.run").expect_err("unknown");
+    assert!(matches!(error, ExtError::UnknownPlugin { .. }), "{error:?}");
+    set_enabled_at(&paths, false, "example.web", false, false).expect("disable");
+    let error =
+        validate_webview_command(&paths, false, "example.web", "demo.run").expect_err("disabled");
+    assert!(matches!(error, ExtError::UnknownPlugin { .. }), "{error:?}");
+}
+
+#[test]
+fn webview_asset_url_is_checked_before_generation() {
+    let temp = TempDir::new("wv-url");
+    let paths = test_paths(&temp);
+    write_webview_plugin(&paths);
+
+    // 白名单内资产：宿主生成 URL（web 不拼字符串）。
+    let url = checked_asset_url(&paths, false, "example.web", "panel", "ui/index.html")
+        .expect("entry url");
+    assert_eq!(
+        url,
+        plugin_asset_url("example.web", "panel", "ui/index.html")
+    );
+    // 入口与生成器同规则：URL 前缀即 handler 路由路径。
+    assert!(url.starts_with(&format!("{}/example.web/panel/", platform_url_base())));
+
+    // 未声明资产 / 未知视图 / 未知插件：按错误失败，不产出 URL。
+    let error = checked_asset_url(&paths, false, "example.web", "panel", "ui/secret.js")
+        .expect_err("undeclared asset");
+    assert!(
+        matches!(error, ExtError::WebviewAssetNotFound { .. }),
+        "{error:?}"
+    );
+    let error = checked_asset_url(&paths, false, "example.web", "nope", "ui/index.html")
+        .expect_err("unknown webview");
+    assert!(
+        matches!(error, ExtError::WebviewNotFound { .. }),
+        "{error:?}"
+    );
+    let error = checked_asset_url(&paths, false, "unknown", "panel", "ui/index.html")
+        .expect_err("unknown plugin");
+    assert!(matches!(error, ExtError::UnknownPlugin { .. }), "{error:?}");
+}
+
+#[cfg(windows)]
+fn platform_url_base() -> &'static str {
+    WINDOWS_ASSET_BASE
+}
+
+#[cfg(not(windows))]
+fn platform_url_base() -> &'static str {
+    LINUX_ASSET_BASE
+}

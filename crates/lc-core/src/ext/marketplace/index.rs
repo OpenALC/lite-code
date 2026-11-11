@@ -50,6 +50,9 @@ pub struct MarketPlugin {
     pub deps: Vec<String>,
     /// 提示用权限列表（Node 插件本质是可信代码，§7）。
     pub permissions: Vec<String>,
+    /// 插件声明的 sandbox webview id 列表（M3，§3.8）：安装确认固定文案
+    /// 「该插件包含沙箱 iframe UI」的信号；无声明为空数组。
+    pub webviews: Vec<String>,
     /// 命中该条目的源名（多源按 id 去重后 semver 最高的来源）。
     pub source: String,
     /// dist.url 为 `file://` 时 `true`——UI 须标「本地源，自行承担信任」。
@@ -121,6 +124,33 @@ impl IndexEntry {
                     .iter()
                     .filter_map(Value::as_str)
                     .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 插件声明的 sandbox webview id 列表（M3 §3.8）：从 manifest
+    /// `contributes.ui.webviews[].id` 派生（元素为对象，取 id；宽容字符串
+    /// 元素），无声明为空数组（web 守卫缺省宽容，安装确认 UI 据此显示
+    /// 固定文案）。
+    pub fn webviews(&self) -> Vec<String> {
+        self.manifest
+            .get("contributes")
+            .and_then(Value::as_object)
+            .and_then(|contributes| contributes.get("ui"))
+            .and_then(Value::as_object)
+            .and_then(|ui| ui.get("webviews"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Value::String(id) => Some(id.clone()),
+                        Value::Object(map) => {
+                            map.get("id").and_then(Value::as_str).map(str::to_string)
+                        }
+                        _ => None,
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -434,6 +464,7 @@ mod tests {
             engines: BTreeMap::new(),
             deps: vec![],
             permissions: vec![],
+            webviews: vec!["panel".to_string()],
             source: "official".into(),
             file_source: false,
             signature_state: SignatureState::Unsigned,
@@ -452,5 +483,21 @@ mod tests {
         let value = serde_json::to_value(&result).expect("serialize");
         assert_eq!(value["staleSources"][0], "mirror-a");
         assert!(value["results"][0].get("updateAvailable").is_some());
+        assert_eq!(value["results"][0]["webviews"][0], "panel");
+    }
+
+    #[test]
+    fn index_entry_derives_webviews_from_manifest_ui() {
+        let mut with_webviews = entry("demo.web", "0.1.0");
+        with_webviews["manifest"]["contributes"] = json!({
+            "ui": { "webviews": [{ "id": "panel", "entry": "index.html" }, { "id": "graph" }] }
+        });
+        let parsed = parse_index(index(json!([with_webviews])).as_bytes()).unwrap();
+        assert_eq!(parsed.entries[0].webviews(), vec!["panel", "graph"]);
+
+        // 无 ui.webviews 声明 → 空数组（web 守卫缺省宽容，不显示文案）。
+        let bare = entry("demo.bare", "0.1.0");
+        let parsed = parse_index(index(json!([bare])).as_bytes()).unwrap();
+        assert!(parsed.entries[0].webviews().is_empty());
     }
 }

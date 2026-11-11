@@ -18,7 +18,7 @@ use crate::fs::{FsError, RealPathResolver, display_path, ensure_within_root};
 
 use super::{
     ExtError, ExtPaths, PluginCommand, PluginInfo, PluginLanguage, PluginRuntime, PluginTheme,
-    PluginUiView, PluginView,
+    PluginUiView, PluginView, PluginWebview,
 };
 
 pub(crate) const MANIFEST_FILE: &str = "plugin.json";
@@ -110,6 +110,25 @@ pub(crate) struct Contributes {
 pub(crate) struct UiContrib {
     #[serde(default)]
     pub views: Vec<UiViewDecl>,
+    /// webview 声明（docs/plans/plugin-webview.md §3.8，M3）：sandbox iframe
+    /// 的入口与资产白名单。
+    #[serde(default)]
+    pub webviews: Vec<WebviewDecl>,
+}
+
+/// webview 声明（§3.8）：`id` 插件内唯一（小写字母/数字/线，与 views.id 同
+/// 规则）；`entry` 是 sandbox iframe 的入口文档，`assets` 是显式额外资产。
+/// entry 与显式 assets 构成 handler 可服务文件白名单——省略 assets 只允许
+/// entry，不开放整个插件目录。两者都必须落插件目录内且已存在：声明期做
+/// canonicalize + 根内校验（防 `..`/软链逃逸），响应时再做一次 canonicalize
+/// 与根内检查，不允许重定向或符号链接扩大可访问范围。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewDecl {
+    pub id: String,
+    pub entry: String,
+    #[serde(default)]
+    pub assets: Vec<String>,
 }
 
 /// UI 视图声明。`id` 插件内唯一（小写字母/数字/线，与 views.id 同规则）；
@@ -835,7 +854,9 @@ fn validate_manifest(
 
     // UI 视图声明校验（docs/plans/plugin-webview.md §3.1）：节 kind 闭集、
     // field type 闭集、命令闭包、规模上限；失败只把该插件标记为 error。
-    validate_ui(&mut manifest.contributes.ui, &command_ids)?;
+    // webviews 声明校验（§3.8 M3）同在此块：entry/assets 落插件目录内且
+    // 已存在，id 合法且插件内唯一。
+    validate_ui(&mut manifest.contributes.ui, &command_ids, dir)?;
 
     let mut mcp_names = HashSet::new();
     let mut normalized_mcp = BTreeMap::new();
@@ -899,7 +920,7 @@ fn validate_manifest(
 /// markdown text≤16 KiB，整棵 ui 块序列化 ≤32 KiB。节在校验时按 kind 重建
 /// 为白名单键集合（含 id/source），多余键丢弃；任一失败只把该插件标记为
 /// error（既有 validate_manifest 全局语义）。
-fn validate_ui(ui: &mut UiContrib, command_ids: &HashSet<&str>) -> Result<(), String> {
+fn validate_ui(ui: &mut UiContrib, command_ids: &HashSet<&str>, dir: &Path) -> Result<(), String> {
     // 整棵 ui 块序列化上限：校验形状前先兜体积，避免超大块浪费校验开销。
     let block = serde_json::to_string(&*ui).map_err(|error| format!("ui 块序列化失败：{error}"))?;
     if block.len() > MAX_UI_BLOCK_BYTES {
@@ -942,6 +963,96 @@ fn validate_ui(ui: &mut UiContrib, command_ids: &HashSet<&str>) -> Result<(), St
             None => view.open_command = None,
         }
         validate_ui_sections(&view.id, &mut view.sections, command_ids)?;
+    }
+
+    validate_ui_webviews(&mut ui.webviews, dir)?;
+    Ok(())
+}
+
+/// webview 声明校验（docs/plans/plugin-webview.md §3.8，M3）：id 合法（小写
+/// 字母/数字/线，与 views.id 同规则）且插件内唯一；entry 非空且是插件目录内
+/// 已存在的文件；assets 非空字符串且同理（复用 themes.path 的 canonicalize
+/// 模式，防 `..`/软链逃逸——声明期就把逃逸路径挡下）。entry 与显式 assets
+/// 构成 handler 白名单；省略 assets 只允许 entry，不开放整个插件目录。
+fn validate_ui_webviews(webviews: &mut [WebviewDecl], dir: &Path) -> Result<(), String> {
+    let mut webview_ids = HashSet::new();
+    for webview in webviews {
+        webview.id = webview.id.trim().to_string();
+        if !valid_language_id(&webview.id) {
+            return Err(format!(
+                "ui.webviews.id 无效：`{}`（仅允许小写字母、数字、线）",
+                webview.id
+            ));
+        }
+        if !webview_ids.insert(webview.id.clone()) {
+            return Err(format!("ui.webviews.id 重复：`{}`", webview.id));
+        }
+        webview.entry = clean_webview_path("ui.webviews.entry", &webview.id, &webview.entry)?;
+        validate_webview_file(dir, "ui.webviews.entry", &webview.id, &webview.entry)?;
+        let mut seen_assets = HashSet::new();
+        let mut assets = Vec::new();
+        for asset in &webview.assets {
+            let asset = clean_webview_path("ui.webviews.assets", &webview.id, asset)?;
+            validate_webview_file(dir, "ui.webviews.assets", &webview.id, &asset)?;
+            if seen_assets.insert(asset.clone()) {
+                assets.push(asset);
+            }
+        }
+        webview.assets = assets;
+    }
+    Ok(())
+}
+
+/// webview 资产路径的声明期洁净度（§3.8 URL 白名单的前置）：handler 按段
+/// 解析并拒绝绝对路径、空段与点段（含 `./`/`..`），声明这里先行 fail-closed
+/// ——段必须非空、不得为 `.`/`..`，分隔只用 `/`（反斜杠/NUL/盘符前缀同样
+/// 拒）。作者写洁净相对路径；文件存在性与根内校验由 validate_webview_file
+/// 负责（canonicalize，防 `..`/软链逃逸）。
+fn clean_webview_path(field: &str, webview_id: &str, raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{field} 不能为空：`{webview_id}`"));
+    }
+    if trimmed.starts_with('/') || trimmed.contains('\\') || trimmed.contains('\0') {
+        return Err(format!(
+            "{field} 必须是插件目录内的洁净相对路径（仅 `/` 分隔）：`{raw}`"
+        ));
+    }
+    if trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':' {
+        return Err(format!("{field} 不允许盘符前缀：`{raw}`"));
+    }
+    for segment in trimmed.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(format!(
+                "{field} 不允许空段/`.`/`..` 段（handler 按段白名单路由）：`{raw}`"
+            ));
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 单条 webview 文件声明校验：非空且 canonicalize 后落在插件目录内、是
+/// 已存在的文件（软链逃逸与 `..` 在 canonicalize 层被拒）。
+fn validate_webview_file(
+    dir: &Path,
+    field: &str,
+    webview_id: &str,
+    raw_path: &str,
+) -> Result<(), String> {
+    if raw_path.is_empty() {
+        return Err(format!("{field} 不能为空：`{webview_id}`"));
+    }
+    let candidate = dir.join(raw_path);
+    let resolved =
+        ensure_within_root(dir, &candidate, &RealPathResolver).map_err(|error| match error {
+            FsError::NotFound { .. } => format!("{field} 不存在：`{raw_path}`"),
+            FsError::PathOutsideRoot { .. } => {
+                format!("{field} 必须落在插件目录内：`{raw_path}`")
+            }
+            other => format!("{field} 校验失败：{other}"),
+        })?;
+    if !resolved.is_file() {
+        return Err(format!("{field} 不是文件：`{raw_path}`"));
     }
     Ok(())
 }
@@ -1594,6 +1705,17 @@ fn info_from_manifest(manifest: &PluginManifest, dir: &Path, enabled: bool) -> P
                     .unwrap_or_default(),
             })
             .collect(),
+        webviews: manifest
+            .contributes
+            .ui
+            .webviews
+            .iter()
+            .map(|webview| PluginWebview {
+                id: webview.id.clone(),
+                entry: webview.entry.clone(),
+                assets: webview.assets.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -1761,6 +1883,7 @@ fn error_info(
         languages: Vec::new(),
         views: Vec::new(),
         ui_views: Vec::new(),
+        webviews: Vec::new(),
     }
 }
 

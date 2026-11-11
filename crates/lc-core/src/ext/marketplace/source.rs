@@ -742,6 +742,7 @@ pub(crate) fn build_search_result(
             engines: entry.effective_engines(),
             deps: entry.effective_deps(),
             permissions: entry.permissions(),
+            webviews: entry.webviews(),
             source: merged_entry.source.clone(),
             file_source: entry.file_source,
             signature_state: if entry.signature.is_empty() {
