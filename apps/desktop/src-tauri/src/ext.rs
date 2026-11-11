@@ -260,6 +260,7 @@ pub(crate) async fn ext_registry_add(
     url: String,
     require_signatures: Option<bool>,
     pubkey: Option<String>,
+    mirrors: Option<Vec<String>>,
 ) -> Result<RegistryList, ErrorBody> {
     let builtin = builtin_registry_source();
     blocking(move || {
@@ -269,6 +270,7 @@ pub(crate) async fn ext_registry_add(
             &url,
             require_signatures.unwrap_or(false),
             pubkey.as_deref(),
+            mirrors.as_deref(),
         )
         .map_err(|error| error.to_error_body())
     })

@@ -24,8 +24,9 @@ pub(crate) const MAX_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 /// 单源条目上限（4096；超出按整份无效处理，防恶意巨型响应）。
 pub(crate) const MAX_INDEX_ENTRIES: usize = 4096;
 
-/// 签名状态徽标（§3.4）。`Enforced` 为 M3 强制档预留，M1 只会产出
-/// `Signed`（signature 非空）/ `Unsigned`。
+/// 签名状态徽标（§3.4）。`Enforced` = 条目来自强制档源（require_signatures）
+/// 且带签名（M3 起由 source.rs 合并结果时产出）；未签名条目恒为 `Unsigned`
+/// （在强制档源上安装会被 install.rs 拒绝，搜索侧仍标 Unsigned 供 UI 提示）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SignatureState {

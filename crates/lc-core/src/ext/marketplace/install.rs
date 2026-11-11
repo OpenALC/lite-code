@@ -2,9 +2,10 @@
 //!
 //! 安装主链：条目定位（version 缺省取 semver 最高，source 缺省取源序第一）
 //! → engines 预检（force 跳过）→ deps 解析自动装（M2：同源优先/深度 8/环检测）
-//! → 下载到 `<user_dir>/.tmp/`（64 MiB 帽）
-//! → sha256 校验 → zip 解压（单一顶层 `<id>/`、zip-slip 防御、stored/deflate
-//! 白名单、256 MiB 解压帽、4096 条目帽）→ 包内 plugin.json 与 index 条目比对
+//! → 下载到 `<user_dir>/.tmp/`（64 MiB 帽；M3 起按源 mirrors 回退）
+//! → sha256 校验 → 签名档校验（M3：强制档 minisign 验签，§3.7）→ zip 解压
+//! （单一顶层 `<id>/`、zip-slip 防御、stored/deflate 白名单、256 MiB 解压帽、
+//! 4096 条目帽）→ 包内 plugin.json 与 index 条目比对
 //! （不一致 `contract_mismatch`）→ 三级配额核算 → tmp+rename 原子落位
 //! （Windows 先改名旧目录到 `*.uninstall-bak`，失败可回滚）→ GC。
 //!
@@ -108,7 +109,12 @@ pub(crate) fn install_at(
             quota_mb,
         )?;
     }
-    install_package(paths, &resolved.entry, quota_mb)?;
+    install_package(
+        paths,
+        &resolved.entry,
+        source_by_name(&collected, &resolved.source),
+        quota_mb,
+    )?;
     list(paths, node_available)
 }
 
@@ -181,7 +187,12 @@ fn update_at(
                 preflight_engines(&best.entry)?;
                 resolve_deps(paths, best, &collected, &merged, node_available, quota_mb)?;
             }
-            install_package(paths, &best.entry, quota_mb)?;
+            install_package(
+                paths,
+                &best.entry,
+                source_by_name(&collected, &best.source),
+                quota_mb,
+            )?;
         }
     }
     list(paths, node_available)
@@ -418,12 +429,23 @@ fn resolve_deps<'a>(
 
     // deps 各自独立走完整安装流程（共享 tmp+rename 原子落位），
     // 主插件最后落位；任一失败即中止，已装依赖保留。
-    for entry in &planner.plan {
+    for (entry, source) in &planner.plan {
         preflight_engines(entry)?;
-        install_package(paths, entry, quota_mb)
+        install_package(paths, entry, source, quota_mb)
             .map_err(|error| dep_install_error(&entry.id, &entry.version, error))?;
     }
     Ok(())
+}
+
+/// 按源名取拉取结果里的源配置（信任档/mirrors 随条目走：安装与签名
+/// 校验都基于「提供该条目的源」的配置，§3.7 per-source 信任）。
+/// 合并后的源名必来自 collect 结果，找不到即配置漂移，直接 panic 暴露。
+fn source_by_name<'a>(collected: &'a [SourceIndex], name: &str) -> &'a RegistrySource {
+    collected
+        .iter()
+        .find(|source_index| source_index.source.name == name)
+        .map(|source_index| &source_index.source)
+        .unwrap_or_else(|| panic!("源 `{name}` 不在拉取结果中（配置漂移）"))
 }
 
 /// 依赖安装失败的上下文包装：保留原错误变体（命令层错误码不变），
@@ -482,8 +504,9 @@ struct DepPlanner<'a> {
     visited: HashSet<String>,
     /// 节点 → 声明的 deps（建环检测图用；边在构图时过滤到节点集）。
     raw_deps: HashMap<String, Vec<String>>,
-    /// post-order 安装计划（依赖在前）；根（主插件）也在其中，调用方弹出。
-    plan: Vec<IndexEntry>,
+    /// post-order 安装计划（依赖在前），每项带提供它的源（信任档/mirrors
+    /// 随条目走）；根（主插件）也在其中，调用方弹出。
+    plan: Vec<(IndexEntry, &'a RegistrySource)>,
 }
 
 impl<'a> DepPlanner<'a> {
@@ -492,7 +515,7 @@ impl<'a> DepPlanner<'a> {
     fn visit(
         &mut self,
         entry: &IndexEntry,
-        source: &'a str,
+        source_name: &'a str,
         depth: usize,
         chain: &mut Vec<String>,
         missing: &mut Vec<String>,
@@ -504,6 +527,7 @@ impl<'a> DepPlanner<'a> {
                 chain.join(" -> ")
             )));
         }
+        let source = source_by_name(self.collected, source_name);
         self.visited.insert(entry.id.clone());
         let deps = entry.effective_deps();
         self.raw_deps.insert(entry.id.clone(), deps.clone());
@@ -511,7 +535,7 @@ impl<'a> DepPlanner<'a> {
             if self.visited.contains(&dep) {
                 continue;
             }
-            match pick_dep_entry(&dep, source, self.collected, self.merged) {
+            match pick_dep_entry(&dep, source_name, self.collected, self.merged) {
                 Some((dep_entry, dep_source)) => {
                     self.visit(dep_entry, dep_source, depth + 1, chain, missing)?;
                 }
@@ -523,16 +547,19 @@ impl<'a> DepPlanner<'a> {
             }
         }
         chain.pop();
-        self.plan.push(entry.clone());
+        self.plan.push((entry.clone(), source));
         Ok(())
     }
 }
 
-/// 包安装主链（下载 → sha256 → 解压 → 一致性 → 配额 → 落位），
-/// tmp 产物无论成败都清理。
+/// 包安装主链（下载（多镜像回退） → sha256 → 签名档校验（M3）→ 解压 →
+/// 一致性 → 配额 → 落位），tmp 产物无论成败都清理。
+/// `source` = 提供该条目的源：下载回退用其 `mirrors`，签名校验用其
+/// `require_signatures`/`pubkey`（per-source 信任，§3.7）。
 pub(crate) fn install_package(
     paths: &ExtPaths,
     entry: &IndexEntry,
+    source: &RegistrySource,
     quota_mb: u64,
 ) -> Result<(), MarketError> {
     std::fs::create_dir_all(&paths.user_dir)
@@ -545,22 +572,26 @@ pub(crate) fn install_package(
     let zip_path = tmp_root.join(format!("{tag}.zip"));
     let extract_root = tmp_root.join(format!("extract-{tag}"));
 
-    let result = install_inner(paths, entry, quota_mb, &zip_path, &extract_root);
+    let result = install_inner(paths, entry, source, quota_mb, &zip_path, &extract_root);
     // tmp 全删，最终目录零变更或完整新装。
     let _ = std::fs::remove_file(&zip_path);
     let _ = std::fs::remove_dir_all(&extract_root);
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_inner(
     paths: &ExtPaths,
     entry: &IndexEntry,
+    source: &RegistrySource,
     quota_mb: u64,
     zip_path: &Path,
     extract_root: &Path,
 ) -> Result<(), MarketError> {
-    download_package(entry, zip_path, DOWNLOAD_TIMEOUT, MAX_PACKAGE_BYTES)?;
+    download_verified_package(entry, source, zip_path, DOWNLOAD_TIMEOUT, MAX_PACKAGE_BYTES)?;
     verify_sha256(zip_path, &entry.sha256)?;
+    // M3 签名档（§3.7）：sha256 之后、解压之前。
+    enforce_signature(entry, source)?;
     let extracted = extract_package(
         zip_path,
         extract_root,
@@ -584,14 +615,124 @@ fn tmp_tag(id: &str, version: &str) -> String {
     )
 }
 
-fn download_package(
+/// 包下载 + sha256 核验（M3 多镜像回退）：按 `dist_candidates` 顺序逐个候选，
+/// 首个「下载成功且 sha256 与 index 声明一致」的候选落盘；下载失败或哈希
+/// 不符（镜像树被污染/过期）都回退下一镜像，全部失败 → 报最后一个错误
+/// （错误信息含候选 URL，点名失败端）。
+fn download_verified_package(
     entry: &IndexEntry,
+    source: &RegistrySource,
     dest: &Path,
     timeout: Duration,
     max_bytes: u64,
 ) -> Result<(), MarketError> {
-    let bytes = fetch_url(&entry.dist_url, timeout, max_bytes)?;
-    std::fs::write(dest, bytes).map_err(|error| MarketError::Io(format!("写入临时包失败:{error}")))
+    let mut last_error = None;
+    for candidate in dist_candidates(source, &entry.dist_url) {
+        match fetch_url(&candidate, timeout, max_bytes) {
+            Ok(bytes) => {
+                if sha256_bytes(&bytes) != entry.sha256 {
+                    last_error = Some(MarketError::ContractMismatch(format!(
+                        "镜像 {candidate} 返回的包 sha256 与 index 声明不符，尝试下一镜像"
+                    )));
+                    continue;
+                }
+                return std::fs::write(dest, bytes)
+                    .map_err(|error| MarketError::Io(format!("写入临时包失败:{error}")));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("dist_candidates 至少含原地址"))
+}
+
+/// 包下载候选地址：原 dist.url 在前；镜像候选 = 把 dist.url 的 index 目录
+/// 前缀替换为各镜像的目录前缀（镜像托管同一目录树，§3.3）。
+fn dist_candidates(source: &RegistrySource, dist_url: &str) -> Vec<String> {
+    let mut out = vec![dist_url.to_string()];
+    let Some((index_dir, _)) = source.url.rsplit_once('/') else {
+        return out;
+    };
+    if !dist_url.starts_with(&format!("{index_dir}/")) {
+        return out;
+    }
+    let relative = &dist_url[index_dir.len()..];
+    for mirror in &source.mirrors {
+        if let Some((mirror_dir, _)) = mirror.rsplit_once('/') {
+            out.push(format!("{mirror_dir}{relative}"));
+        }
+    }
+    out
+}
+
+/// 签名档校验（M3，§3.7 两档信任，sha256 之后、解压之前）：
+/// - 条目未签名 + 源 `require_signatures=true` → 拒绝（invalid_argument）；
+/// - 警告档（`require_signatures=false`）→ 无论是否带签名都不做密码学校验，
+///   照常安装（徽标 signed/unsigned 已在搜索侧透传）；
+/// - 强制档 → minisign 验签（见 `verify_minisign_signature`），失败拒绝。
+fn enforce_signature(entry: &IndexEntry, source: &RegistrySource) -> Result<(), MarketError> {
+    if entry.signature.is_empty() {
+        if source.require_signatures {
+            return Err(MarketError::InvalidArgument(format!(
+                "源 `{}` 要求签名（require_signatures）但插件 `{}` 未签名，已拒绝安装",
+                source.name, entry.id
+            )));
+        }
+        return Ok(());
+    }
+    if !source.require_signatures {
+        return Ok(());
+    }
+    verify_minisign_signature(entry, source)
+}
+
+/// 强制档 minisign 验签。M3 签名语义（docs/plans/plugin-marketplace.md §3.7）：
+/// - **签名对象**：包内容 sha256 的 64 位小写十六进制文本（上游 verify_sha256
+///   已保证 entry.sha256 与包字节一致，签名即覆盖「sha256 后的包内容」）；
+/// - **线格式**：minisign 签名文本（untrusted comment + base64 blob + 以
+///   `trusted comment: ` 引导的注释 + base64 全局签名），用 minisign-verify
+///   crate（`PublicKey::verify(bin, sig, allow_legacy=true)`）验签——它校验
+///   Ed25519 签名与「签名 || trusted comment」的全局签名，注释与签名强绑定；
+/// - **trusted comment 内嵌哈希**：注释本体必须等于同一 sha256 十六进制，
+///   与实算摘要二次比对，防签名被整段挪用。
+fn verify_minisign_signature(
+    entry: &IndexEntry,
+    source: &RegistrySource,
+) -> Result<(), MarketError> {
+    let pubkey_b64 = source.pubkey.trim();
+    if pubkey_b64.is_empty() {
+        // add 时已拦截强制档无 pubkey；手工改坏配置在此兜底（fail-closed）。
+        return Err(MarketError::InvalidArgument(format!(
+            "源 `{}` 启用强制签名（require_signatures）但未配置 pubkey",
+            source.name
+        )));
+    }
+    let public_key = minisign_verify::PublicKey::from_base64(pubkey_b64).map_err(|_| {
+        MarketError::InvalidArgument(format!(
+            "源 `{}` 的 pubkey 非法：须为 base64 编码的 minisign 公钥",
+            source.name
+        ))
+    })?;
+    let signature = minisign_verify::Signature::decode(&entry.signature).map_err(|error| {
+        MarketError::InvalidArgument(format!(
+            "签名校验失败：插件 `{}` 的 signature 不是合法 minisign 签名（{error}）",
+            entry.id
+        ))
+    })?;
+    public_key
+        .verify(entry.sha256.as_bytes(), &signature, true)
+        .map_err(|error| {
+            MarketError::InvalidArgument(format!(
+                "签名校验失败：插件 `{}` 的签名与包内容不符（{error}）",
+                entry.id
+            ))
+        })?;
+    if signature.trusted_comment() != entry.sha256 {
+        return Err(MarketError::InvalidArgument(format!(
+            "签名校验失败：插件 `{}` 的 trusted comment 内嵌哈希与包 sha256 不符",
+            entry.id
+        )));
+    }
+    Ok(())
 }
 
 /// sha256 校验：与 index 声明不一致 → `contract_mismatch`（传输篡改/源被
@@ -617,6 +758,11 @@ pub(crate) fn verify_sha256(path: &Path, expected: &str) -> Result<(), MarketErr
         )));
     }
     Ok(())
+}
+
+/// 内存字节 sha256（小写十六进制；镜像候选下载后先内存比对再落盘）。
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
+    hex_lower(&sha2::Sha256::digest(bytes))
 }
 
 pub(crate) fn hex_lower(bytes: &[u8]) -> String {
@@ -918,7 +1064,7 @@ mod tests {
 
     use super::*;
     use crate::ext::marketplace::testutil::{
-        TempDir, build_zip, file_url, http_ok_bytes, serve_fn,
+        MiniSignTestKey, TempDir, TestServer, build_zip, file_url, http_ok, http_ok_bytes, serve_fn,
     };
 
     fn sha256_hex(bytes: &[u8]) -> String {
@@ -1265,7 +1411,7 @@ mod tests {
             version: "0.1.0".into(),
             parsed_version: Version::parse("0.1.0").unwrap(),
             manifest: manifest.clone(),
-            dist_url,
+            dist_url: dist_url.clone(),
             sha256: sha256_hex(&[b'x'; 128]),
             signature: String::new(),
             file_source: false,
@@ -1274,8 +1420,10 @@ mod tests {
         };
         // 直接测下载档：cap 16 字节 < 128 字节响应。
         let temp = TempDir::new("dl-cap");
-        let err = download_package(
+        let source = RegistrySource::new("official", dist_url);
+        let err = download_verified_package(
             &entry,
+            &source,
             &temp.path().join("cap.zip"),
             Duration::from_secs(5),
             16,
@@ -2010,6 +2158,309 @@ mod tests {
         assert!(
             fx.installed("demo.dep").is_some(),
             "update 路径同样补装缺失依赖"
+        );
+    }
+
+    // ==== M3：签名强制档（§3.7 两档信任） ====
+    //
+    // 许可检查记录：minisign-verify 0.3.0（MIT，零依赖）为生产验签选型，
+    // `cargo deny --locked check licenses` 通过；正样本签名由测试钥手工构造
+    // minisign 线格式（ed25519-dalek 仅 dev 依赖，MIT OR Apache-2.0）。
+
+    /// 签名测试的标准包：固定 id/version 的 demo.sig 插件包，返回
+    /// (manifest, zip, sha256(zip))——签名对象/注释由调用方按场景构造。
+    fn sig_package() -> (Value, Vec<u8>, String) {
+        let manifest = plugin_manifest("demo.sig", "0.1.0");
+        let zip = build_zip(&[("demo.sig/plugin.json", manifest.to_string().into_bytes())]);
+        let sha = sha256_hex(&zip);
+        (manifest, zip, sha)
+    }
+
+    #[test]
+    fn m3_enforced_source_rejects_unsigned_package() {
+        let key = MiniSignTestKey::from_seed(7);
+        let mut fx = fixture("m3-unsigned", "demo.sig", "0.1.0");
+        fx.builtin.require_signatures = true;
+        fx.builtin.pubkey = key.pubkey_b64();
+
+        let err = run_install(&fx, "demo.sig", None, None, false, DEFAULT_QUOTA_MB)
+            .expect_err("enforced source rejects unsigned");
+        assert!(matches!(err, MarketError::InvalidArgument(_)), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("official"), "点名源:{message}");
+        assert!(message.contains("未签名"), "{message}");
+        assert!(!fx.paths.user_dir.join("demo.sig").exists(), "拒绝后不落位");
+    }
+
+    #[test]
+    fn m3_enforced_source_accepts_valid_signature() {
+        let key = MiniSignTestKey::from_seed(7);
+        // M3 约定：签名对象与 trusted comment 均为包 sha256 的 64 位小写十六进制。
+        let (manifest, zip, sha) = sig_package();
+        let signature = key.sign(sha.as_bytes(), &sha);
+        let mut fx = fixture_with_dist(
+            "m3-valid",
+            "demo.sig",
+            "0.1.0",
+            manifest,
+            &zip,
+            Some(json!({"signature": signature})),
+        );
+        fx.builtin.require_signatures = true;
+        fx.builtin.pubkey = key.pubkey_b64();
+
+        let list = run_install(&fx, "demo.sig", None, None, false, DEFAULT_QUOTA_MB)
+            .expect("valid signature installs");
+        let plugin = list
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "demo.sig")
+            .expect("listed");
+        assert!(plugin.error.is_none(), "{:?}", plugin.error);
+        assert!(fx.paths.user_dir.join("demo.sig/plugin.json").is_file());
+    }
+
+    #[test]
+    fn m3_enforced_source_rejects_forged_signature() {
+        let pinned = MiniSignTestKey::from_seed(7);
+        let foreign = MiniSignTestKey::from_seed(8);
+        // 攻击者用自有私钥对包 sha256 签名，但源 pinned 的是另一把公钥。
+        let (manifest, zip, sha) = sig_package();
+        let forged = foreign.sign(sha.as_bytes(), &sha);
+        let mut fx = fixture_with_dist(
+            "m3-wrong-key",
+            "demo.sig",
+            "0.1.0",
+            manifest,
+            &zip,
+            Some(json!({"signature": forged})),
+        );
+        fx.builtin.require_signatures = true;
+        fx.builtin.pubkey = pinned.pubkey_b64();
+
+        let err = run_install(&fx, "demo.sig", None, None, false, DEFAULT_QUOTA_MB)
+            .expect_err("foreign key signature rejected");
+        assert!(matches!(err, MarketError::InvalidArgument(_)), "{err}");
+        assert!(err.to_string().contains("签名校验失败"), "{err}");
+        assert!(!fx.paths.user_dir.join("demo.sig").exists());
+    }
+
+    #[test]
+    fn m3_enforced_source_rejects_mismatched_trusted_comment() {
+        let key = MiniSignTestKey::from_seed(7);
+        // 签名对象正确，但 trusted comment 内嵌别的哈希（如旧版本包的 sha）。
+        let (manifest, zip, sha) = sig_package();
+        let wrong_comment = "0".repeat(64);
+        let signature = key.sign(sha.as_bytes(), &wrong_comment);
+        let mut fx = fixture_with_dist(
+            "m3-bad-comment",
+            "demo.sig",
+            "0.1.0",
+            manifest,
+            &zip,
+            Some(json!({"signature": signature})),
+        );
+        fx.builtin.require_signatures = true;
+        fx.builtin.pubkey = key.pubkey_b64();
+
+        let err = run_install(&fx, "demo.sig", None, None, false, DEFAULT_QUOTA_MB)
+            .expect_err("mismatched trusted comment rejected");
+        assert!(matches!(err, MarketError::InvalidArgument(_)), "{err}");
+        assert!(err.to_string().contains("签名校验失败"), "{err}");
+        assert!(err.to_string().contains("trusted comment"), "{err}");
+    }
+
+    #[test]
+    fn m3_enforced_source_rejects_tampered_package_with_rehashed_index() {
+        let key = MiniSignTestKey::from_seed(7);
+        // 原始包 + 合法签名（先签旧 sha）。
+        let (manifest_a, zip_a, sha_a) = sig_package();
+        let signature = key.sign(sha_a.as_bytes(), &sha_a);
+        let mut fx = fixture_with_dist(
+            "m3-tampered",
+            "demo.sig",
+            "0.1.0",
+            manifest_a,
+            &zip_a,
+            Some(json!({"signature": signature})),
+        );
+        // 攻击者换掉包字节并把 index 的 sha256 改成新包的（传输篡改 +
+        // 源被同步篡改的最强形态）：sha256 闸被更新过的声明绕过，但签名
+        // 仍覆盖旧 sha → 验签失败。
+        let tampered_manifest = json!({
+            "id": "demo.sig",
+            "version": "0.1.0",
+            "runtime": "declarative",
+            "description": "tampered payload"
+        });
+        let zip_b = build_zip(&[(
+            "demo.sig/plugin.json",
+            tampered_manifest.to_string().into_bytes(),
+        )]);
+        std::fs::write(&fx.package_file, &zip_b).expect("swap package");
+        rewrite_index_sha256(&fx, &sha256_hex(&zip_b));
+        fx.builtin.require_signatures = true;
+        fx.builtin.pubkey = key.pubkey_b64();
+
+        let err = run_install(&fx, "demo.sig", None, None, false, DEFAULT_QUOTA_MB)
+            .expect_err("tampered package rejected even with rehashed index");
+        assert!(matches!(err, MarketError::InvalidArgument(_)), "{err}");
+        assert!(err.to_string().contains("签名校验失败"), "{err}");
+        assert!(!fx.paths.user_dir.join("demo.sig").exists());
+    }
+
+    #[test]
+    fn m3_warning_tier_installs_regardless_of_signature() {
+        // 警告档：条目带 signature 但源未配 pubkey 且非强制档 → 照常安装，
+        // 不做密码学校验（徽标 signed/unsigned 透传；此处签名甚至是非法
+        // minisign 文本，证明警告档零验签开销与依赖）。
+        let manifest = plugin_manifest("demo.sig", "0.1.0");
+        let zip = build_zip(&[("demo.sig/plugin.json", manifest.to_string().into_bytes())]);
+        let fx = fixture_with_dist(
+            "m3-warn",
+            "demo.sig",
+            "0.1.0",
+            manifest,
+            &zip,
+            Some(json!({"signature": "not-a-minisign-signature-at-all"})),
+        );
+        assert!(!fx.builtin.require_signatures);
+        assert!(fx.builtin.pubkey.is_empty());
+
+        run_install(&fx, "demo.sig", None, None, false, DEFAULT_QUOTA_MB)
+            .expect("warning tier installs");
+        assert!(fx.paths.user_dir.join("demo.sig/plugin.json").is_file());
+    }
+
+    /// 覆写夹具 index 里条目 dist.sha256（模拟 index-包同时被篡改）。
+    fn rewrite_index_sha256(fx: &Fixture, sha256: &str) {
+        let index: Value =
+            serde_json::from_str(&std::fs::read_to_string(&fx.index_file).expect("read"))
+                .expect("json");
+        let mut index = index;
+        index["plugins"][0]["dist"]["sha256"] = json!(sha256);
+        std::fs::write(&fx.index_file, index.to_string()).expect("rewrite index");
+    }
+
+    // ==== M3：包下载多镜像回退（§3.3） ====
+
+    #[test]
+    fn m3_package_download_falls_back_across_mirrors() {
+        let manifest = plugin_manifest("demo.net", "0.1.0");
+        let zip = build_zip(&[("demo.net/plugin.json", manifest.to_string().into_bytes())]);
+        let sha = sha256_hex(&zip);
+        // 权威源：index 与包都挂。
+        let dead = TestServer::not_found();
+        // mirror1：只镜像了 index（包路径返回 index 正文 → sha256 不符回退）。
+        let mirror_index = json!({"version": 1, "plugins": [{
+            "id": "demo.net", "version": "0.1.0", "manifest": manifest,
+            "dist": {"url": format!("{}/pkg.zip", dead.url), "sha256": sha}
+        }]})
+        .to_string();
+        let mirror1 = serve_fn({
+            let mirror_index = mirror_index.clone();
+            move |_, _| http_ok(&mirror_index)
+        });
+        // mirror2：同一目录树镜像了包。
+        let mirror2 = serve_fn({
+            let zip = zip.clone();
+            move |_, _| http_ok_bytes(&zip)
+        });
+
+        let temp = TempDir::new("m3-pkg-mirror");
+        let paths = ExtPaths::new(
+            temp.path().join("extensions"),
+            None,
+            temp.path().join("extensions.json"),
+        );
+        let mut source = RegistrySource::new("official", format!("{}/index.json", dead.url));
+        source.mirrors = vec![
+            format!("{}/index.json", mirror1.url),
+            format!("{}/index.json", mirror2.url),
+        ];
+        install_at(
+            &paths,
+            &source,
+            &temp.path().join("reg.json"),
+            &Mutex::new(IndexCache::new()),
+            FetchLimits::default(),
+            "demo.net",
+            None,
+            None,
+            false,
+            false,
+            DEFAULT_QUOTA_MB,
+        )
+        .expect("install falls back to package mirror");
+        assert!(paths.user_dir.join("demo.net/plugin.json").is_file());
+        assert!(
+            mirror1.hits.load(Ordering::Relaxed) >= 2,
+            "mirror1 被尝试 index + 包（返回错包触发回退）"
+        );
+        assert!(
+            mirror2.hits.load(Ordering::Relaxed) >= 1,
+            "mirror2 提供正确包"
+        );
+    }
+
+    #[test]
+    fn m3_package_all_mirrors_dead_errors_naming_last_url() {
+        let manifest = plugin_manifest("demo.net", "0.1.0");
+        let zip = build_zip(&[("demo.net/plugin.json", manifest.to_string().into_bytes())]);
+        let sha = sha256_hex(&zip);
+        let dead_pkg = TestServer::not_found();
+        // dead_index：任何路径都返回 index 正文（index 拉取「成功」，包路径
+        // 返回错内容 → sha256 不符回退下一镜像）；dist.url 指向它自己，
+        // 用共享槽在 server 启动后回填。
+        let dist_slot: std::sync::Arc<std::sync::Mutex<String>> =
+            std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let dead_index = serve_fn({
+            let manifest = manifest.clone();
+            let sha = sha.clone();
+            let dist_slot = dist_slot.clone();
+            move |_, _| {
+                let dist = dist_slot.lock().expect("dist slot").clone();
+                http_ok(
+                    &json!({"version": 1, "plugins": [{
+                        "id": "demo.net", "version": "0.1.0", "manifest": manifest,
+                        "dist": {"url": dist, "sha256": sha}
+                    }]})
+                    .to_string(),
+                )
+            }
+        });
+        *dist_slot.lock().expect("dist slot") = format!("{}/pkg.zip", dead_index.url);
+
+        let temp = TempDir::new("m3-pkg-dead");
+        let paths = ExtPaths::new(
+            temp.path().join("extensions"),
+            None,
+            temp.path().join("extensions.json"),
+        );
+        let mut source = RegistrySource::new("official", format!("{}/index.json", dead_index.url));
+        source.mirrors = vec![format!("{}/index.json", dead_pkg.url)];
+        let err = install_at(
+            &paths,
+            &source,
+            &temp.path().join("reg.json"),
+            &Mutex::new(IndexCache::new()),
+            FetchLimits::default(),
+            "demo.net",
+            None,
+            None,
+            false,
+            false,
+            DEFAULT_QUOTA_MB,
+        )
+        .expect_err("all package mirrors dead");
+        assert!(matches!(err, MarketError::Http(_)), "{err}");
+        assert!(
+            err.to_string().contains(&dead_pkg.url),
+            "报错点名最后失败的镜像:{err}"
+        );
+        assert!(
+            err.to_string().contains("pkg.zip"),
+            "报错含失败候选 URL:{err}"
         );
     }
 }

@@ -27,6 +27,14 @@ ureq = "3.5.1"
 # 其中 bzip2 的许可证不在 deny.toml 白名单内（且这些格式运行时用不到）。
 zip = { version = "9.3.0", default-features = false, features = ["deflate"] }
 sha2 = "0.11.1"
+# M3 签名强制档（§3.7）：minisign 验签（trusted comment 内嵌 sha256 比对）。
+minisign-verify = { workspace = true }
+
+[dev-dependencies]
+# 仅测试用：手工构造 minisign 正样本签名（ed25519-dalek 私钥签名 +
+# minisign 线格式拼装，见 ext::marketplace::testutil）。MIT OR Apache-2.0，
+# 已过 deny.toml 白名单；不进发行产物。
+ed25519-dalek = "2.2"
 
 [target.'cfg(windows)'.dependencies]
 win32job = "2.0.3"

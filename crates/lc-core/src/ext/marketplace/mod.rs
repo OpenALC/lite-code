@@ -2,14 +2,17 @@
 //! 搜索 / 安装 / 更新 / 卸载）。
 //!
 //! - `index`：index.json 线格式解析与校验（§3.1，fail-closed）；
-//! - `source`：`~/.lite-code/plugin-registries.json` 源清单读写、多源并行拉取、
-//!   TTL 内存缓存、按 id 去重取 semver 最高（§3.3）；
-//! - `install`：包下载 / sha256 / zip 防穿越解压 / index-包一致性比对 /
-//!   tmp+rename 原子落位 / 三级配额 / GC / deps 自动安装（M2）/ 卸载 / 更新
-//!   （§3.2/§3.5/§3.6）。
+//! - `source`：`~/.lite-code/plugin-registries.json` 源清单读写、多源并行拉取
+//!   （同 index 多镜像按 `[url, mirrors…]` 回退，M3）、TTL 内存缓存、按 id
+//!   去重取 semver 最高（§3.3）；
+//! - `install`：包下载（镜像回退）/ sha256 / 签名档校验（M3 强制档 minisign
+//!   验签，§3.7）/ zip 防穿越解压 / index-包一致性比对 / tmp+rename 原子落位 /
+//!   三级配额 / GC / deps 自动安装（M2）/ 卸载 / 更新（§3.2/§3.5/§3.6）。
 //!
-//! 安全模型（§3.7）：M1 为警告档——HTTPS + sha256 完整性，签名强制档（M3）
-//! 落地前 `signature` 只透传状态不做密码学校验。
+//! 安全模型（§3.7）两档信任已落地：警告档只做 HTTPS + sha256 完整性（徽标
+//! 提示 unsigned）；强制档（per-source `require_signatures` + 本地 pinned
+//! pubkey）安装期验 minisign 签名（签名对象 = 包 sha256 十六进制文本 +
+//! trusted comment 内嵌哈希二次比对），未签名/验签失败一律拒绝。
 
 mod index;
 mod install;
@@ -336,6 +339,88 @@ pub(crate) mod testutil {
         }
         let cursor = writer.finish().expect("finish zip");
         cursor.into_inner()
+    }
+
+    /// 手写 base64 编码（标准字母表 + 填充）。只实现编码侧：正确性由
+    /// minisign-verify 的解码端到端兜底（每个签名用例都走完整验签）。
+    pub(crate) fn base64_encode(data: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+        for chunk in data.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+            let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+            out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 {
+                ALPHABET[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                ALPHABET[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    /// M3 签名测试钥：ed25519-dalek 确定性种子（dev-only 依赖），手工拼装
+    /// minisign 线格式（`PublicKey::from_base64` / `Signature::decode` 的
+    /// 对端），正样本签名全部由它生成——验签路径仍走生产代码同一入口。
+    pub(crate) struct MiniSignTestKey {
+        signing: ed25519_dalek::SigningKey,
+        key_id: [u8; 8],
+    }
+
+    impl MiniSignTestKey {
+        /// 确定性测试钥：种子 = [seed; 32]，密钥号 = [seed + 1; 8]
+        /// （pubkey 与 signature blob 的 key_id 必须一致，否则验签报
+        /// UnexpectedKeyId）。
+        pub(crate) fn from_seed(seed: u8) -> Self {
+            Self {
+                signing: ed25519_dalek::SigningKey::from_bytes(&[seed; 32]),
+                key_id: [seed.wrapping_add(1); 8],
+            }
+        }
+
+        /// minisign 公钥线格式（base64：算法标识 "Ed"(2) + 密钥号(8) + 公钥(32)）。
+        pub(crate) fn pubkey_b64(&self) -> String {
+            let mut blob = Vec::with_capacity(42);
+            blob.extend_from_slice(&[0x45, 0x64]); // "Ed"：legacy 直签标识
+            blob.extend_from_slice(&self.key_id);
+            blob.extend_from_slice(self.signing.verifying_key().as_bytes());
+            base64_encode(&blob)
+        }
+
+        /// 手工构造 minisign 签名文本（4 行）：
+        ///   1. untrusted comment（不参与校验，任意文本）
+        ///   2. base64(算法标识(2) + 密钥号(8) + Ed25519 签名(64))
+        ///      —— 签名对象是 `message`（M3 约定 = 包 sha256 的 64 位小写十六进制）
+        ///   3. `trusted comment: <trusted_comment>`（M3 约定 = 同一 sha256 十六进制）
+        ///   4. base64(全局签名(64)) —— 对「签名 || trusted comment 本体」再签一次
+        pub(crate) fn sign(&self, message: &[u8], trusted_comment: &str) -> String {
+            use ed25519_dalek::Signer as _;
+
+            let signature = self.signing.sign(message);
+            let mut global = signature.to_bytes().to_vec();
+            global.extend_from_slice(trusted_comment.as_bytes());
+            let global_signature = self.signing.sign(&global);
+
+            let mut blob = Vec::with_capacity(74);
+            blob.extend_from_slice(&[0x45, 0x64]);
+            blob.extend_from_slice(&self.key_id);
+            blob.extend_from_slice(&signature.to_bytes());
+            format!(
+                "untrusted comment: test key\n{}\ntrusted comment: {}\n{}",
+                base64_encode(&blob),
+                trusted_comment,
+                base64_encode(&global_signature.to_bytes()),
+            )
+        }
     }
 }
 

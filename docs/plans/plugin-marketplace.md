@@ -95,21 +95,22 @@
 
 ```json
 { "sources": [
-  { "name": "official", "url": "https://...", "require_signatures": false, "pubkey": "" }
+  { "name": "official", "url": "https://...", "require_signatures": false,
+    "pubkey": "", "mirrors": ["https://mirror.example/.../index.json"] }
 ] }
 ```
 
 - 内置默认官方源：常量放在桌面层（同 updater 的 `DEFAULT_MANIFEST_URL`，`updater.rs:17-18`），可用 env `LC_PLUGIN_REGISTRY_URL` 覆盖（测试缝，同 `LC_UPDATE_MANIFEST_URL`）；**builtin 源不可删除、可禁用**。
-- URL 校验：`ext_registry_add` 只接受 https / 回环 http / `file://`（file 源在 UI 标注「本地源，自行承担信任」）。
+- URL 校验：`ext_registry_add` 只接受 https / 回环 http / `file://`（file 源在 UI 标注「本地源，自行承担信任」）；`mirrors[]` 同白名单，`pubkey` 入库前校验（强制档必配、非空须为 base64 的 minisign 公钥线格式）。
 - 多源语义：`ext_search` 并行拉取全部启用源的 index，内存缓存 TTL 5 分钟（`refresh=true` 强制）；**按 id 去重，取 semver 最高版本**；某源失败不毒化结果——该源条目缺失，源名记入返回的 `staleSources` 供 UI 提示「源 X 暂时不可用」。
-- 多镜像（M3 完整落地，M1 起语义就位）：同一 index 可托管多份镜像 URL，回退顺序=源列表顺序；per-source 超时 10s、整体搜索预算 30s。
+- 多镜像（M3 已落地）：`mirrors` = 同一 index 的备选完整 URL；**index 拉取按 `[url, mirrors…]` 配置顺序回退**（per-mirror 超时 = per-source 10s、整体搜索预算 30s）；包下载同序回退——dist.url 与源 index url 同目录前缀时按镜像目录前缀替换候选，且**下载成功但 sha256 不符也回退下一镜像**（镜像树过期/污染不毒化安装）。全挂 → 源记 stale（搜索）/ 报错点名失败候选 URL（安装）。
 
 ### 3.4 命令面（Tauri custom DTO，不动 lc-proto）
 
 | 命令 | 签名 | 说明 |
 |---|---|---|
-| `ext_registry_list` | `() -> RegistryList` | `{sources:[{name,url,builtin,requireSignatures,hasPubkey}]}` |
-| `ext_registry_add` | `(name, url, requireSignatures?, pubkey?) -> RegistryList` | URL 白名单校验；pubkey 仅本地配置，禁止网络获取（无 TOFU） |
+| `ext_registry_list` | `() -> RegistryList` | `{sources:[{name,url,builtin,requireSignatures,hasPubkey,mirrors}]}` |
+| `ext_registry_add` | `(name, url, requireSignatures?, pubkey?, mirrors?) -> RegistryList` | URL 白名单校验；pubkey 仅本地配置，禁止网络获取（无 TOFU）；M3 起强制档必配合法 pubkey、mirrors 同白名单（§3.7/§3.3） |
 | `ext_registry_remove` | `(name) -> RegistryList` | builtin 拒绝 |
 | `ext_search` | `(query?, refresh?) -> MarketSearchResult` | `results:[MarketPlugin]` + `staleSources:[name]`；MarketPlugin 含 id/version/description/runtime/engines/deps/permissions/source/signatureState(signed\|unsigned\|enforced)/installedVersion/updateAvailable |
 | `ext_install` | `(id, version?, source?, force?) -> PluginList` | 返回 `PluginList` 复用既有 UI 刷新链路（同 `ext_reload` 返回约定） |
@@ -152,9 +153,17 @@
 
 **两档信任（每源可配）**：
 
-- **警告档（M1 默认）**：HTTPS + sha256 完整性；`signature` 缺失允许安装，但 `signatureState=unsigned` 必须进确认 UI 与结果徽标。
+- **警告档（M1 默认）**：HTTPS + sha256 完整性；`signature` 缺失允许安装，但 `signatureState=unsigned` 必须进确认 UI 与结果徽标。带签名也**不做密码学校验**（照常安装，徽标 signed 透传）。
 - **强制档（M3，`require_signatures=true`）**：源配置 pinned minisign 公钥（base64，只来自本地 `plugin-registries.json`）；包必须有签名且验证通过（trusted comment 匹配），否则拒绝安装。密钥与 updater 签名（`TAURI_SIGNING_*`，minisign 同族）**分钥**——应用更新链与插件供应链爆炸半径隔离。
-- 依赖：M3 引入 `minisign-verify`（纯 Rust、体积小；**必须先过 `deny.toml` 许可白名单**；若被拒，备选 `ed25519-dalek` 自解析 trusted comment）。不引入 `ring`/`aws-lc-sys` 系（arm64 交叉编译高危，db-mysql-pg 方案对比 B 的教训）。
+- **依赖（M3 已落地）**：`minisign-verify` 0.3.0（MIT、零外部依赖，`cargo deny --locked check licenses` 通过；`ed25519-dalek` 2.2 仅 dev 依赖用于测试签名生成，MIT OR Apache-2.0 同样过检）。未引入 `ring`/`aws-lc-sys` 系。
+
+**M3 签名语义（落地约定，install.rs `verify_minisign_signature`）**：
+
+- **签名对象**：包内容 sha256 的 64 位小写十六进制文本（安装链上游 `verify_sha256` 已保证 `entry.sha256` 与包字节一致，即「签名覆盖 sha256 后的包内容」）。
+- **线格式**：标准 minisign 签名文本（untrusted comment + base64 blob + `trusted comment: ` 注释 + base64 全局签名）。`minisign-verify` 的 `PublicKey::verify(sha256文本, sig, allow_legacy=true)` 校验 Ed25519 签名与「签名 || trusted comment」全局签名（crate 内部完成注释-签名强绑定）。
+- **trusted comment 内嵌哈希**：注释本体必须等于同一 sha256 十六进制，与实算摘要二次比对——三重绑定（公钥 pinned + 签名覆盖摘要 + 注释嵌入摘要），防签名跨包挪用。
+- **拒绝路径（均 `invalid_argument`）**：强制档源遇未签名条目（点名源与插件）；签名非法/验签失败/注释哈希不符（「签名校验失败」前缀）。源未配 pubkey 在 `ext_registry_add` 即拦截（强制档必配；pubkey 非空但非法 base64/长度错也拒），手工改坏配置的兜底 fail-closed 在安装期。
+- 发布端签名约定（marketplace CI 采用同一语义）：对 `sha256hex(包)` 的 64 字符小写文本做 minisign 直签（legacy "Ed"），trusted comment 填入同一 hex。
 
 **既有防线（复述 §7，市场不得削弱）**：插件代码永不进渲染进程；Node 插件=可信代码，`permissions` 仅提示；插件工具输出包 `[UNTRUSTED PLUGIN CONTENT]` 边界且一律 `Risk::Mutating` 走既有审批；宿主/WASM 子进程 `scrub_secret_env`；WASM 才是强隔离层。
 
@@ -196,7 +205,7 @@
 |---|---|---|---|
 | **M1 index+安装** | index 线格式+解析；`version.rs` 移入 lc-core；`plugin-registries.json`+3 个 registry 命令；`ext_search`；`ext_install`（下载/sha256/一致性/防穿越/tmp+rename/GC/配额）；ExtensionsPanel 浏览 tab+确认 UI；`gen-plugin-index.mjs` | 6 | file:// 与 https（loopback 集成测试）源可搜索并安装，中断恢复无残留；已安装页零回归 |
 | **~~M2 更新与卸载~~（已完成）** | ~~`ext_update`（单个/全部、semver 严格大于、disabled 保留）；`ext_uninstall`（白名单+disabled 清理）；deps 自动安装（深度/环护栏）；更新角标~~ | 3 | 装旧版→可更新→状态保留；卸载后目录与 `extensions.json` 干净 |
-| **M3 签名与多镜像** | `minisign-verify` 接入（过 deny.toml）；per-source `require_signatures`+pubkey；强制档拒绝路径与徽标；多源回退排序；官方 marketplace 仓库+CI+镜像发布文档 | 4 | 未签名包在强制源被拒；多源 fail-over 集成测试过；发布链文档化 |
+| **~~M3 签名与多镜像~~（已完成 2026-11-11）** | ~~`minisign-verify` 接入（过 deny.toml）；per-source `require_signatures`+pubkey；强制档拒绝路径与徽标；多源回退排序；官方 marketplace 仓库+CI+镜像发布文档~~ | 4 | 未签名包在强制源被拒；多源 fail-over 集成测试过；发布链文档化 |
 
 估点单位：1 点 ≈ 一个 agent 半天；含测试与文档。
 
@@ -216,6 +225,6 @@
 
 - 官方 marketplace 仓库（如 `OpenALC/lite-code-marketplace`）尚未创建：M1 开发用 `file://`+loopback 假服务器；默认官方源 URL 为占位常量，发布前落定（同 updater 常量模式）。
 - 包格式「单一顶层目录 `<id>/`」为新约定，无历史包兼容负担（v0 无市场）。
-- `minisign-verify` 许可能过 `deny.toml`；不过则退回 `ed25519-dalek` 备选（§3.7）。
+- `minisign-verify` 许可能过 `deny.toml`；不过则退回 `ed25519-dalek` 备选（§3.7）。——**M3 已验证**：minisign-verify 0.3.0 为 MIT 且零外部依赖，`cargo deny --locked check licenses` 通过；无需启用 ed25519-dalek 回退路径（后者仅作为 dev 依赖用于测试签名生成，许可同为 MIT OR Apache-2.0）。
 - 市场命令仅桌面 Tauri 层落地；`lc-ohos` 接入不在本计划范围。
 - 默认配额 1 GiB 为经验值，随 M1 实测可调。

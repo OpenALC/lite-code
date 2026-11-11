@@ -7,9 +7,11 @@
 //! - URL 白名单：https / 回环 http / `file://`（file 源 UI 须标「本地源」）；
 //! - `ext_search` 并行拉取全部启用源（std thread per source，per-source
 //!   10s 超时、总预算 30s），TTL 5 分钟内存缓存（`refresh=true` 强制），
-//!   按 id 去重取 semver 最高；失败源不毒化结果，记入 `staleSources`。
+//!   按 id 去重取 semver 最高；失败源不毒化结果，记入 `staleSources`；
+//! - M3 多镜像：源可配 `mirrors`（同一 index 的备选 URL），index 拉取按
+//!   `[url, mirrors…]` 顺序回退（per-mirror 超时 = per-source 10s）。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -59,19 +61,24 @@ pub const PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
 /// 整体搜索预算（§3.3）。
 pub const SEARCH_BUDGET: Duration = Duration::from_secs(30);
 
-/// 单个插件源。文件键为 snake_case（`require_signatures`/`pubkey`/`enabled`），
-/// 与 §3.3 线格式一致。
+/// 单个插件源。文件键为 snake_case（`require_signatures`/`pubkey`/`mirrors`/
+/// `enabled`），与 §3.3 线格式一致。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RegistrySource {
     pub name: String,
+    /// 权威 index URL；`mirrors` 是其同内容镜像，拉取按 `[url, mirrors…]` 顺序回退。
     pub url: String,
-    /// M3 强制档开关；M1 只透传配置不做签名校验。
+    /// M3 强制档开关：true 时安装必验 minisign 签名（§3.7，见 install.rs）。
     #[serde(default)]
     pub require_signatures: bool,
-    /// minisign 公钥（base64），仅来自本地配置，禁止网络获取（无 TOFU）。
+    /// minisign 公钥（base64 的 42 字节线格式 blob），仅来自本地配置，
+    /// 禁止网络获取（无 TOFU）。
     #[serde(default)]
     pub pubkey: String,
+    /// 同一 index 的镜像 URL 列表（M3，§3.3）：与 `url` 等价地位，按序回退。
+    #[serde(default)]
+    pub mirrors: Vec<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -87,8 +94,17 @@ impl RegistrySource {
             url: url.into(),
             require_signatures: false,
             pubkey: String::new(),
+            mirrors: Vec::new(),
             enabled: true,
         }
+    }
+
+    /// index 拉取候选 URL：权威 `url` 在前，`mirrors` 按配置顺序随后
+    /// （§3.3「同一 index 可托管多份镜像 URL，回退顺序=列表顺序」）。
+    pub fn index_urls(&self) -> Vec<&str> {
+        std::iter::once(self.url.as_str())
+            .chain(self.mirrors.iter().map(String::as_str))
+            .collect()
     }
 }
 
@@ -103,6 +119,8 @@ pub struct RegistrySourceInfo {
     pub require_signatures: bool,
     /// `pubkey` 非空（UI 据此展示是否 pinned 公钥）。
     pub has_pubkey: bool,
+    /// 同一 index 的镜像 URL 列表（M3 多镜像回退，§3.3）；无镜像为空数组。
+    pub mirrors: Vec<String>,
 }
 
 /// `ext_registry_list` / `ext_registry_add` / `ext_registry_remove` 返回体。
@@ -166,7 +184,7 @@ fn save_file(path: &Path, sources: &[RegistrySource]) -> Result<(), MarketError>
 }
 
 /// builtin 源 + 文件源合并：文件内与 builtin 同名的条目覆盖其
-/// `enabled`/`require_signatures`/`pubkey`（URL 非空时也覆盖），
+/// `enabled`/`require_signatures`/`pubkey`（URL、`mirrors` 非空时也覆盖），
 /// 实现「builtin 不可删除、可禁用」。
 pub(crate) fn merged_sources(
     builtin: &RegistrySource,
@@ -182,6 +200,9 @@ pub(crate) fn merged_sources(
                 slot.enabled = source.enabled;
                 slot.require_signatures = source.require_signatures;
                 slot.pubkey = source.pubkey.clone();
+                if !source.mirrors.is_empty() {
+                    slot.mirrors = source.mirrors.clone();
+                }
             }
             None => merged.push(source.clone()),
         }
@@ -196,6 +217,7 @@ fn source_info(source: &RegistrySource, builtin_name: &str) -> RegistrySourceInf
         builtin: source.name == builtin_name,
         require_signatures: source.require_signatures,
         has_pubkey: !source.pubkey.trim().is_empty(),
+        mirrors: source.mirrors.clone(),
     }
 }
 
@@ -214,13 +236,15 @@ fn list_registries_at(path: &Path, builtin: &RegistrySource) -> Result<RegistryL
     })
 }
 
-/// 新增源。URL 走白名单校验；builtin 同名拒绝覆盖。
+/// 新增源。URL 走白名单校验；builtin 同名拒绝覆盖；M3：pubkey 合法性、
+/// 强制档必配 pubkey、镜像 URL 白名单均在入库前拦截（invalid_argument）。
 pub fn add_registry(
     builtin: &RegistrySource,
     name: &str,
     url: &str,
     require_signatures: bool,
     pubkey: Option<&str>,
+    mirrors: Option<&[String]>,
 ) -> Result<RegistryList, MarketError> {
     add_registry_at(
         &registries_path()?,
@@ -229,7 +253,42 @@ pub fn add_registry(
         url,
         require_signatures,
         pubkey,
+        mirrors,
     )
+}
+
+/// pubkey 入库前校验（§3.7）：强制档必须配置；非空则必须是 base64 的
+/// minisign 公钥线格式（解码后 42 字节 = 算法标识 2 + 密钥号 8 + Ed25519
+/// 公钥 32）。只来自本地配置，禁止网络获取（无 TOFU）。
+fn validate_pubkey(require_signatures: bool, pubkey: Option<&str>) -> Result<String, MarketError> {
+    let trimmed = pubkey.unwrap_or_default().trim();
+    if require_signatures && trimmed.is_empty() {
+        return Err(MarketError::InvalidArgument(
+            "强制档（require_signatures=true）必须配置 pubkey（本地 pinned 的 minisign 公钥）"
+                .to_string(),
+        ));
+    }
+    if !trimmed.is_empty() && minisign_verify::PublicKey::from_base64(trimmed).is_err() {
+        return Err(MarketError::InvalidArgument(
+            "pubkey 非法：须为 base64 编码的 minisign 公钥（解码后 42 字节：算法标识 2 + 密钥号 8 + Ed25519 公钥 32）".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 镜像 URL 入库前校验：与源 URL 同一白名单（§3.3 多镜像）。
+fn validate_mirrors(mirrors: Option<&[String]>) -> Result<Vec<String>, MarketError> {
+    let mut out = Vec::new();
+    for mirror in mirrors.unwrap_or_default() {
+        let mirror = mirror.trim();
+        if !is_allowed_url(mirror) {
+            return Err(MarketError::InvalidArgument(format!(
+                "镜像 URL 必须是 https（回环允许 http）或 file://：{mirror}"
+            )));
+        }
+        out.push(mirror.to_string());
+    }
+    Ok(out)
 }
 
 fn add_registry_at(
@@ -239,6 +298,7 @@ fn add_registry_at(
     url: &str,
     require_signatures: bool,
     pubkey: Option<&str>,
+    mirrors: Option<&[String]>,
 ) -> Result<RegistryList, MarketError> {
     let name = name.trim();
     if name.is_empty() || name.len() > 64 || name.chars().any(char::is_whitespace) {
@@ -258,6 +318,8 @@ fn add_registry_at(
             "源 URL 必须是 https（回环允许 http）或 file://：{url}"
         )));
     }
+    let pubkey = validate_pubkey(require_signatures, pubkey)?;
+    let mirrors = validate_mirrors(mirrors)?;
     let mut file_sources = load_file(path)?;
     if file_sources.iter().any(|source| source.name == name) {
         return Err(MarketError::InvalidArgument(format!("源 `{name}` 已存在")));
@@ -266,7 +328,8 @@ fn add_registry_at(
         name: name.to_string(),
         url: url.to_string(),
         require_signatures,
-        pubkey: pubkey.unwrap_or_default().trim().to_string(),
+        pubkey,
+        mirrors,
         enabled: true,
     });
     save_file(path, &file_sources)?;
@@ -426,6 +489,23 @@ pub(crate) fn fetch_index(url: &str, timeout: Duration) -> Result<ParsedIndex, M
     parse_index(&body)
 }
 
+/// 多镜像回退拉取（M3，§3.3）：按 `source.index_urls()` 顺序
+/// （权威 url → mirrors）逐个尝试，每个候选独立受 per-source 超时约束；
+/// 全部失败 → 返回最后一个错误（源整体记 stale，不毒化结果）。
+pub(crate) fn fetch_index_with_fallback(
+    source: &RegistrySource,
+    timeout: Duration,
+) -> Result<ParsedIndex, MarketError> {
+    let mut last_error = None;
+    for url in source.index_urls() {
+        match fetch_index(url, timeout) {
+            Ok(index) => return Ok(index),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("index_urls 至少含权威 url"))
+}
+
 /// 一份源的结果：成功带解析后的 index，失败只记名字（不毒化结果）。
 pub(crate) struct SourceIndex {
     pub source: RegistrySource,
@@ -476,7 +556,7 @@ pub(crate) fn collect_indexes(
             let source = enabled[index].clone();
             let sender = sender.clone();
             std::thread::spawn(move || {
-                let fetched = fetch_index(&source.url, limits.per_source);
+                let fetched = fetch_index_with_fallback(&source, limits.per_source);
                 let _ = sender.send((index, fetched.map_err(|_| ())));
             });
         }
@@ -632,6 +712,14 @@ pub(crate) fn build_search_result(
         .filter_map(SourceIndex::stale_name)
         .map(str::to_string)
         .collect();
+    // M3 强制档徽标：条目来自 require_signatures=true 的源且带签名 → Enforced
+    // （web 侧徽标三态已就位，M1b 已做；未签名条目在强制源装不上，搜索侧仍标
+    // Unsigned 供 UI 提示）。
+    let enforced_sources: HashSet<String> = collected
+        .iter()
+        .filter(|source_index| source_index.source.require_signatures)
+        .map(|source_index| source_index.source.name.clone())
+        .collect();
 
     let installed = installed_versions(paths, node_available)?;
     let query = query.unwrap_or_default();
@@ -658,6 +746,8 @@ pub(crate) fn build_search_result(
             file_source: entry.file_source,
             signature_state: if entry.signature.is_empty() {
                 SignatureState::Unsigned
+            } else if enforced_sources.contains(&merged_entry.source) {
+                SignatureState::Enforced
             } else {
                 SignatureState::Signed
             },
@@ -737,11 +827,13 @@ mod tests {
         let temp = TempDir::new("reg-add");
         let reg_path = temp.path().join("plugin-registries.json");
         let builtin = RegistrySource::new(BUILTIN_SOURCE_NAME, "https://example.com/index.json");
+        let key = crate::ext::marketplace::testutil::MiniSignTestKey::from_seed(1);
 
         let list = list_registries_at(&reg_path, &builtin).expect("list");
         assert_eq!(list.sources.len(), 1);
         assert!(list.sources[0].builtin);
         assert!(!list.sources[0].require_signatures);
+        assert!(list.sources[0].mirrors.is_empty());
 
         let list = add_registry_at(
             &reg_path,
@@ -749,16 +841,25 @@ mod tests {
             "mirror-a",
             "file:///tmp/mirror/index.json",
             true,
-            Some("pubkey-b64"),
+            Some(&key.pubkey_b64()),
+            Some(&["https://mirror-a.example.com/index.json".to_string()]),
         )
         .expect("add mirror");
         assert_eq!(list.sources.len(), 2);
         assert!(list.sources[1].require_signatures);
         assert!(list.sources[1].has_pubkey);
+        assert_eq!(
+            list.sources[1].mirrors,
+            vec!["https://mirror-a.example.com/index.json".to_string()]
+        );
 
         let value = serde_json::to_value(&list).expect("serialize");
         assert_eq!(value["sources"][1]["name"], "mirror-a");
         assert_eq!(value["sources"][1]["requireSignatures"], true);
+        assert_eq!(
+            value["sources"][1]["mirrors"][0],
+            "https://mirror-a.example.com/index.json"
+        );
         assert_eq!(value["sources"][0]["builtin"], true);
 
         // 未知顶层字段在写回后保留。
@@ -773,11 +874,16 @@ mod tests {
             "https://b.example.com/index.json",
             false,
             None,
+            None,
         )
         .expect("add second");
         let raw = std::fs::read_to_string(&reg_path).expect("read back");
         let file: Value = serde_json::from_str(&raw).expect("json");
         assert_eq!(file["future_field"]["k"], 1);
+        assert_eq!(
+            file["sources"][0]["mirrors"][0], "https://mirror-a.example.com/index.json",
+            "mirrors 持久化为 snake_case 线格式"
+        );
 
         // 重复名 / builtin 同名 / 非法 URL 拒绝。
         assert!(
@@ -787,7 +893,8 @@ mod tests {
                 "mirror-a",
                 "https://b.example.com",
                 false,
-                None
+                None,
+                None,
             )
             .is_err()
         );
@@ -798,12 +905,22 @@ mod tests {
                 "official",
                 "https://b.example.com",
                 false,
-                None
+                None,
+                None,
             )
             .is_err()
         );
         assert!(
-            add_registry_at(&reg_path, &builtin, "bad", "ftp://example.com", false, None).is_err()
+            add_registry_at(
+                &reg_path,
+                &builtin,
+                "bad",
+                "ftp://example.com",
+                false,
+                None,
+                None
+            )
+            .is_err()
         );
 
         let err = remove_registry_at(&reg_path, &builtin, BUILTIN_SOURCE_NAME)
@@ -813,6 +930,154 @@ mod tests {
 
         let list = remove_registry_at(&reg_path, &builtin, "mirror-a").expect("remove");
         assert_eq!(list.sources.len(), 2);
+    }
+
+    #[test]
+    fn registry_add_validates_pubkey_m3_rules() {
+        let temp = TempDir::new("reg-pubkey");
+        let reg_path = temp.path().join("plugin-registries.json");
+        let builtin = RegistrySource::new(BUILTIN_SOURCE_NAME, "https://example.com/index.json");
+        let key = crate::ext::marketplace::testutil::MiniSignTestKey::from_seed(2);
+
+        // 强制档必须配置 pubkey（add 时拦截，§3.7）。
+        let err = add_registry_at(
+            &reg_path,
+            &builtin,
+            "enforced-no-key",
+            "https://e.example.com/index.json",
+            true,
+            None,
+            None,
+        )
+        .expect_err("enforced without pubkey rejected");
+        assert_eq!(err.code(), lc_proto::ErrorCode::InvalidArgument);
+        assert!(err.to_string().contains("必须配置 pubkey"), "{err}");
+
+        // 显式空串 pubkey 同上。
+        assert!(
+            add_registry_at(
+                &reg_path,
+                &builtin,
+                "enforced-empty-key",
+                "https://e.example.com/index.json",
+                true,
+                Some("   "),
+                None,
+            )
+            .is_err()
+        );
+
+        // 非空但非法 base64 → 拒绝。
+        let err = add_registry_at(
+            &reg_path,
+            &builtin,
+            "bad-b64",
+            "https://e.example.com/index.json",
+            false,
+            Some("!!!not-base64!!!"),
+            None,
+        )
+        .expect_err("invalid base64 pubkey rejected");
+        assert_eq!(err.code(), lc_proto::ErrorCode::InvalidArgument);
+        assert!(err.to_string().contains("pubkey 非法"), "{err}");
+
+        // base64 合法但长度不对（41 字节 blob，非 minisign 线格式）→ 拒绝。
+        let mut wrong_len = vec![0u8; 41];
+        wrong_len[0] = 0x45;
+        wrong_len[1] = 0x64;
+        let short = crate::ext::marketplace::testutil::base64_encode(&wrong_len);
+        let err = add_registry_at(
+            &reg_path,
+            &builtin,
+            "bad-len",
+            "https://e.example.com/index.json",
+            false,
+            Some(&short),
+            None,
+        )
+        .expect_err("wrong-length pubkey rejected");
+        assert_eq!(err.code(), lc_proto::ErrorCode::InvalidArgument);
+
+        // 合法 pubkey：警告档可配（不影响安装），强制档可配。
+        add_registry_at(
+            &reg_path,
+            &builtin,
+            "warn-key",
+            "https://e.example.com/warn.json",
+            false,
+            Some(&key.pubkey_b64()),
+            None,
+        )
+        .expect("warning tier with pubkey ok");
+        add_registry_at(
+            &reg_path,
+            &builtin,
+            "enforced-key",
+            "https://e.example.com/enf.json",
+            true,
+            Some(&key.pubkey_b64()),
+            None,
+        )
+        .expect("enforced with valid pubkey ok");
+    }
+
+    #[test]
+    fn registry_add_validates_mirrors() {
+        let temp = TempDir::new("reg-mirrors");
+        let reg_path = temp.path().join("plugin-registries.json");
+        let builtin = RegistrySource::new(BUILTIN_SOURCE_NAME, "https://example.com/index.json");
+
+        // 非法镜像 URL 拒绝并点名。
+        let err = add_registry_at(
+            &reg_path,
+            &builtin,
+            "bad-mirror",
+            "https://e.example.com/index.json",
+            false,
+            None,
+            Some(&["ftp://evil.example.com/index.json".to_string()]),
+        )
+        .expect_err("bad mirror url rejected");
+        assert_eq!(err.code(), lc_proto::ErrorCode::InvalidArgument);
+        assert!(err.to_string().contains("镜像 URL"), "{err}");
+
+        // 合法镜像（含 file://）入库并出现在 list DTO。
+        let list = add_registry_at(
+            &reg_path,
+            &builtin,
+            "with-mirrors",
+            "https://e.example.com/index.json",
+            false,
+            None,
+            Some(&[
+                "https://m1.example.com/index.json".to_string(),
+                "file:///tmp/m2/index.json".to_string(),
+            ]),
+        )
+        .expect("mirrors added");
+        let info = list
+            .sources
+            .iter()
+            .find(|source| source.name == "with-mirrors")
+            .expect("source");
+        assert_eq!(info.mirrors.len(), 2);
+        assert_eq!(info.mirrors[1], "file:///tmp/m2/index.json");
+
+        // 老文件无 mirrors 键 → 默认空（向后兼容）。
+        let mut file: Value =
+            serde_json::from_str(&std::fs::read_to_string(&reg_path).expect("read")).expect("json");
+        file["sources"][0]
+            .as_object_mut()
+            .expect("obj")
+            .remove("mirrors");
+        std::fs::write(&reg_path, file.to_string()).expect("rewrite");
+        let list = list_registries_at(&reg_path, &builtin).expect("list");
+        let info = list
+            .sources
+            .iter()
+            .find(|source| source.name == "with-mirrors")
+            .expect("source");
+        assert!(info.mirrors.is_empty(), "缺省 mirrors 向后兼容为空");
     }
 
     #[test]
@@ -1223,5 +1488,187 @@ mod tests {
         assert_eq!(parsed.entries.len(), 1);
 
         assert!(fetch_url("ftp://example.com/x", Duration::from_secs(5), 1024).is_err());
+    }
+
+    // ==== M3：同 index 多镜像回退（§3.3） ====
+
+    /// 源 url + mirrors 的回退夹具：url/mirror1 挂（404），mirror2 存活。
+    struct MirrorFixture {
+        _temp: TempDir,
+        paths: ExtPaths,
+        reg_path: PathBuf,
+        good: TestServer,
+        dead_url_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        mirror1_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    fn mirror_fixture(tag: &str) -> MirrorFixture {
+        let dead = TestServer::not_found();
+        let dead_url_hits = dead.hits.clone();
+        let mirror1 = TestServer::not_found();
+        let mirror1_hits = mirror1.hits.clone();
+        let good = serve_fn(move |_, _| {
+            http_ok(&index_body(json!([entry(
+                "demo.mirror",
+                "1.0.0",
+                "https://e/m.zip"
+            )])))
+        });
+        let (_temp, paths) = temp_paths(tag);
+        let reg_path = _temp.path().join("reg.json");
+        // 源：权威 url 与 mirror1 均 404，mirror2 存活；builtin 以 overlay
+        // 禁用（测试环境不可达 example.com，避免混入 stale）。
+        let mut source = RegistrySource::new("mirrored", format!("{}/index.json", dead.url));
+        source.mirrors = vec![
+            format!("{}/index.json", mirror1.url),
+            format!("{}/index.json", good.url),
+        ];
+        let mut official = RegistrySource::new(BUILTIN_SOURCE_NAME, "");
+        official.enabled = false;
+        save_file(&reg_path, &[source, official]).expect("save sources");
+        MirrorFixture {
+            _temp,
+            paths,
+            reg_path,
+            good,
+            dead_url_hits,
+            mirror1_hits,
+        }
+    }
+
+    #[test]
+    fn index_fetch_falls_back_across_mirrors_in_order() {
+        let fx = mirror_fixture("mirror-fallback");
+        let builtin = RegistrySource::new(BUILTIN_SOURCE_NAME, "https://example.com/index.json");
+        let cache = Mutex::new(IndexCache::new());
+
+        let result = search_with(
+            &fx.paths,
+            &builtin,
+            None,
+            true,
+            false,
+            &cache,
+            FetchLimits::default(),
+            &fx.reg_path,
+        )
+        .expect("search via mirror fallback");
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].id, "demo.mirror");
+        assert!(result.stale_sources.is_empty());
+        assert_eq!(
+            fx.dead_url_hits.load(Ordering::Relaxed),
+            1,
+            "权威 url 先尝试一次"
+        );
+        assert_eq!(
+            fx.mirror1_hits.load(Ordering::Relaxed),
+            1,
+            "mirror1 回退一次"
+        );
+        assert!(fx.good.hits.load(Ordering::Relaxed) >= 1, "mirror2 命中");
+    }
+
+    #[test]
+    fn index_fetch_all_mirrors_dead_marks_source_stale_by_name() {
+        let (_temp, paths) = temp_paths("mirror-dead");
+        let reg_path = _temp.path().join("reg.json");
+        let dead_a = TestServer::not_found();
+        let dead_b = TestServer::not_found();
+        let dead_c = TestServer::not_found();
+        let mut source = RegistrySource::new("all-down", format!("{}/index.json", dead_a.url));
+        source.mirrors = vec![
+            format!("{}/index.json", dead_b.url),
+            format!("{}/index.json", dead_c.url),
+        ];
+        let mut official = RegistrySource::new(BUILTIN_SOURCE_NAME, "");
+        official.enabled = false;
+        save_file(&reg_path, &[source, official]).expect("save sources");
+
+        let builtin = RegistrySource::new(BUILTIN_SOURCE_NAME, "https://example.com/index.json");
+        let cache = Mutex::new(IndexCache::new());
+        let result = search_with(
+            &paths,
+            &builtin,
+            None,
+            true,
+            false,
+            &cache,
+            FetchLimits::default(),
+            &reg_path,
+        )
+        .expect("search survives all-dead mirrors");
+        assert!(result.results.is_empty());
+        assert_eq!(
+            result.stale_sources,
+            vec!["all-down".to_string()],
+            "全挂时点名失败源"
+        );
+        assert_eq!(
+            dead_b.hits.load(Ordering::Relaxed),
+            1,
+            "每个镜像都尝试过（per-mirror 独立回退）"
+        );
+    }
+
+    #[test]
+    fn search_marks_enforced_badge_only_for_signed_entry_in_enforced_source() {
+        let (_temp, paths) = temp_paths("search-enforced");
+        let reg_path = _temp.path().join("reg.json");
+        let key = crate::ext::marketplace::testutil::MiniSignTestKey::from_seed(9);
+        let server = serve_fn(move |_, _| {
+            let mut signed = entry("demo.enf", "1.0.0", "https://example.com/e.zip");
+            signed["signature"] = json!("whatever-non-empty");
+            http_ok(&index_body(json!([
+                signed,
+                entry("demo.plain", "1.0.0", "https://e/p.zip")
+            ])))
+        });
+
+        // 强制档源：带签名条目 → Enforced 徽标；未签名条目仍 Unsigned。
+        let mut enforced =
+            RegistrySource::new(BUILTIN_SOURCE_NAME, format!("{}/index.json", server.url));
+        enforced.require_signatures = true;
+        enforced.pubkey = key.pubkey_b64();
+        let result = search_with(
+            &paths,
+            &enforced,
+            None,
+            true,
+            false,
+            &Mutex::new(IndexCache::new()),
+            FetchLimits::default(),
+            &reg_path,
+        )
+        .expect("search enforced");
+        let states: HashMap<String, SignatureState> = result
+            .results
+            .iter()
+            .map(|plugin| (plugin.id.clone(), plugin.signature_state))
+            .collect();
+        assert_eq!(states["demo.enf"], SignatureState::Enforced);
+        assert_eq!(states["demo.plain"], SignatureState::Unsigned);
+
+        // 同一服务器、警告档源：带签名条目 → Signed（不回退 Unsigned）。
+        let warning =
+            RegistrySource::new(BUILTIN_SOURCE_NAME, format!("{}/index.json", server.url));
+        let result = search_with(
+            &paths,
+            &warning,
+            None,
+            true,
+            false,
+            &Mutex::new(IndexCache::new()),
+            FetchLimits::default(),
+            &reg_path,
+        )
+        .expect("search warning");
+        let states: HashMap<String, SignatureState> = result
+            .results
+            .iter()
+            .map(|plugin| (plugin.id.clone(), plugin.signature_state))
+            .collect();
+        assert_eq!(states["demo.enf"], SignatureState::Signed);
+        assert_eq!(states["demo.plain"], SignatureState::Unsigned);
     }
 }
