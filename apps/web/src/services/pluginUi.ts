@@ -635,6 +635,14 @@ export async function submitUiForm(
     return false
   }
   patchSectionData(key, { busy: false, note: { kind: 'success', message: '' } })
+  // §3.5 成功后回读刷新：命令 handler 可能改写 provider 数据，重拉同视图
+  // 全部可回读节（行命令路径 runUiRowCommand 已带同款刷新）。
+  const entry = findUiView(pluginId, viewId)
+  entry?.sections.forEach((s, idx) => {
+    if ((s.kind === 'list' || s.kind === 'kv') && s.valuesCommand) {
+      void retryUiSection(pluginId, viewId, idx)
+    }
+  })
   return true
 }
 
