@@ -61,7 +61,7 @@ const sampleList: PluginList = {
           id: 'demo-board',
           name: 'Demo Board',
           openCommand: 'example.hello.board',
-          sections: [{ kind: 'markdown', text: '# Demo' }],
+          sections: [{ id: 'intro', kind: 'markdown', text: '# Demo' }],
         },
       ],
     },
@@ -175,7 +175,7 @@ describe('浏览器 fallback', () => {
   })
 
   it('extensionsUiValues 返回演示节值；未声明节进 error', async () => {
-    const kv = await extensionsUiValues('demo.hello', 'demo-board', '1')
+    const kv = await extensionsUiValues('demo.hello', 'demo-board', 'stats')
     expect(kv.ok).toBe(true)
     expect(kv.fallback).toBe(true)
     if (kv.ok) {
@@ -186,18 +186,8 @@ describe('浏览器 fallback', () => {
         ],
       })
     }
-    const rows = await extensionsUiValues('demo.notes', 'notes-panel', '1')
-    expect(rows.ok).toBe(true)
-    expect(rows.fallback).toBe(true)
-    if (rows.ok) {
-      expect(rows.data.values).toEqual({
-        rows: [
-          { title: '示例笔记一', state: 'open' },
-          { title: '示例笔记二', state: 'done' },
-        ],
-      })
-    }
-    const missing = await extensionsUiValues('demo.notes', 'notes-panel', '0')
+    // 声明式 list 无 source 不回读，演示数据无该节 → error。
+    const missing = await extensionsUiValues('demo.notes', 'notes-panel', 'tasks')
     expect(missing.ok).toBe(false)
     if (!missing.ok) expect(missing.error.code).toBe('internal')
   })
@@ -356,11 +346,11 @@ describe('Tauri 路径', () => {
         return { values: { rows: [{ title: 't1' }] } }
       },
     })
-    const res = await extensionsUiValues('example.hello', 'demo-board', '1')
+    const res = await extensionsUiValues('example.hello', 'demo-board', 'stats')
     expect(calls).toEqual([
       {
         cmd: 'ext_ui_values',
-        args: { pluginId: 'example.hello', viewId: 'demo-board', sectionId: '1' },
+        args: { pluginId: 'example.hello', viewId: 'demo-board', sectionId: 'stats' },
       },
     ])
     expect(res.ok).toBe(true)
@@ -369,7 +359,7 @@ describe('Tauri 路径', () => {
 
   it('ext_ui_values 缺 values 字段归入 internal', async () => {
     installTauri({ invoke: async () => ({ nope: true }) })
-    const res = await extensionsUiValues('example.hello', 'demo-board', '1')
+    const res = await extensionsUiValues('example.hello', 'demo-board', 'stats')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error.message).toContain('ext_ui_values')
   })
@@ -380,7 +370,7 @@ describe('Tauri 路径', () => {
         throw { code: 'not_found', message: 'unknown command', detail: null }
       },
     })
-    const res = await extensionsUiValues('example.hello', 'demo-board', '1')
+    const res = await extensionsUiValues('example.hello', 'demo-board', 'stats')
     expect(res.ok).toBe(false)
     if (!res.ok) {
       expect(res.fallback).toBe(false)

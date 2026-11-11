@@ -1,19 +1,25 @@
 <script setup lang="ts">
 /* eslint-disable vue/no-v-html -- 全组件唯一 v-html 点：renderMarkdown 先转义全文，只插入固定标签 */
-// 插件 UI 视图面板（docs/plans/plugin-webview.md §3.4/§3.5）：渲染一个视图的
-// 声明式节（kind 闭集 markdown|form|list|kv）并承载 M2 交互回传。注入防御红线：
+// 插件 UI 视图面板（docs/plans/plugin-webview.md §3.4/§3.5/§3.6 M2-R）：渲染
+// 一个视图的声明式节（kind 闭集 markdown|form|list|kv）并承载交互回传。
+// 注入防御红线：
 // - 所有节文本/值一律 {{ }} 插值渲染；
 // - 全组件唯一 v-html 点是 markdown 节，且必须走 services/markdown.ts 的
 //   renderMarkdown（先转义全部文本、再插固定标签，v1 子集无链接语法 →
 //   零 <a>/javascript: 面）；
 // - 不渲染插件提供的任何 URL/图片，不注入插件 CSS，全部继承 var(--*) token。
-// M2：表单可编辑提交（values 按 field.type 强制转换），list/kv 经 ui/values
-// 动态回读（节错误态可重试），list 行点击走 rowCommand；状态在 pluginUi.ts。
+// M2-R 生命周期：节身份=(pluginId, viewId, sectionId) 稳定 id（组件 key、
+// 草稿、节数据、请求都不用显示序号）；form 草稿为组件本地状态（随组件
+// 销毁，password 不进任何全局/持久化存储），节语义变化按清单 default 重置；
+// list/kv 经 ui/values 动态回读（source:"provider" 开关，节错误态可重试）；
+// 组件卸载=视图关闭，运行时状态经 closeUiView 清理（在途请求作废并复位
+// loading/busy），重开从清单 default 与新 provider 数据开始。
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { renderMarkdown } from '../services/markdown'
 import {
+  closeUiView,
   ensureUiSectionLoaded,
   findUiView,
   getPluginUiState,
@@ -39,6 +45,9 @@ const unsubscribe = subscribePluginUi(next => {
 })
 onBeforeUnmount(() => {
   unsubscribe()
+  // §3.6：关闭视图清理该视图运行时状态（节数据 + 在途请求），重开从清单
+  // default 与新 provider 数据开始；组件本地草稿（含 password）随之销毁。
+  closeUiView(props.pluginId, props.viewId)
 })
 
 const entry = computed(() => findUiView(props.pluginId, props.viewId))
@@ -52,9 +61,9 @@ function markdownHtml(text: string): string {
 }
 
 /** 单节运行时状态（无条目时给默认空态，不写入 store）。 */
-function sectionData(index: number): UiSectionDataState {
+function sectionData(sectionId: string): UiSectionDataState {
   return (
-    state.value.sectionData[uiSectionDataKey(props.pluginId, props.viewId, index)] ?? {
+    state.value.sectionData[uiSectionDataKey(props.pluginId, props.viewId, sectionId)] ?? {
       status: 'idle',
       values: null,
       error: null,
@@ -63,24 +72,6 @@ function sectionData(index: number): UiSectionDataState {
     }
   )
 }
-
-// 挂载与声明热更新：为声明 valuesCommand 的 list/kv 节触发首次回读（幂等）。
-watch(
-  () => entry.value?.sections,
-  nextSections => {
-    if (!nextSections) return
-    nextSections.forEach((section, index) => {
-      if (
-        section &&
-        (section.kind === 'list' || section.kind === 'kv') &&
-        section.valuesCommand
-      ) {
-        void ensureUiSectionLoaded(props.pluginId, props.viewId, index)
-      }
-    })
-  },
-  { immediate: true },
-)
 
 /** 交互注记文案：成功固定文案；失败带宿主错误信息。 */
 function noteText(data: UiSectionDataState): string {
@@ -91,37 +82,60 @@ function noteText(data: UiSectionDataState): string {
 }
 
 // ==== form 节：草稿为组件本地状态（保留用户输入），提交时服务层强制转换 ====
+// 身份=稳定 sectionId（§3.6）；语义（key/type/default/options/min/max）变化 →
+// 草稿按清单 default 重置；节删除 → 草稿清除。
 
-const formDrafts = reactive<Record<number, Record<string, unknown>>>({})
+const formDrafts = reactive<Record<string, Record<string, unknown>>>({})
+const formDraftSignatures = reactive<Record<string, string>>({})
 
 type FormSection = Extract<UiSection, { kind: 'form' }>
 
-function formDraft(index: number, section: FormSection): Record<string, unknown> {
-  let draft = formDrafts[index]
-  if (!draft) {
-    draft = {}
-    for (const field of section.fields) {
-      if (field.type === 'boolean') draft[field.key] = field.default === true
-      else if (field.type === 'number') {
-        draft[field.key] = typeof field.default === 'number' ? String(field.default) : ''
-      } else {
-        draft[field.key] = typeof field.default === 'string' ? field.default : ''
-      }
+/** form 字段语义指纹（与服务端 uiSectionFingerprint 同口径）：变化即重置草稿。 */
+function fieldsSignature(fields: FormSection['fields']): string {
+  return JSON.stringify(
+    fields.map(field => [
+      field.key,
+      field.type,
+      field.default ?? null,
+      field.options ?? null,
+      field.min ?? null,
+      field.max ?? null,
+    ]),
+  )
+}
+
+function defaultDraft(section: FormSection): Record<string, unknown> {
+  const draft: Record<string, unknown> = {}
+  for (const field of section.fields) {
+    if (field.type === 'boolean') draft[field.key] = field.default === true
+    else if (field.type === 'number') {
+      draft[field.key] = typeof field.default === 'number' ? String(field.default) : ''
+    } else {
+      draft[field.key] = typeof field.default === 'string' ? field.default : ''
     }
-    formDrafts[index] = draft
   }
   return draft
 }
 
-function onFormSubmit(index: number, section: FormSection): void {
-  if (!section.command || sectionData(index).busy) return
-  void submitUiForm(props.pluginId, props.viewId, index, formDraft(index, section))
+/** form 草稿访问入口：签名一致返回既有草稿，否则按清单 default 重建。 */
+function formDraft(section: FormSection): Record<string, unknown> {
+  const signature = fieldsSignature(section.fields)
+  if (formDraftSignatures[section.id] !== signature || !formDrafts[section.id]) {
+    formDraftSignatures[section.id] = signature
+    formDrafts[section.id] = defaultDraft(section)
+  }
+  return formDrafts[section.id]!
+}
+
+function onFormSubmit(section: FormSection): void {
+  if (!section.command || sectionData(section.id).busy) return
+  void submitUiForm(props.pluginId, props.viewId, section.id, formDraft(section))
 }
 
 // ==== list 节：行数据来自 ui/values 回读，行点击走 rowCommand ====
 
-function listRows(index: number): Record<string, UiScalar>[] {
-  return sectionData(index).values?.rows ?? []
+function listRows(sectionId: string): Record<string, UiScalar>[] {
+  return sectionData(sectionId).values?.rows ?? []
 }
 
 function cellText(row: Record<string, UiScalar>, key: string): string {
@@ -129,25 +143,57 @@ function cellText(row: Record<string, UiScalar>, key: string): string {
   return value === undefined || value === null ? '' : String(value)
 }
 
-function onRowClick(index: number, section: Extract<UiSection, { kind: 'list' }>, row: Record<string, UiScalar>): void {
-  if (!section.rowCommand || sectionData(index).busy) return
-  void runUiRowCommand(props.pluginId, props.viewId, index, row)
+function onRowClick(section: Extract<UiSection, { kind: 'list' }>, row: Record<string, UiScalar>): void {
+  if (!section.rowCommand || sectionData(section.id).busy) return
+  void runUiRowCommand(props.pluginId, props.viewId, section.id, row)
 }
 
-// ==== kv 节：声明 valuesCommand 时动态回读优先，静态 items 兜底 ====
+// ==== kv 节：source:"provider" 时动态回读优先，静态 items 兜底 ====
 
-function kvItems(index: number, section: Extract<UiSection, { kind: 'kv' }>): UiKvItem[] {
-  const data = sectionData(index)
-  if (section.valuesCommand) {
+function kvItems(section: Extract<UiSection, { kind: 'kv' }>): UiKvItem[] {
+  const data = sectionData(section.id)
+  if (section.source === 'provider') {
     if (data.status === 'ready') return data.values?.items ?? []
     return section.items ?? []
   }
   return section.items ?? []
 }
 
-function onSectionRetry(index: number): void {
-  void retryUiSection(props.pluginId, props.viewId, index)
+function onSectionRetry(sectionId: string): void {
+  void retryUiSection(props.pluginId, props.viewId, sectionId)
 }
+
+// 挂载与声明热更新（§3.6）：
+// 1. form 草稿对齐——语义变化的节重建草稿、删除的节清草稿；
+// 2. provider 节首次回读（幂等；重排/插入节不改变既有节身份，不触发重载）。
+watch(
+  () => entry.value?.sections,
+  nextSections => {
+    if (!nextSections) return
+    const aliveFormIds = new Set<string>()
+    for (const section of nextSections) {
+      if (section === null || section.kind !== 'form') continue
+      aliveFormIds.add(section.id)
+      formDraft(section)
+    }
+    for (const id of Object.keys(formDrafts)) {
+      if (!aliveFormIds.has(id)) {
+        delete formDrafts[id]
+        delete formDraftSignatures[id]
+      }
+    }
+    for (const section of nextSections) {
+      if (
+        section &&
+        (section.kind === 'list' || section.kind === 'kv') &&
+        section.source === 'provider'
+      ) {
+        void ensureUiSectionLoaded(props.pluginId, props.viewId, section.id)
+      }
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -170,7 +216,7 @@ function onSectionRetry(index: number): void {
     <template v-else>
       <section
         v-for="(section, index) in sections"
-        :key="index"
+        :key="section === null ? `__bad-${index}` : section.id"
         class="ui-section"
       >
         <p
@@ -195,7 +241,7 @@ function onSectionRetry(index: number): void {
             {{ section.title }}
           </h2>
 
-          <!-- form 节：声明 command → 可编辑提交；否则 M1 只读禁用态 -->
+          <!-- form 节：声明 command → 可编辑提交；否则只读禁用态 -->
           <div
             v-if="section.kind === 'form'"
             class="ui-form"
@@ -205,10 +251,10 @@ function onSectionRetry(index: number): void {
               :key="field.key"
               class="ui-field"
             >
-              <span class="ui-label">{{ field.label }}</span>
+              <span class="ui-label">{{ field.label || field.key }}</span>
               <input
                 v-if="field.type === 'text'"
-                v-model="formDraft(index, section)[field.key]"
+                v-model="formDraft(section)[field.key]"
                 type="text"
                 class="ui-input"
                 :placeholder="field.placeholder ?? ''"
@@ -216,7 +262,7 @@ function onSectionRetry(index: number): void {
               >
               <input
                 v-else-if="field.type === 'password'"
-                v-model="formDraft(index, section)[field.key]"
+                v-model="formDraft(section)[field.key]"
                 type="password"
                 class="ui-input"
                 :placeholder="field.placeholder ?? ''"
@@ -224,7 +270,7 @@ function onSectionRetry(index: number): void {
               >
               <input
                 v-else-if="field.type === 'number'"
-                v-model="formDraft(index, section)[field.key]"
+                v-model="formDraft(section)[field.key]"
                 type="number"
                 class="ui-input"
                 :min="field.min"
@@ -237,15 +283,15 @@ function onSectionRetry(index: number): void {
                 class="ui-check"
               >
                 <input
-                  v-model="formDraft(index, section)[field.key]"
+                  v-model="formDraft(section)[field.key]"
                   type="checkbox"
                   :disabled="!section.command"
                 >
-                <span>{{ formDraft(index, section)[field.key] === true ? t('ui.booleanOn') : t('ui.booleanOff') }}</span>
+                <span>{{ formDraft(section)[field.key] === true ? t('ui.booleanOn') : t('ui.booleanOff') }}</span>
               </label>
               <select
                 v-else
-                v-model="formDraft(index, section)[field.key]"
+                v-model="formDraft(section)[field.key]"
                 class="ui-input"
                 :disabled="!section.command"
               >
@@ -266,17 +312,17 @@ function onSectionRetry(index: number): void {
               <button
                 type="button"
                 class="ui-submit"
-                :disabled="sectionData(index).busy"
-                @click="onFormSubmit(index, section)"
+                :disabled="sectionData(section.id).busy"
+                @click="onFormSubmit(section)"
               >
-                {{ sectionData(index).busy ? t('ui.submitting') : t('ui.submit') }}
+                {{ sectionData(section.id).busy ? t('ui.submitting') : t('ui.submit') }}
               </button>
               <span
-                v-if="sectionData(index).note"
+                v-if="sectionData(section.id).note"
                 class="ui-note"
-                :class="sectionData(index).note?.kind"
-                :title="sectionData(index).note?.kind === 'error' ? sectionData(index).note?.message : ''"
-              >{{ noteText(sectionData(index)) }}</span>
+                :class="sectionData(section.id).note?.kind"
+                :title="sectionData(section.id).note?.kind === 'error' ? sectionData(section.id).note?.message : ''"
+              >{{ noteText(sectionData(section.id)) }}</span>
             </div>
             <p
               v-else
@@ -286,7 +332,7 @@ function onSectionRetry(index: number): void {
             </p>
           </div>
 
-          <!-- list 节：声明 valuesCommand → ui/values 动态回读（错误态可重试）；
+          <!-- list 节：source:"provider" → ui/values 动态回读（错误态可重试）；
             行点击走 rowCommand（args=整行对象） -->
           <div
             v-else-if="section.kind === 'list'"
@@ -298,47 +344,47 @@ function onSectionRetry(index: number): void {
                 :key="column.key"
                 class="ui-cell"
                 :style="{ flexGrow: column.width }"
-              >{{ column.label }}</span>
+              >{{ column.label || column.key }}</span>
             </div>
 
-            <template v-if="section.valuesCommand">
+            <template v-if="section.source === 'provider'">
               <p
-                v-if="sectionData(index).status === 'loading' || sectionData(index).status === 'idle'"
+                v-if="sectionData(section.id).status === 'loading' || sectionData(section.id).status === 'idle'"
                 class="ui-note"
               >
                 {{ t('ui.loading') }}
               </p>
               <p
-                v-else-if="sectionData(index).status === 'error'"
+                v-else-if="sectionData(section.id).status === 'error'"
                 class="ui-note error"
               >
                 <span
                   class="ui-note-text"
-                  :title="`${sectionData(index).error?.code}: ${sectionData(index).error?.message}`"
+                  :title="`${sectionData(section.id).error?.code}: ${sectionData(section.id).error?.message}`"
                 >{{ t('ui.loadError') }}</span>
                 <button
                   type="button"
                   class="ui-retry"
-                  @click="onSectionRetry(index)"
+                  @click="onSectionRetry(section.id)"
                 >
                   {{ t('ui.retry') }}
                 </button>
               </p>
               <template v-else>
                 <p
-                  v-if="listRows(index).length === 0"
+                  v-if="listRows(section.id).length === 0"
                   class="ui-note"
                 >
                   {{ t('ui.empty') }}
                 </p>
                 <button
-                  v-for="(row, rowIndex) in listRows(index)"
+                  v-for="(row, rowIndex) in listRows(section.id)"
                   :key="rowIndex"
                   type="button"
                   class="ui-row data"
-                  :class="{ clickable: section.rowCommand, busy: sectionData(index).busy }"
-                  :disabled="!section.rowCommand || sectionData(index).busy"
-                  @click="onRowClick(index, section, row)"
+                  :class="{ clickable: section.rowCommand, busy: sectionData(section.id).busy }"
+                  :disabled="!section.rowCommand || sectionData(section.id).busy"
+                  @click="onRowClick(section, row)"
                 >
                   <span
                     v-for="column in section.columns"
@@ -357,47 +403,47 @@ function onSectionRetry(index: number): void {
             </p>
 
             <p
-              v-if="section.valuesCommand && sectionData(index).note"
+              v-if="section.source === 'provider' && sectionData(section.id).note"
               class="ui-note"
-              :class="sectionData(index).note?.kind"
-              :title="sectionData(index).note?.kind === 'error' ? sectionData(index).note?.message : ''"
+              :class="sectionData(section.id).note?.kind"
+              :title="sectionData(section.id).note?.kind === 'error' ? sectionData(section.id).note?.message : ''"
             >
-              {{ noteText(sectionData(index)) }}
+              {{ noteText(sectionData(section.id)) }}
             </p>
           </div>
 
-          <!-- kv 节：声明 valuesCommand → 动态回读优先（错误态可重试）；
-            无 valuesCommand → 静态 items（M1） -->
+          <!-- kv 节：source:"provider" → 动态回读优先（错误态可重试）；
+            否则静态 items -->
           <div
             v-else
             class="ui-kv"
           >
-            <template v-if="section.valuesCommand">
+            <template v-if="section.source === 'provider'">
               <p
-                v-if="sectionData(index).status === 'error'"
+                v-if="sectionData(section.id).status === 'error'"
                 class="ui-note error"
               >
                 <span
                   class="ui-note-text"
-                  :title="`${sectionData(index).error?.code}: ${sectionData(index).error?.message}`"
+                  :title="`${sectionData(section.id).error?.code}: ${sectionData(section.id).error?.message}`"
                 >{{ t('ui.loadError') }}</span>
                 <button
                   type="button"
                   class="ui-retry"
-                  @click="onSectionRetry(index)"
+                  @click="onSectionRetry(section.id)"
                 >
                   {{ t('ui.retry') }}
                 </button>
               </p>
               <p
-                v-else-if="sectionData(index).status === 'loading' && (section.items?.length ?? 0) === 0"
+                v-else-if="sectionData(section.id).status === 'loading' && (section.items?.length ?? 0) === 0"
                 class="ui-note"
               >
                 {{ t('ui.loading') }}
               </p>
             </template>
             <div
-              v-for="(item, itemIndex) in kvItems(index, section)"
+              v-for="(item, itemIndex) in kvItems(section)"
               :key="itemIndex"
               class="ui-kv-row"
             >
@@ -405,7 +451,7 @@ function onSectionRetry(index: number): void {
               <span class="ui-kv-value">{{ item.value }}</span>
             </div>
             <p
-              v-if="!section.valuesCommand && (section.items?.length ?? 0) === 0"
+              v-if="!section.source && (section.items?.length ?? 0) === 0"
               class="ui-note"
             >
               {{ t('ui.kvNeedsNode') }}

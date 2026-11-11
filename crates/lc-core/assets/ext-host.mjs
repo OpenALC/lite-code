@@ -416,11 +416,13 @@ function createViewRegistry() {
 
 // 插件 UI 视图数据注册表（docs/plans/plugin-webview.md §3.2）：插件 activate 时经
 // ctx.ui.register(viewId, provider) 注册 provider；ui/values 请求按
-// pluginId + viewId 查找并调用 provider.getValues(sectionId)。
-// 结构与 views.mjs 同构；sectionKinds 来自 initialize 载荷的节 kind 白名单
-// （markdown 节无回读，宿主在派发前直接拒绝，不调用 provider）。
+// (pluginId, viewId) 定位视图，再以稳定节 id 查节描述（initialize 载荷携带的
+// 完整 DTO，Rust 校验期已保证形状，宿主再兜一层），命中后调用
+// provider.getValues(sectionId)。注册表按 (pluginId, viewId) 存
+// 「节 id → { provider, description }」槽位；无 source:"provider" 的节
+// （markdown/form/静态 kv）由 host.mjs 在调用 provider 前拒绝。
 function createUiRegistry() {
-  const plugins = new Map(); // pluginId -> Map(viewId -> { provider, sectionKinds })
+  const plugins = new Map(); // pluginId -> Map(viewId -> { provider, sections })
 
   function createPlugin(pluginId, views) {
     if (plugins.has(pluginId)) {
@@ -434,8 +436,23 @@ function createUiRegistry() {
       if (typeof view.id !== "string" || view.id.length === 0) {
         throw new Error(`Plugin "${pluginId}" has an invalid ui view entry`);
       }
-      const sectionKinds = Array.isArray(view.sectionKinds) ? view.sectionKinds : [];
-      declared.set(view.id, { provider: null, sectionKinds });
+      if (declared.has(view.id)) {
+        throw new Error(`Plugin "${pluginId}" has a duplicate ui view "${view.id}"`);
+      }
+      const sections = new Map(); // sectionId -> description（createPlugin 按描述建槽位）
+      for (const section of view.sections ?? []) {
+        if (!section || typeof section !== "object" || Array.isArray(section)) {
+          throw new Error(`Plugin "${pluginId}" has an invalid ui section entry`);
+        }
+        if (typeof section.id !== "string" || section.id.length === 0) {
+          throw new Error(`Plugin "${pluginId}" has an invalid ui section entry`);
+        }
+        if (sections.has(section.id)) {
+          throw new Error(`UI view "${view.id}" of plugin "${pluginId}" has a duplicate section "${section.id}"`);
+        }
+        sections.set(section.id, section);
+      }
+      declared.set(view.id, { provider: null, sections });
     }
     plugins.set(pluginId, declared);
 
@@ -465,21 +482,28 @@ function createUiRegistry() {
     plugins.delete(pluginId);
   }
 
-  // 命中返回 { found: true, provider, sectionKinds }；未命中返回 { found: false,
-  // reason }：plugin-not-loaded（插件不在注册表）/ view-not-declared（清单未声明）/
-  // view-not-registered（activate 未注册 provider）。
+  // 命中返回 { found: true, provider, sections }（sections 为
+  // 节 id -> 描述 的 Map，provider 与描述由调用方按节 id 组合派发）；
+  // 未命中返回 { found: false, reason }：plugin-not-loaded（插件不在注册表）/
+  // view-not-declared（清单未声明）/ view-not-registered（activate 未注册 provider）。
   function lookup(pluginId, viewId) {
     const views = plugins.get(pluginId);
     if (!views) return { found: false, reason: "plugin-not-loaded" };
     if (!views.has(viewId)) return { found: false, reason: "view-not-declared" };
     const entry = views.get(viewId);
     if (!entry.provider) return { found: false, reason: "view-not-registered" };
-    return { found: true, provider: entry.provider, sectionKinds: entry.sectionKinds };
+    return { found: true, provider: entry.provider, sections: entry.sections };
   }
 
+  // initialize 结果回显完整节描述 DTO（docs/plans/plugin-webview.md §3.2）：
+  // [{ id, sections: [{ id, kind, ... }] }]。
   function list(pluginId) {
     const views = plugins.get(pluginId);
-    return views ? [...views.keys()] : [];
+    if (!views) return [];
+    return [...views.entries()].map(([id, entry]) => ({
+      id,
+      sections: [...entry.sections.values()]
+    }));
   }
 
   return { createPlugin, remove, lookup, list };
@@ -669,9 +693,16 @@ function normalizeViews(pluginId, views) {
   return [...new Set(ids)];
 }
 
-// initialize 载荷里的 UI 视图声明（docs/plans/plugin-webview.md §3.2）：
-// { id, sectionKinds } 对象；sectionKinds 是节 kind 白名单（markdown|form|list|kv，
-// Rust 校验期已保证，宿主再兜一层），ui/values 按节序号的 kind 归一结果。
+// UI 节类型与字段类型闭集（docs/plans/plugin-webview.md §3.1/§3.2）。
+const UI_SECTION_KINDS = new Set(["markdown", "form", "list", "kv"]);
+const UI_FIELD_TYPES = new Set(["text", "number", "boolean", "select", "password"]);
+
+// initialize 载荷里的 UI 视图声明（docs/plans/plugin-webview.md §3.2，M2-R）：每插件
+// uiViews 元素为完整节描述 DTO { id, sections: HostUiSection[] }——
+// markdown: { id, kind:"markdown" }；form: { id, kind:"form", fields:[...] }；
+// list: { id, kind:"list", source:"provider", columns:[{ key }] }；
+// kv: { id, kind:"kv", source?:"provider" }。Rust 校验期已保证形状，宿主再兜一层；
+// 旧的 { id, sectionKinds } 白名单载荷明确拒绝（initialize 只把该插件标记 error）。
 function normalizeUiViewDecls(pluginId, uiViews) {
   if (uiViews === undefined || uiViews === null) return [];
   if (!Array.isArray(uiViews)) {
@@ -679,6 +710,7 @@ function normalizeUiViewDecls(pluginId, uiViews) {
   }
 
   const decls = [];
+  const seenViews = new Set();
   for (const item of uiViews) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw pluginError("manifest", `Plugin "${pluginId}" has an invalid ui view entry`);
@@ -686,19 +718,143 @@ function normalizeUiViewDecls(pluginId, uiViews) {
     if (typeof item.id !== "string" || item.id.length === 0) {
       throw pluginError("manifest", `Plugin "${pluginId}" has an invalid ui view entry`);
     }
-    if (!Array.isArray(item.sectionKinds)) {
-      throw pluginError("manifest", `Plugin "${pluginId}" ui view "${item.id}" must declare sectionKinds`);
+    if (seenViews.has(item.id)) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a duplicate ui view "${item.id}"`);
     }
-    const sectionKinds = [];
-    for (const kind of item.sectionKinds) {
-      if (kind !== "markdown" && kind !== "form" && kind !== "list" && kind !== "kv") {
-        throw pluginError("manifest", `Plugin "${pluginId}" ui view "${item.id}" has an invalid section kind`);
+    seenViews.add(item.id);
+    if (!Array.isArray(item.sections)) {
+      throw pluginError(
+        "manifest",
+        `Plugin "${pluginId}" ui view "${item.id}" must declare sections (the legacy sectionKinds payload is no longer supported)`
+      );
+    }
+    const seenSections = new Set();
+    const sections = item.sections.map((section) => {
+      const normalized = normalizeUiSection(pluginId, item.id, section);
+      if (seenSections.has(normalized.id)) {
+        throw pluginError("manifest", `Plugin "${pluginId}" ui view "${item.id}" has a duplicate section "${normalized.id}"`);
       }
-      sectionKinds.push(kind);
-    }
-    decls.push({ id: item.id, sectionKinds });
+      seenSections.add(normalized.id);
+      return normalized;
+    });
+    decls.push({ id: item.id, sections });
   }
   return decls;
+}
+
+function normalizeUiField(pluginId, viewId, sectionId, raw) {
+  const label = `field of section "${sectionId}" of ui view "${viewId}" of plugin "${pluginId}"`;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" has an invalid ${label}`);
+  }
+  if (typeof raw.key !== "string" || raw.key.length === 0) {
+    throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} without a non-empty key`);
+  }
+  if (!UI_FIELD_TYPES.has(raw.type)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} with an invalid type`);
+  }
+  const field = { key: raw.key, type: raw.type };
+  if (raw.options !== undefined) {
+    if (!Array.isArray(raw.options) || raw.options.some((option) => typeof option !== "string")) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} with invalid options`);
+    }
+    field.options = [...raw.options];
+  }
+  if (raw.min !== undefined) {
+    if (typeof raw.min !== "number" || !Number.isFinite(raw.min)) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} with an invalid min`);
+    }
+    field.min = raw.min;
+  }
+  if (raw.max !== undefined) {
+    if (typeof raw.max !== "number" || !Number.isFinite(raw.max)) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} with an invalid max`);
+    }
+    field.max = raw.max;
+  }
+  if (raw.default !== undefined) {
+    const value = raw.default;
+    const matchesType =
+      raw.type === "text" || raw.type === "password"
+        ? typeof value === "string"
+        : raw.type === "number"
+          ? typeof value === "number" && Number.isFinite(value)
+          : raw.type === "boolean"
+            ? typeof value === "boolean"
+            : Array.isArray(field.options) && field.options.includes(value);
+    if (!matchesType) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} whose default does not match its type`);
+    }
+    field.default = value;
+  }
+  return field;
+}
+
+function normalizeUiSection(pluginId, viewId, raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" has an invalid section in ui view "${viewId}"`);
+  }
+  if (typeof raw.id !== "string" || raw.id.length === 0) {
+    throw pluginError("manifest", `Plugin "${pluginId}" has a section without a non-empty id in ui view "${viewId}"`);
+  }
+  const label = `section "${raw.id}" of ui view "${viewId}" of plugin "${pluginId}"`;
+  if (!UI_SECTION_KINDS.has(raw.kind)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" has an invalid kind for ${label}`);
+  }
+  if (raw.kind === "markdown") {
+    if (raw.source !== undefined) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} that must not declare source`);
+    }
+    return { id: raw.id, kind: "markdown" };
+  }
+  if (raw.kind === "form") {
+    if (raw.source !== undefined) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} that must not declare source`);
+    }
+    if (!Array.isArray(raw.fields)) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} that must declare fields`);
+    }
+    const seenFields = new Set();
+    const fields = raw.fields.map((field) => {
+      const normalized = normalizeUiField(pluginId, viewId, raw.id, field);
+      if (seenFields.has(normalized.key)) {
+        throw pluginError("manifest", `Plugin "${pluginId}" has a duplicate field "${normalized.key}" in ${label}`);
+      }
+      seenFields.add(normalized.key);
+      return normalized;
+    });
+    return { id: raw.id, kind: "form", fields };
+  }
+  if (raw.kind === "list") {
+    if (raw.source !== "provider") {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} that must declare source "provider"`);
+    }
+    if (!Array.isArray(raw.columns) || raw.columns.length === 0) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} that must declare columns`);
+    }
+    const seenColumns = new Set();
+    const columns = raw.columns.map((column) => {
+      if (!column || typeof column !== "object" || Array.isArray(column)) {
+        throw pluginError("manifest", `Plugin "${pluginId}" has an invalid column in ${label}`);
+      }
+      if (typeof column.key !== "string" || column.key.length === 0) {
+        throw pluginError("manifest", `Plugin "${pluginId}" has a column without a non-empty key in ${label}`);
+      }
+      if (seenColumns.has(column.key)) {
+        throw pluginError("manifest", `Plugin "${pluginId}" has a duplicate column "${column.key}" in ${label}`);
+      }
+      seenColumns.add(column.key);
+      return { key: column.key };
+    });
+    return { id: raw.id, kind: "list", source: "provider", columns };
+  }
+  // kv：source 省略时只渲染静态 items，存在时动态结果优先（§3.1）。
+  if (raw.source !== undefined && raw.source !== "provider") {
+    throw pluginError("manifest", `Plugin "${pluginId}" has a ${label} with an invalid source`);
+  }
+  const section = { id: raw.id, kind: "kv" };
+  if (raw.source === "provider") section.source = "provider";
+  return section;
 }
 
 // 视图节点形状校验（docs/EXTENSIONS.md §4）：id/label 必填非空字符串，
@@ -727,54 +883,66 @@ function normalizeViewNodes(pluginId, viewId, raw) {
   });
 }
 
-// UI 节值形状校验（docs/plans/plugin-webview.md §3.2）：按节 kind 白名单归一，
-// 照抄 normalizeViewNodes 风格。form → { values: { [fieldKey]: json } }；
-// list → { rows: [{ [columnKey]: 标量 }] }（≤500 行，单元格限 string/number/
-// boolean，非标量键丢弃）；kv → { items: [{ key, value }] }（≤64 对）；
-// markdown 节无回读，直接抛错（调用方映射 invalid-values）。形状非法抛错。
-function normalizeUiValues(pluginId, viewId, sectionId, kind, raw) {
-  const label = `Section "${sectionId}" (${kind}) of view "${viewId}" of plugin "${pluginId}"`;
-  if (kind === "markdown") {
-    throw pluginError("manifest", `${label} is markdown and has no values`);
-  }
-  if (kind === "form") {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw pluginError("manifest", `${label} must return { values: { [fieldKey]: json } }`);
-    }
-    if (!raw.values || typeof raw.values !== "object" || Array.isArray(raw.values)) {
-      throw pluginError("manifest", `${label} must return { values: { [fieldKey]: json } }`);
-    }
-    const values = {};
-    for (const [key, value] of Object.entries(raw.values)) values[key] = value;
-    return { values };
-  }
-  if (kind === "list") {
+// UI 动态值规模上限（docs/plans/plugin-webview.md §3.2）：行数 ≤500、kv 对数 ≤64、
+// 归一后序列化总量 ≤256 KiB、单字符串 UTF-8 ≤16 KiB，超限映射 reason=invalid-values。
+const UI_MAX_ROWS = 500;
+const UI_MAX_KV_ITEMS = 64;
+const UI_MAX_TOTAL_BYTES = 256 * 1024;
+const UI_MAX_STRING_BYTES = 16 * 1024;
+
+function utf8ByteLength(text) {
+  return Buffer.byteLength(text, "utf8");
+}
+
+// UI 节值按声明归一（docs/plans/plugin-webview.md §3.2，M2-R）：list 只保留声明
+// 列键——未知键丢弃、缺列不补（web 渲染空单元格），已声明键的对象/数组/null/
+// 非有限 number 及标量以外的类型拒绝；kv 只保留 key/value，key 必须非空字符串。
+// markdown/form 无回读、无 source:"provider" 的静态节在调用 provider 前已由
+// handleUiValues 拒绝，走到这里属内部不一致。形状非法抛错（调用方映射
+// reason=invalid-values），照抄 normalizeViewNodes 风格。
+function normalizeUiValues(pluginId, viewId, sectionId, description, raw) {
+  const label = `Section "${sectionId}" (${description.kind}) of view "${viewId}" of plugin "${pluginId}"`;
+  let values;
+  if (description.kind === "list") {
     if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.rows)) {
       throw pluginError("manifest", `${label} must return { rows: [{ [columnKey]: scalar }] }`);
     }
-    if (raw.rows.length > 500) {
-      throw pluginError("manifest", `${label} returned more than 500 rows`);
+    if (raw.rows.length > UI_MAX_ROWS) {
+      throw pluginError("manifest", `${label} returned more than ${UI_MAX_ROWS} rows`);
     }
     const rows = raw.rows.map((row, index) => {
       if (!row || typeof row !== "object" || Array.isArray(row)) {
         throw pluginError("manifest", `${label} returned an invalid row at index ${index}`);
       }
       const cells = {};
-      for (const [key, value] of Object.entries(row)) {
-        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-          cells[key] = value;
+      for (const column of description.columns) {
+        if (!Object.hasOwn(row, column.key)) continue; // 缺列按空单元格，由 web 渲染
+        const value = row[column.key];
+        if (typeof value === "string") {
+          if (utf8ByteLength(value) > UI_MAX_STRING_BYTES) {
+            throw pluginError("manifest", `${label} returned a string exceeding ${UI_MAX_STRING_BYTES} bytes`);
+          }
+          cells[column.key] = value;
+        } else if (typeof value === "number") {
+          if (!Number.isFinite(value)) {
+            throw pluginError("manifest", `${label} returned a non-finite number in column "${column.key}" at index ${index}`);
+          }
+          cells[column.key] = value;
+        } else if (typeof value === "boolean") {
+          cells[column.key] = value;
+        } else {
+          throw pluginError("manifest", `${label} returned an invalid value in column "${column.key}" at index ${index}`);
         }
       }
       return cells;
     });
-    return { rows };
-  }
-  if (kind === "kv") {
+    values = { rows };
+  } else if (description.kind === "kv") {
     if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.items)) {
       throw pluginError("manifest", `${label} must return { items: [{ key, value }] }`);
     }
-    if (raw.items.length > 64) {
-      throw pluginError("manifest", `${label} returned more than 64 items`);
+    if (raw.items.length > UI_MAX_KV_ITEMS) {
+      throw pluginError("manifest", `${label} returned more than ${UI_MAX_KV_ITEMS} items`);
     }
     const items = raw.items.map((item, index) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
@@ -783,14 +951,26 @@ function normalizeUiValues(pluginId, viewId, sectionId, kind, raw) {
       if (typeof item.key !== "string" || item.key.length === 0) {
         throw pluginError("manifest", `${label} returned an item without a non-empty string key at index ${index}`);
       }
+      if (utf8ByteLength(item.key) > UI_MAX_STRING_BYTES) {
+        throw pluginError("manifest", `${label} returned a string exceeding ${UI_MAX_STRING_BYTES} bytes`);
+      }
       if (typeof item.value !== "string") {
         throw pluginError("manifest", `${label} returned item "${item.key}" without a string value`);
       }
+      if (utf8ByteLength(item.value) > UI_MAX_STRING_BYTES) {
+        throw pluginError("manifest", `${label} returned a string exceeding ${UI_MAX_STRING_BYTES} bytes`);
+      }
       return { key: item.key, value: item.value };
     });
-    return { items };
+    values = { items };
+  } else {
+    throw pluginError("manifest", `${label} has no provider-backed values`);
   }
-  throw pluginError("manifest", `${label} has an unknown kind`);
+
+  if (utf8ByteLength(JSON.stringify(values)) > UI_MAX_TOTAL_BYTES) {
+    throw pluginError("manifest", `${label} returned values exceeding ${UI_MAX_TOTAL_BYTES} bytes`);
+  }
+  return values;
 }
 
 // 延迟判定是插件级的：activationEvents 非空且不含 `*` 即为延迟插件，
@@ -1288,12 +1468,11 @@ async function handleUiValues(id, params) {
     });
   }
 
-  // sectionId 即清单节序号（web 按渲染序传 "0".."15"）；越界或 kind=markdown
-  // （无回读）按插件缺陷映射 -32000 reason=invalid-values。
-  const sectionKinds = found.sectionKinds ?? [];
-  const sectionIndex = /^\d+$/.test(sectionId) ? Number(sectionId) : -1;
-  const kind = sectionIndex >= 0 && sectionIndex < sectionKinds.length ? sectionKinds[sectionIndex] : null;
-  if (kind === null) {
+  // sectionId 是清单稳定节 id（M2-R 起不再接受节序号）：按 id 查节描述，
+  // 未知节映射 -32000 reason=invalid-values；kind 为 markdown/form 或无
+  // source:"provider" 的静态节在调用 provider 之前拒绝（同样 invalid-values）。
+  const description = found.sections.get(sectionId);
+  if (!description) {
     return errorResponse(id, RPC_INTERNAL_ERROR, `UI view "${viewId}" of plugin "${pluginId}" has no section "${sectionId}"`, {
       pluginId,
       viewId,
@@ -1301,8 +1480,8 @@ async function handleUiValues(id, params) {
       reason: "invalid-values"
     });
   }
-  if (kind === "markdown") {
-    return errorResponse(id, RPC_INTERNAL_ERROR, `Section "${sectionId}" of view "${viewId}" of plugin "${pluginId}" is markdown and has no values`, {
+  if (description.kind === "markdown" || description.kind === "form" || description.source !== "provider") {
+    return errorResponse(id, RPC_INTERNAL_ERROR, `Section "${sectionId}" of view "${viewId}" of plugin "${pluginId}" is not provider-backed and has no values`, {
       pluginId,
       viewId,
       sectionId,
@@ -1325,7 +1504,7 @@ async function handleUiValues(id, params) {
         );
       })
     ]);
-    const values = normalizeUiValues(pluginId, viewId, sectionId, kind, serializableResult(raw));
+    const values = normalizeUiValues(pluginId, viewId, sectionId, description, serializableResult(raw));
     return resultResponse(id, values);
   } catch (error) {
     const details = thrownDetails(error);

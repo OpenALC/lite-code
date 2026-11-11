@@ -1,9 +1,12 @@
-// 插件 UI 视图（docs/plans/plugin-webview.md §3.1/§3.4）：编辑器区标签页的
-// 声明式节渲染（kind 闭集 markdown|form|list|kv）。分层镜像 pluginViews.ts：
-// 本服务管声明收集/白名单归一/标签生命周期/节数据状态/命令别名，
-// PluginUiView.vue 纯渲染。M2 交互回传：list/kv 节经 ui/values 动态回读
-// （节错误态可重试），表单提交/行点击走既有命令回路（§3.5）。打开视图本身
-// 零宿主往返（§3.5）。
+// 插件 UI 视图（docs/plans/plugin-webview.md §3.1/§3.4/§3.6 M2-R）：编辑器区
+// 标签页的声明式节渲染（kind 闭集 markdown|form|list|kv）。分层镜像
+// pluginViews.ts：本服务管声明收集/白名单归一/标签生命周期/节数据状态/
+// 命令别名，PluginUiView.vue 纯渲染。M2-R 生命周期：节身份=稳定 sectionId
+// （不用显示序号）、initialize 下发完整节描述 DTO（source:"provider" 为唯一
+// 回读开关，valuesCommand 已移除）、同步代次守卫在途请求（旧结果丢弃、作废旧
+// 请求时复位 loading/busy）、同 id 节语义声明变化重置该节。list/kv 节经
+// ui/values 动态回读（节错误态可重试），表单提交/行点击走既有命令回路（§3.5）。
+// 打开视图本身零宿主往返（§3.5）。
 import {
   extensionsExecuteCommand,
   extensionsList,
@@ -21,20 +24,31 @@ export type UiFieldType = 'text' | 'number' | 'boolean' | 'select' | 'password'
 /** list 单元格允许的标量（§3.2）；form default 亦限标量。 */
 export type UiScalar = string | number | boolean
 
-export interface UiField {
+/** 清单 initialize 下发的节字段描述 DTO（§3.2；label/placeholder 不在 DTO 内，
+ * 渲染文案仍从清单 PluginInfo.uiViews 取）。 */
+export interface UiFieldSpec {
   key: string
-  label: string
   type: UiFieldType
-  placeholder?: string
   default?: UiScalar
   options?: string[]
   min?: number
   max?: number
 }
 
-export interface UiColumn {
+/** 清单 initialize 下发的节列描述 DTO（§3.2；label/width 不在 DTO 内）。 */
+export interface UiColumnSpec {
   key: string
-  label: string
+}
+
+/** 归一后的节字段：清单完整声明 ⊕ initialize DTO（label/placeholder 是渲染
+ * 文案、可缺省回退 key；语义约束字段来自 DTO；多余键一律丢弃）。 */
+export interface UiField extends UiFieldSpec {
+  label?: string
+  placeholder?: string
+}
+
+export interface UiColumn extends UiColumnSpec {
+  label?: string
   /** 1..5 权重（Rust 校验；缺省 1）。 */
   width: number
 }
@@ -45,16 +59,24 @@ export interface UiKvItem {
 }
 
 export type UiSection =
-  | { kind: 'markdown'; text: string }
-  | { kind: 'form'; title?: string; command?: string; fields: UiField[] }
+  | { id: string; kind: 'markdown'; text: string }
   | {
+      id: string
+      kind: 'form'
+      title?: string
+      command?: string
+      fields: UiField[]
+    }
+  | {
+      id: string
       kind: 'list'
       title?: string
-      valuesCommand?: string
+      /** 唯一回读开关（§3.2）：source === 'provider' 才回读。 */
+      source?: 'provider'
       columns: UiColumn[]
       rowCommand?: string
     }
-  | { kind: 'kv'; title?: string; items?: UiKvItem[]; valuesCommand?: string }
+  | { id: string; kind: 'kv'; title?: string; items?: UiKvItem[]; source?: 'provider' }
 
 export interface UiView {
   id: string
@@ -85,14 +107,15 @@ function isUiFieldType(value: unknown): value is UiFieldType {
   )
 }
 
-/** 单字段白名单归一：key/label 非空字符串、type 闭集；default 限标量；
- * options 非空字符串数组；min/max 限数字；其余键一律丢弃。形状非法 → null。 */
+/** 单字段白名单归一：key 非空字符串、type 闭集；default 限标量；
+ * options 非空字符串数组；min/max 限数字；其余键一律丢弃（含 valuesCommand
+ * 等旧协议字段——M2-R 起不存在，视为无回读）。形状非法 → null。 */
 function normalizeUiField(raw: unknown): UiField | null {
   if (!isRecord(raw)) return null
   if (typeof raw.key !== 'string' || raw.key.length === 0) return null
-  if (typeof raw.label !== 'string' || raw.label.length === 0) return null
   if (!isUiFieldType(raw.type)) return null
-  const field: UiField = { key: raw.key, label: raw.label, type: raw.type }
+  const field: UiField = { key: raw.key, type: raw.type }
+  if (typeof raw.label === 'string' && raw.label.length > 0) field.label = raw.label
   if (typeof raw.placeholder === 'string' && raw.placeholder.length > 0) {
     field.placeholder = raw.placeholder
   }
@@ -116,17 +139,18 @@ function normalizeUiField(raw: unknown): UiField | null {
   return field
 }
 
-/** 单列白名单归一：key/label 非空字符串，width 缺省 1、限正数。 */
+/** 单列白名单归一：key 非空字符串，label 可缺省，width 缺省 1、限正数。 */
 function normalizeUiColumn(raw: unknown): UiColumn | null {
   if (!isRecord(raw)) return null
   if (typeof raw.key !== 'string' || raw.key.length === 0) return null
-  if (typeof raw.label !== 'string' || raw.label.length === 0) return null
   let width = 1
   if (raw.width !== undefined) {
     if (typeof raw.width !== 'number' || !(raw.width > 0)) return null
     width = raw.width
   }
-  return { key: raw.key, label: raw.label, width }
+  const column: UiColumn = { key: raw.key, width }
+  if (typeof raw.label === 'string' && raw.label.length > 0) column.label = raw.label
+  return column
 }
 
 /** kv 条目归一：key 非空字符串、value 字符串（javascript: 等载荷按纯文本
@@ -142,14 +166,17 @@ function normalizeOptionalString(raw: unknown): string | undefined {
   return typeof raw === 'string' && raw.length > 0 ? raw : undefined
 }
 
-/** 节白名单归一（§3.4）：按 kind 分派、多余键一律丢弃；形状非法 → null
- * （调用方渲染节错误态）。 */
+/** 节白名单归一（§3.2 DTO + §3.4）：稳定 id 必填（initialize DTO 下发），按
+ * kind 分派、多余键一律丢弃（valuesCommand 字段存在也丢弃——视为无回读）；
+ * 形状非法 → null（调用方渲染节错误态）。 */
 export function normalizeUiSection(raw: unknown): UiSection | null {
   if (!isRecord(raw)) return null
+  if (typeof raw.id !== 'string' || raw.id.length === 0) return null
+  const id = raw.id
   switch (raw.kind) {
     case 'markdown': {
       if (typeof raw.text !== 'string') return null
-      return { kind: 'markdown', text: raw.text }
+      return { id, kind: 'markdown', text: raw.text }
     }
     case 'form': {
       if (!Array.isArray(raw.fields) || raw.fields.length === 0) return null
@@ -159,7 +186,7 @@ export function normalizeUiSection(raw: unknown): UiSection | null {
         if (field === null) return null
         fields.push(field)
       }
-      const section: UiSection = { kind: 'form', fields }
+      const section: UiSection = { id, kind: 'form', fields }
       const title = normalizeOptionalString(raw.title)
       if (title !== undefined) section.title = title
       const command = normalizeOptionalString(raw.command)
@@ -174,17 +201,16 @@ export function normalizeUiSection(raw: unknown): UiSection | null {
         if (column === null) return null
         columns.push(column)
       }
-      const section: UiSection = { kind: 'list', columns }
+      const section: UiSection = { id, kind: 'list', columns }
       const title = normalizeOptionalString(raw.title)
       if (title !== undefined) section.title = title
-      const valuesCommand = normalizeOptionalString(raw.valuesCommand)
-      if (valuesCommand !== undefined) section.valuesCommand = valuesCommand
+      if (raw.source === 'provider') section.source = 'provider'
       const rowCommand = normalizeOptionalString(raw.rowCommand)
       if (rowCommand !== undefined) section.rowCommand = rowCommand
       return section
     }
     case 'kv': {
-      const section: UiSection = { kind: 'kv' }
+      const section: UiSection = { id, kind: 'kv' }
       const title = normalizeOptionalString(raw.title)
       if (title !== undefined) section.title = title
       if (raw.items !== undefined) {
@@ -197,8 +223,7 @@ export function normalizeUiSection(raw: unknown): UiSection | null {
         }
         section.items = items
       }
-      const valuesCommand = normalizeOptionalString(raw.valuesCommand)
-      if (valuesCommand !== undefined) section.valuesCommand = valuesCommand
+      if (raw.source === 'provider') section.source = 'provider'
       return section
     }
     default:
@@ -242,10 +267,10 @@ export function isUiView(raw: unknown): raw is UiView {
   return normalizeUiView(raw) !== null
 }
 
-// ==== 数据回读归一（§3.2 骨架；M1 无回读，M2 由 ui/values 驱动） ====
+// ==== 数据回读归一（§3.2 双端白名单归一） ====
 
 export interface UiValues {
-  /** form 节：按 fieldKey 的动态初始值。 */
+  /** form 节：按 fieldKey 的动态初始值（v1 不回读，仅协议面保留）。 */
   values?: Record<string, unknown>
   /** list 节：行（单元格限标量，非标量键丢弃）。 */
   rows?: Record<string, UiScalar>[]
@@ -254,18 +279,13 @@ export interface UiValues {
 }
 
 /** 宿主 ui/values 结果按节 kind 白名单归一（照抄 normalizeViewNodes 风格）：
- * 多余键丢弃、单元格/条目非白名单值丢弃或判非法；markdown 节无回读恒 null。
- * 宿主侧已归一一次（§3.2），这里不信任 IPC 对端再兜一层（§3.4）。 */
+ * 多余键丢弃、单元格/条目非白名单值丢弃或判非法；markdown/form 节无回读
+ * 恒 null。宿主侧已归一一次（§3.2），这里不信任 IPC 对端再兜一层（§3.4）。 */
 export function normalizeUiValues(kind: UiSectionKind, raw: unknown): UiValues | null {
   switch (kind) {
     case 'markdown':
+    case 'form':
       return null
-    case 'form': {
-      if (!isRecord(raw) || !isRecord(raw.values)) return null
-      const values: Record<string, unknown> = {}
-      for (const [key, value] of Object.entries(raw.values)) values[key] = value
-      return { values }
-    }
     case 'list': {
       if (!isRecord(raw) || !Array.isArray(raw.rows) || raw.rows.length > 500) return null
       const rows: Record<string, UiScalar>[] = []
@@ -328,15 +348,17 @@ export interface UiViewEntry {
 
 export interface PluginUiState {
   views: UiViewEntry[]
-  /** M2 节数据状态：键 `${pluginId}:${viewId}:${sectionIndex}`（list/kv 回读、
-   * form 提交注记共用；markdown 与静态节无条目）。 */
+  /** M2-R 节数据状态：键 `${pluginId}:${viewId}:${sectionId}`（稳定节 id，
+   * list/kv 回读、form 提交注记共用；markdown 与静态节无条目）。 */
   sectionData: Record<string, UiSectionDataState>
+  /** 同步代次（§3.6）：applyPluginUiList 每次成功 +1，异步完成时校验。 */
+  generation: number
 }
 
 type Listener = (state: PluginUiState) => void
 
 const listeners = new Set<Listener>()
-let state: PluginUiState = { views: [], sectionData: {} }
+let state: PluginUiState = { views: [], sectionData: {}, generation: 0 }
 
 export function getPluginUiState(): PluginUiState {
   return state
@@ -353,7 +375,7 @@ function emit(): void {
 
 /** 测试用：清空声明状态。 */
 export function resetPluginUi(): void {
-  state = { views: [], sectionData: {} }
+  state = { views: [], sectionData: {}, generation: 0 }
   emit()
 }
 
@@ -398,11 +420,106 @@ export function findUiView(pluginId: string, viewId: string): UiViewEntry | unde
   return state.views.find(view => view.pluginId === pluginId && view.viewId === viewId)
 }
 
-// ==== 同步（App 启动与插件增删后调用，照 syncPluginViews 挂点） ====
+// ==== 节身份与语义指纹（§3.1/§3.6） ====
+
+/** 节状态键：`${pluginId}:${viewId}:${sectionId}`——稳定节 id 定位，与显示
+ * 序号无关（ui/values 的 sectionId 同为该稳定 id；插入/重排节不改变键）。 */
+export function uiSectionDataKey(
+  pluginId: string,
+  viewId: string,
+  sectionId: string,
+): string {
+  return `${pluginId}:${viewId}:${sectionId}`
+}
+
+/** 节语义指纹（§3.6）：kind/fields/columns/command/source/default 等语义声明
+ * 的序列化。仅 title/label/placeholder/顺序等渲染层变化不改变指纹。 */
+export function uiSectionFingerprint(section: UiSection): string {
+  switch (section.kind) {
+    case 'markdown':
+      return JSON.stringify(['markdown', section.text])
+    case 'form':
+      return JSON.stringify([
+        'form',
+        section.fields.map(field => [
+          field.key,
+          field.type,
+          field.default ?? null,
+          field.options ?? null,
+          field.min ?? null,
+          field.max ?? null,
+        ]),
+        section.command ?? null,
+      ])
+    case 'list':
+      return JSON.stringify([
+        'list',
+        section.columns.map(column => column.key),
+        section.rowCommand ?? null,
+        section.source ?? null,
+      ])
+    case 'kv':
+      return JSON.stringify(['kv', section.source ?? null])
+  }
+}
+
+/** 可回读节：list 必填 source:"provider"；kv 有 source:"provider" 才回读，
+ * 省略时只渲染静态 items（§3.2）。form/markdown 无回读。 */
+function readableSection(
+  entry: UiViewEntry | undefined,
+  sectionId: string,
+): Extract<UiSection, { kind: 'list' | 'kv' }> | null {
+  const section = entry?.sections.find(item => item?.id === sectionId)
+  if (!section || (section.kind !== 'list' && section.kind !== 'kv')) return null
+  return section.source === 'provider' ? section : null
+}
+
+// ==== 在途请求登记（§3.6：代次 + 最新请求校验） ====
+
+/** 令牌：作废旧请求靠递增序号（每节 id 一个槽位）。 */
+function nextToken(registry: Map<string, number>, key: string): number {
+  const token = (registry.get(key) ?? 0) + 1
+  registry.set(key, token)
+  return token
+}
+
+/** 视图级在途请求集合（节 id → 最新令牌）。 */
+interface ViewInflight {
+  loads: Map<string, number>
+  busies: Map<string, number>
+}
+
+/** 同一视图的所有在途请求：closeUiView 与同步路径统一作废（§3.6）。 */
+const viewInflight = new Map<string, ViewInflight>()
+
+function inflightFor(key: string): ViewInflight {
+  let inflight = viewInflight.get(key)
+  if (!inflight) {
+    inflight = { loads: new Map(), busies: new Map() }
+    viewInflight.set(key, inflight)
+  }
+  return inflight
+}
+
+/** 请求正常完成：摘掉令牌；该视图无在途请求时整体摘掉登记。 */
+function finishRequest(
+  inflight: ViewInflight,
+  viewKey: string,
+  registry: Map<string, number>,
+  key: string,
+): void {
+  registry.delete(key)
+  if (inflight.loads.size === 0 && inflight.busies.size === 0) {
+    viewInflight.delete(viewKey)
+  }
+}
+
+// ==== 同步（App 启动与插件增删后调用，照 syncPluginViews 挂点；§3.6） ====
 
 /**
  * 拉取最新插件列表并做 UI 视图同步；失败返回 null（保持原状）。
- * 插件禁用/删除 → 其视图标签关闭、不进「重新打开」栈（§3.6）。
+ * 插件禁用/删除 → 其视图标签关闭、运行时状态（含在途请求接收资格）清理，
+ * 不进「重新打开」栈（§3.6）。
  */
 export async function syncPluginUiViews(): Promise<PluginList | null> {
   const res = await extensionsList()
@@ -411,11 +528,64 @@ export async function syncPluginUiViews(): Promise<PluginList | null> {
   return res.data
 }
 
-/** 对一份插件列表做同步（测试与复用入口）。 */
+/**
+ * 对一份插件列表做同步（测试与复用入口）。每次成功推进同步代次
+ * （§3.6）：回读/提交/行命令完成时只有代次匹配且仍是该节最新请求才生效。
+ * 同 id 节语义声明变化（uiSectionFingerprint）→ 重置该节（清数据与注记，
+ * 作废旧请求）；仅 title/label/顺序变化保留输入。删除节/视图/插件清状态。
+ */
 export function applyPluginUiList(list: PluginList): void {
   const views = declaredUiViews(list)
   const alive = new Set(views.map(view => view.key))
-  state = { views, sectionData: state.sectionData }
+  const generation = state.generation + 1
+
+  // 语义变更重置（§3.6）：沿用旧状态的节，只有指纹一致才保留；同 id 节
+  // kind/fields/columns/command/source/default 变化 → 重置（清数据与注记，
+  // 作废旧请求）；仅 title/label/placeholder/顺序变化保留输入。被保留节的
+  // 在途请求因代次推进一律作废：loading 复位为 idle（组件会按新代次重新
+  // 回读）、busy 复位（防止控件永久禁用）。
+  const previous = new Map(state.views.map(view => [view.key, view]))
+  const keptData: Record<string, UiSectionDataState> = {}
+  for (const view of views) {
+    const before = previous.get(view.key)
+    const inflight = viewInflight.get(view.key)
+    view.sections.forEach(section => {
+      if (section === null) return
+      const key = uiSectionDataKey(view.pluginId, view.viewId, section.id)
+      const prior = before?.sections.find(item => item !== null && item.id === section.id)
+      if (
+        prior !== null &&
+        prior !== undefined &&
+        uiSectionFingerprint(prior) === uiSectionFingerprint(section)
+      ) {
+        const existing = state.sectionData[key]
+        if (!existing) return
+        const reset: Partial<UiSectionDataState> = {}
+        if (inflight?.loads.has(key)) {
+          nextToken(inflight.loads, key)
+          if (existing.status === 'loading') reset.status = 'idle'
+        }
+        if (inflight?.busies.has(key)) {
+          nextToken(inflight.busies, key)
+          if (existing.busy) reset.busy = false
+        }
+        keptData[key] =
+          Object.keys(reset).length > 0 ? { ...existing, ...reset } : existing
+        return
+      }
+      // 新增或语义变化：在途请求作废（状态不进 keptData，默认 idle/busy=false）。
+      if (inflight?.loads.has(key)) nextToken(inflight.loads, key)
+      if (inflight?.busies.has(key)) nextToken(inflight.busies, key)
+    })
+  }
+
+  // 插件禁用/删除/视图移除：其全部在途请求失去接收资格（§3.6），登记整体清除。
+  for (const viewKey of [...viewInflight.keys()]) {
+    if (alive.has(viewKey)) continue
+    viewInflight.delete(viewKey)
+  }
+
+  state = { views, sectionData: keptData, generation }
   emit()
   for (const tab of [...tabsStore.get().tabs]) {
     const ref = parseUiTabId(tab.id)
@@ -463,7 +633,28 @@ export function openPluginUiViewByCommand(command: string): boolean {
   return openPluginUiView(alias.pluginId, alias.viewId)
 }
 
-// ==== 节数据回读与交互（§3.2/§3.5，M2） ====
+/** 关闭视图：清理该视图全部运行时状态（§3.6）——节数据、在途请求（作废旧
+ * 请求并复位 loading/busy，防止控件永久禁用）与登记。组件随之卸载，其本地
+ * 草稿（含 password）一并销毁，不进任何全局/持久化存储。重开从清单 default
+ * 与新 provider 数据开始。 */
+export function closeUiView(pluginId: string, viewId: string): void {
+  const viewKey = `${pluginId}:${viewId}`
+  const prefix = `${viewKey}:`
+  const inflight = viewInflight.get(viewKey)
+  if (inflight) {
+    for (const key of inflight.loads.keys()) nextToken(inflight.loads, key)
+    for (const key of inflight.busies.keys()) nextToken(inflight.busies, key)
+    viewInflight.delete(viewKey)
+  }
+  const sectionData: Record<string, UiSectionDataState> = {}
+  for (const [key, value] of Object.entries(state.sectionData)) {
+    if (!key.startsWith(prefix)) sectionData[key] = value
+  }
+  state = { views: state.views, sectionData, generation: state.generation }
+  emit()
+}
+
+// ==== 节数据回读与交互（§3.2/§3.5，M2-R 代次与最新请求守卫） ====
 
 export type UiSectionStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -480,16 +671,6 @@ export interface UiSectionDataState {
   busy: boolean
 }
 
-/** 节状态键：`${pluginId}:${viewId}:${sectionIndex}`（节序号即 ui/values 的
- * sectionId，与宿主侧节序号一致）。 */
-export function uiSectionDataKey(
-  pluginId: string,
-  viewId: string,
-  sectionIndex: number,
-): string {
-  return `${pluginId}:${viewId}:${sectionIndex}`
-}
-
 function emptySectionData(): UiSectionDataState {
   return { status: 'idle', values: null, error: null, note: null, busy: false }
 }
@@ -504,6 +685,7 @@ function sectionDataOf(key: string): UiSectionDataState {
 function patchSectionData(key: string, patch: Partial<UiSectionDataState>): void {
   state = {
     views: state.views,
+    generation: state.generation,
     sectionData: { ...state.sectionData, [key]: { ...sectionDataOf(key), ...patch } },
   }
   emit()
@@ -546,38 +728,30 @@ export function coerceUiFormValues(
   return values
 }
 
-type ReadableUiSection =
-  | Extract<UiSection, { kind: 'list' }>
-  | Extract<UiSection, { kind: 'kv' }>
-
-/** 可回读节：list/kv 且声明 valuesCommand。form 动态初始值协议面已支持
- * （§3.2），web M2 仍用静态 default；markdown 无回读。 */
-function readableSection(
-  entry: UiViewEntry | undefined,
-  sectionIndex: number,
-): ReadableUiSection | null {
-  const section = entry?.sections[sectionIndex]
-  if (!section || (section.kind !== 'list' && section.kind !== 'kv')) return null
-  if (!section.valuesCommand) return null
-  return section
-}
-
-/** 拉取节数据（ui/values，§3.2）：失败/形状非法 → 节错误态（可重试，
- * 照树视图错误态）。 */
+/**
+ * 拉取节数据（ui/values，§3.2）：sectionId=稳定节 id，仅 source:"provider"
+ * 的 list/kv 节回读。失败/形状非法 → 节错误态（可重试，照树视图错误态）。
+ * 完成时只有插件/视图/节仍有效、同步代次匹配且仍是该节最新请求才写入
+ * （§3.6）；被更新请求取代的旧响应直接丢弃。
+ */
 export async function loadUiSectionValues(
   pluginId: string,
   viewId: string,
-  sectionIndex: number,
+  sectionId: string,
 ): Promise<void> {
   const entry = findUiView(pluginId, viewId)
-  const section = readableSection(entry, sectionIndex)
+  const section = readableSection(entry, sectionId)
   if (!section) return
-  const key = uiSectionDataKey(pluginId, viewId, sectionIndex)
-  if (state.sectionData[key]?.status === 'loading') return
+  const key = uiSectionDataKey(pluginId, viewId, sectionId)
+  const generation = state.generation
+  const inflight = inflightFor(`${pluginId}:${viewId}`)
+  const token = nextToken(inflight.loads, key)
   patchSectionData(key, { status: 'loading', error: null })
-  const res = await extensionsUiValues(pluginId, viewId, String(sectionIndex))
-  const current = state.sectionData[key]
-  if (!current || current.status !== 'loading') return // 加载期间被重置
+  const res = await extensionsUiValues(pluginId, viewId, sectionId)
+  // §3.6：节被移除/语义重置（代次变化）或被更新请求取代 → 丢弃旧结果。
+  if (state.generation !== generation) return
+  if (inflight.loads.get(key) !== token) return
+  finishRequest(inflight, `${pluginId}:${viewId}`, inflight.loads, key)
   if (!res.ok) {
     patchSectionData(key, {
       status: 'error',
@@ -600,11 +774,11 @@ export async function loadUiSectionValues(
 export async function ensureUiSectionLoaded(
   pluginId: string,
   viewId: string,
-  sectionIndex: number,
+  sectionId: string,
 ): Promise<void> {
-  const existing = state.sectionData[uiSectionDataKey(pluginId, viewId, sectionIndex)]
+  const existing = state.sectionData[uiSectionDataKey(pluginId, viewId, sectionId)]
   if (!existing || existing.status === 'idle') {
-    await loadUiSectionValues(pluginId, viewId, sectionIndex)
+    await loadUiSectionValues(pluginId, viewId, sectionId)
   }
 }
 
@@ -612,27 +786,51 @@ export async function ensureUiSectionLoaded(
 export async function retryUiSection(
   pluginId: string,
   viewId: string,
-  sectionIndex: number,
+  sectionId: string,
 ): Promise<void> {
-  await loadUiSectionValues(pluginId, viewId, sectionIndex)
+  await loadUiSectionValues(pluginId, viewId, sectionId)
 }
 
-/** 表单提交（§3.5）：ext_execute_command(section.command, { values })；ok →
- * 成功注记；error → 错误注记（用户输入由组件持有的 draft 保留）。 */
+/** 视图内全部 provider 节回读（提交/行命令成功后刷新，§3.5）。 */
+function refreshProviderSections(entry: UiViewEntry): void {
+  for (const section of entry.sections) {
+    if (
+      section !== null &&
+      (section.kind === 'list' || section.kind === 'kv') &&
+      section.source === 'provider'
+    ) {
+      void retryUiSection(entry.pluginId, entry.viewId, section.id)
+    }
+  }
+}
+
+/**
+ * 表单提交（§3.5）：ext_execute_command(section.command, { values })；ok →
+ * 成功注记并刷新同视图全部 provider 节（不重置表单草稿）；error → 错误注记
+ * （用户输入由组件持有的 draft 保留）。完成时同样受 §3.6 代次与最新请求
+ * 守卫：被丢弃时复位 busy，防止控件永久禁用。
+ */
 export async function submitUiForm(
   pluginId: string,
   viewId: string,
-  sectionIndex: number,
+  sectionId: string,
   draft: Record<string, unknown>,
 ): Promise<boolean> {
-  const section = findUiView(pluginId, viewId)?.sections[sectionIndex]
-  if (!section || section.kind !== 'form' || !section.command) return false
-  const key = uiSectionDataKey(pluginId, viewId, sectionIndex)
+  const entry = findUiView(pluginId, viewId)
+  const section = entry?.sections.find(item => item?.id === sectionId)
+  if (!entry || !section || section.kind !== 'form' || !section.command) return false
+  const key = uiSectionDataKey(pluginId, viewId, sectionId)
+  const generation = state.generation
+  const inflight = inflightFor(`${pluginId}:${viewId}`)
+  const token = nextToken(inflight.busies, key)
   const values = coerceUiFormValues(section, draft)
   patchSectionData(key, { busy: true, note: null })
   const res = await extensionsExecuteCommand(section.command, { values })
-  const current = state.sectionData[key]
-  if (!current?.busy) return false // 提交期间被重置
+  // §3.6：代次失配/被新请求取代 → 丢弃结果（busy 由同步路径的复位兜住，
+  // 这里不再写入注记/刷新）。
+  if (state.generation !== generation) return false
+  if (inflight.busies.get(key) !== token) return false
+  finishRequest(inflight, `${pluginId}:${viewId}`, inflight.busies, key)
   if (!res.ok) {
     patchSectionData(key, {
       busy: false,
@@ -642,31 +840,32 @@ export async function submitUiForm(
   }
   patchSectionData(key, { busy: false, note: { kind: 'success', message: '' } })
   // §3.5 成功后回读刷新：命令 handler 可能改写 provider 数据，重拉同视图
-  // 全部可回读节（行命令路径 runUiRowCommand 已带同款刷新）。
-  const entry = findUiView(pluginId, viewId)
-  entry?.sections.forEach((s, idx) => {
-    if (s === null) return
-    if (s.kind !== 'list' && s.kind !== 'kv') return
-    if (s.valuesCommand) void retryUiSection(pluginId, viewId, idx)
-  })
+  // 全部 provider 节（行命令路径 runUiRowCommand 已带同款刷新）。
+  refreshProviderSections(entry)
   return true
 }
 
 /** list 行点击（§3.5）：rowCommand(row)（整行对象作 args，单元格为归一
- * 标量）；成功后回读刷新 + 成功注记，失败 → 错误注记。 */
+ * 标量）；成功后回读刷新 + 成功注记，失败 → 错误注记。§3.6 守卫同
+ * submitUiForm。 */
 export async function runUiRowCommand(
   pluginId: string,
   viewId: string,
-  sectionIndex: number,
+  sectionId: string,
   row: Record<string, UiScalar>,
 ): Promise<boolean> {
-  const section = findUiView(pluginId, viewId)?.sections[sectionIndex]
-  if (!section || section.kind !== 'list' || !section.rowCommand) return false
-  const key = uiSectionDataKey(pluginId, viewId, sectionIndex)
+  const entry = findUiView(pluginId, viewId)
+  const section = entry?.sections.find(item => item?.id === sectionId)
+  if (!entry || !section || section.kind !== 'list' || !section.rowCommand) return false
+  const key = uiSectionDataKey(pluginId, viewId, sectionId)
+  const generation = state.generation
+  const inflight = inflightFor(`${pluginId}:${viewId}`)
+  const token = nextToken(inflight.busies, key)
   patchSectionData(key, { busy: true, note: null })
   const res = await extensionsExecuteCommand(section.rowCommand, { ...row })
-  const current = state.sectionData[key]
-  if (!current?.busy) return false // 执行期间被重置
+  if (state.generation !== generation) return false
+  if (inflight.busies.get(key) !== token) return false
+  finishRequest(inflight, `${pluginId}:${viewId}`, inflight.busies, key)
   if (!res.ok) {
     patchSectionData(key, {
       busy: false,
@@ -674,10 +873,10 @@ export async function runUiRowCommand(
     })
     return false
   }
-  await loadUiSectionValues(pluginId, viewId, sectionIndex)
-  patchSectionData(uiSectionDataKey(pluginId, viewId, sectionIndex), {
-    busy: false,
-    note: { kind: 'success', message: '' },
-  })
+  await loadUiSectionValues(pluginId, viewId, sectionId)
+  // 本节回读完成（回读自身另有代次/令牌守卫）后收尾：busy 复位 + 成功注记。
+  // busy 令牌已 finish，这里只校验代次（命令资格在上面的校验已确立）。
+  if (state.generation !== generation) return false
+  patchSectionData(key, { busy: false, note: { kind: 'success', message: '' } })
   return true
 }

@@ -107,8 +107,9 @@ pub struct PluginView {
 /// `id` 插件内唯一（小写字母/数字/线，与 views.id 同规则）；`name` 是
 /// 标签页标题；`openCommand` 可空，声明时必须是该插件 contributes.commands
 /// 中的命令（palette 别名拦截，纯 web 打开本视图）。`sections` 是经
-/// validate_ui 白名单校验后的节 JSON（kind ∈ markdown|form|list|kv），
-/// 原样下发，web 侧再过一次守卫归一（§3.4 双端白名单）。
+/// validate_ui 白名单校验后的节 JSON（kind ∈ markdown|form|list|kv，每节
+/// 带稳定 `id`；list/kv 用 `source: "provider"` 声明动态回读，v1 已移除
+/// `valuesCommand`），原样下发，web 侧再过一次守卫归一（§3.4 双端白名单）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginUiView {
@@ -218,6 +219,20 @@ pub enum ExtError {
     },
     #[error("插件 `{plugin}` 的树视图 `{view}` 不存在、未声明或所属插件已禁用")]
     ViewNotFound { plugin: String, view: String },
+    #[error("插件 `{plugin}` 的 UI 视图 `{view}` 不存在节 `{section}` 或其未声明")]
+    UiSectionNotFound {
+        plugin: String,
+        view: String,
+        section: String,
+    },
+    #[error(
+        "插件 `{plugin}` 的 UI 视图 `{view}` 节 `{section}` 不是 `source:\"provider\"` 动态节，拒绝回读"
+    )]
+    UiSectionNotDynamic {
+        plugin: String,
+        view: String,
+        section: String,
+    },
 }
 
 impl ExtError {
@@ -250,6 +265,8 @@ impl ExtError {
                 ErrorCode::InvalidArgument
             }
             ExtError::ViewNotFound { .. } => ErrorCode::NotFound,
+            ExtError::UiSectionNotFound { .. } => ErrorCode::NotFound,
+            ExtError::UiSectionNotDynamic { .. } => ErrorCode::InvalidArgument,
         }
     }
 

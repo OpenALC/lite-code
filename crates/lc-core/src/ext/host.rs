@@ -44,13 +44,17 @@ struct HostTool {
     command: String,
 }
 
-/// 初始化参数里随插件下发的 UI 视图声明（docs/plans/plugin-webview.md §3.2）：
-/// 宿主按 id 校验 `ctx.ui.register` 范围，sectionKinds 供 ui/values 按节
-/// kind 白名单归一（markdown 节无回读）。
+/// 初始化参数里随插件下发的 UI 视图声明（docs/plans/plugin-webview.md §3.2，
+/// M2-R）：宿主按 id 校验 `ctx.ui.register` 范围；`sections` 是完整节描述
+/// DTO（markdown `{id,kind}`；form `{id,kind,fields:[{key,type,default?,
+/// options?,min?,max?}]}`；list `{id,kind,source:"provider",columns:[{key}]}`；
+/// kv `{id,kind,source?}`），替代旧的 `sectionKinds` 数组——宿主按声明过滤
+/// 动态值；label/width/title/items 等展示与静态数据不在 initialize 载荷
+/// （web 经 PluginList 全量下发）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostUiView {
     id: String,
-    section_kinds: Vec<String>,
+    sections: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,6 +379,7 @@ impl ExtHost {
     }
 
     /// 默认目录布局下读取插件 UI 视图的节值（`ext_ui_values`）。
+    /// `section_id` 为清单稳定节 id（M2-R，不再是数组序号）。
     pub fn ui_values(
         &mut self,
         workspace_root: &Path,
@@ -395,8 +400,11 @@ impl ExtHost {
 
     /// 指定布局下读取插件 UI 视图的节值（docs/plans/plugin-webview.md §3.2）：
     /// 向扩展宿主发送 `ui/values`。视图不存在/插件禁用/非 node runtime 返回
-    /// [`ExtError::ViewNotFound`]（模式同 `view_children_with_paths`）；宿主未
-    /// 运行时按 node 插件命令的既有逻辑惰性启动，Node 缺失返回
+    /// [`ExtError::ViewNotFound`]（模式同 `view_children_with_paths`）；节
+    /// id 未声明返回 [`ExtError::UiSectionNotFound`]（not_found），节非
+    /// `source:"provider"` 返回 [`ExtError::UiSectionNotDynamic`]
+    /// （invalid-values）——两者都在转发宿主前按清单描述门控（M2-R）；
+    /// 宿主未运行时按 node 插件命令的既有逻辑惰性启动，Node 缺失返回
     /// [`ExtError::NodeUnavailable`]；默认超时 30s。
     pub fn ui_values_with_paths(
         &mut self,
@@ -432,6 +440,42 @@ impl ExtHost {
             return Err(ExtError::ViewNotFound {
                 plugin: plugin_id.to_string(),
                 view: view_id.to_string(),
+            });
+        }
+
+        // M2-R：`section_id` 是清单稳定节 id（不再是数组序号）。转发宿主前
+        // 先按清单描述门控——节不存在 → not_found；节非 `source:"provider"`
+        // → invalid-values（docs/plans/plugin-webview.md §3.2，复用既有
+        // ErrorCode，provider 执行前拒绝）。
+        let section = target
+            .manifest
+            .as_ref()
+            .and_then(|manifest| {
+                manifest
+                    .contributes
+                    .ui
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+            })
+            .and_then(|view| view.sections.as_array())
+            .and_then(|sections| {
+                sections
+                    .iter()
+                    .find(|section| section.get("id").and_then(Value::as_str) == Some(section_id))
+            });
+        let Some(section) = section else {
+            return Err(ExtError::UiSectionNotFound {
+                plugin: plugin_id.to_string(),
+                view: view_id.to_string(),
+                section: section_id.to_string(),
+            });
+        };
+        if section.get("source").and_then(Value::as_str) != Some("provider") {
+            return Err(ExtError::UiSectionNotDynamic {
+                plugin: plugin_id.to_string(),
+                view: view_id.to_string(),
+                section: section_id.to_string(),
             });
         }
 
@@ -494,7 +538,7 @@ impl ExtHost {
                         .iter()
                         .map(|view| json!({
                             "id": view.id,
-                            "sectionKinds": view.section_kinds,
+                            "sections": view.sections,
                         }))
                         .collect::<Vec<_>>(),
                     "activationEvents": plugin.activation_events,
@@ -568,6 +612,88 @@ fn canonical_script(path: &Path) -> Result<PathBuf, ExtError> {
     Ok(PathBuf::from(display_path(&canonical)))
 }
 
+/// initialize 的节描述 DTO（docs/plans/plugin-webview.md §3.2）：Rust 从
+/// 已校验清单构造，Node 按该描述归一动态值、web 按同一清单再次归一；不得
+/// 从 provider 返回值推断结构。只下发身份与回读判定所需字段——markdown
+/// `{id,kind}`；form `{id,kind,fields:[{key,type,default?,options?,min?,max?}]}`
+/// （label/placeholder/command 归 web）；list `{id,kind,source:"provider",
+/// columns:[{key}]}`（label/width 归 web）；kv `{id,kind,source?}`（静态
+/// items 归 web）。
+fn host_ui_section(section: &Value) -> Value {
+    let id = section
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let kind = section
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match kind {
+        "form" => {
+            let fields = section
+                .get("fields")
+                .and_then(Value::as_array)
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|field| {
+                            let mut dto = serde_json::Map::new();
+                            dto.insert(
+                                "key".into(),
+                                field.get("key").cloned().unwrap_or(Value::Null),
+                            );
+                            dto.insert(
+                                "type".into(),
+                                field.get("type").cloned().unwrap_or(Value::Null),
+                            );
+                            for extra in ["default", "options", "min", "max"] {
+                                if let Some(value) = field.get(extra) {
+                                    dto.insert(extra.into(), value.clone());
+                                }
+                            }
+                            Value::Object(dto)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            json!({ "id": id, "kind": kind, "fields": fields })
+        }
+        "list" => {
+            let columns = section
+                .get("columns")
+                .and_then(Value::as_array)
+                .map(|columns| {
+                    columns
+                        .iter()
+                        .map(|column| {
+                            json!({
+                                "key": column.get("key").and_then(Value::as_str).unwrap_or_default(),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            json!({
+                "id": id,
+                "kind": kind,
+                "source": section.get("source").and_then(Value::as_str).unwrap_or("provider"),
+                "columns": columns,
+            })
+        }
+        "kv" => {
+            let mut dto = serde_json::Map::new();
+            dto.insert("id".into(), json!(id));
+            dto.insert("kind".into(), json!(kind));
+            if let Some(source) = section.get("source") {
+                dto.insert("source".into(), source.clone());
+            }
+            Value::Object(dto)
+        }
+        // markdown 及其余（已校验清单不会到达）：身份键即可。
+        _ => json!({ "id": id, "kind": kind }),
+    }
+}
+
 fn host_plugins(plugins: &[DiscoveredPlugin]) -> Vec<HostPlugin> {
     let mut host_plugins: Vec<HostPlugin> = plugins
         .iter()
@@ -612,20 +738,10 @@ fn host_plugins(plugins: &[DiscoveredPlugin]) -> Vec<HostPlugin> {
                     .iter()
                     .map(|view| HostUiView {
                         id: view.id.clone(),
-                        section_kinds: view
+                        sections: view
                             .sections
                             .as_array()
-                            .map(|sections| {
-                                sections
-                                    .iter()
-                                    .filter_map(|section| {
-                                        section
-                                            .get("kind")
-                                            .and_then(Value::as_str)
-                                            .map(str::to_string)
-                                    })
-                                    .collect()
-                            })
+                            .map(|sections| sections.iter().map(host_ui_section).collect())
                             .unwrap_or_default(),
                     })
                     .collect(),

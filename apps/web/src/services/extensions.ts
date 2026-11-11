@@ -276,19 +276,21 @@ function demoPluginList(): PluginList {
           },
         ],
         views: [{ id: 'demo-tree', name: 'Demo Tree' }],
-        // 演示 UI 视图：markdown + kv 节；kv 声明 valuesCommand，browser dev
-        // 走演示数据动态回读（M2）；openCommand 走 palette 别名。
+        // 演示 UI 视图：markdown + kv 节（M2-R DTO：稳定节 id；kv 声明
+        // source:"provider"，browser dev 走演示数据动态回读）；openCommand 走
+        // palette 别名。
         uiViews: [
           {
             id: 'demo-board',
             name: 'Demo Board',
             openCommand: 'demo.hello.board',
             sections: [
-              { kind: 'markdown', text: '# Demo Board\n\n静态 **markdown** 节。' },
+              { id: 'intro', kind: 'markdown', text: '# Demo Board\n\n静态 **markdown** 节。' },
               {
+                id: 'stats',
                 kind: 'kv',
                 title: '统计',
-                valuesCommand: 'demo.hello.time',
+                source: 'provider',
                 items: [
                   { key: '版本', value: '0.1.0' },
                   { key: '运行时', value: 'node' },
@@ -313,7 +315,8 @@ function demoPluginList(): PluginList {
         themes: [],
         languages: [],
         views: [],
-        // 声明式插件的演示视图：form 静态 default 只读渲染 + list 空态注记。
+        // 声明式插件的演示视图：form 静态 default 只读渲染 + list 空态注记
+        // （M2-R DTO：稳定节 id；list 未声明 source 时不回读）。
         uiViews: [
           {
             id: 'notes-panel',
@@ -321,6 +324,7 @@ function demoPluginList(): PluginList {
             openCommand: null,
             sections: [
               {
+                id: 'filter',
                 kind: 'form',
                 title: '筛选',
                 command: 'demo.notes.open',
@@ -339,9 +343,9 @@ function demoPluginList(): PluginList {
                 ],
               },
               {
+                id: 'tasks',
                 kind: 'list',
                 title: '任务',
-                valuesCommand: 'demo.notes.open',
                 columns: [
                   { key: 'title', label: '标题', width: 3 },
                   { key: 'state', label: '状态', width: 1 },
@@ -391,19 +395,13 @@ const DEMO_VIEW_NODES: Record<string, unknown[]> = {
 }
 
 // 浏览器 dev 演示 UI 节值（docs/plans/plugin-webview.md §3.2）：键为
-// `${pluginId}>${viewId}>${sectionId}`（sectionId=节序号字符串），形状与宿主
+// `${pluginId}>${viewId}>${sectionId}`（sectionId=清单稳定节 id），形状与宿主
 // normalizeUiValues 归一结果一致（list→{ rows }、kv→{ items }）。
 const DEMO_UI_VALUES: Record<string, unknown> = {
-  'demo.hello>demo-board>1': {
+  'demo.hello>demo-board>stats': {
     items: [
       { key: '版本', value: '0.1.0' },
       { key: '消息数', value: '2' },
-    ],
-  },
-  'demo.notes>notes-panel>1': {
-    rows: [
-      { title: '示例笔记一', state: 'open' },
-      { title: '示例笔记二', state: 'done' },
     ],
   },
 }

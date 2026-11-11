@@ -852,29 +852,52 @@ test("view/children provider timeout returns -32000 and host stays responsive", 
   }
 });
 
-test("ui/values round-trips per-section values and validates shapes", async (t) => {
+test("ui/values round-trips per-section values by stable id and validates shapes", async (t) => {
   const fixture = await createFixture(t);
   const board = await writePlugin(fixture.pluginsRoot, "test.board", {
     commands: [],
-    uiViews: [{ id: "test.board", sectionKinds: ["markdown", "form", "list", "kv"] }],
+    uiViews: [
+      {
+        id: "test.board",
+        sections: [
+          { id: "intro", kind: "markdown" },
+          {
+            id: "filter",
+            kind: "form",
+            fields: [
+              { key: "q", type: "text" },
+              { key: "limit", type: "number", min: 1, max: 200, default: 50 },
+              { key: "done", type: "boolean", default: false },
+              { key: "sort", type: "select", options: ["new", "old"], default: "new" },
+              { key: "token", type: "password" }
+            ]
+          },
+          {
+            id: "tasks",
+            kind: "list",
+            source: "provider",
+            columns: [{ key: "title" }, { key: "state" }]
+          },
+          { id: "stats", kind: "kv", source: "provider" },
+          { id: "static-stats", kind: "kv" }
+        ]
+      }
+    ],
     source: `
       export function activate(ctx) {
         ctx.ui.register("test.board", {
           getValues(sectionId) {
-            if (sectionId === "1") {
-              return {
-                values: { q: "demo", limit: 50, done: false, token: "secret", nested: { a: [1, 2] } }
-              };
-            }
-            if (sectionId === "2") {
+            ctx.log("board getValues " + sectionId);
+            if (sectionId === "tasks") {
               return {
                 rows: [
-                  { title: "Alpha", state: 1, junk: { x: 1 }, skip: null },
-                  { title: "Beta", state: false }
+                  { title: "Alpha", state: 1, junk: { x: 1 }, extra: "dropped" },
+                  { title: "Beta", state: false },
+                  { title: "Gamma" }
                 ]
               };
             }
-            if (sectionId === "3") {
+            if (sectionId === "stats") {
               return { items: [{ key: "总数", value: "42", extra: 1 }] };
             }
             return { anything: true };
@@ -887,30 +910,60 @@ test("ui/values round-trips per-section values and validates shapes", async (t) 
   const badValues = await writePlugin(fixture.pluginsRoot, "test.bad-values", {
     commands: [],
     uiViews: [
-      { id: "test.bad-form", sectionKinds: ["form"] },
-      { id: "test.bad-list", sectionKinds: ["list"] },
-      { id: "test.many-rows", sectionKinds: ["list"] },
-      { id: "test.bad-kv", sectionKinds: ["kv"] },
-      { id: "test.many-kv", sectionKinds: ["kv"] },
-      { id: "test.throwing", sectionKinds: ["kv"] }
+      {
+        id: "test.bad-values",
+        sections: [
+          { id: "not-rows", kind: "list", source: "provider", columns: [{ key: "a" }] },
+          { id: "bad-row", kind: "list", source: "provider", columns: [{ key: "a" }] },
+          { id: "many-rows", kind: "list", source: "provider", columns: [{ key: "a" }] },
+          { id: "cell-object", kind: "list", source: "provider", columns: [{ key: "a" }] },
+          { id: "cell-array", kind: "list", source: "provider", columns: [{ key: "a" }] },
+          { id: "cell-null", kind: "list", source: "provider", columns: [{ key: "a" }] },
+          { id: "not-items", kind: "kv", source: "provider" },
+          { id: "missing-key", kind: "kv", source: "provider" },
+          { id: "empty-key", kind: "kv", source: "provider" },
+          { id: "non-string-value", kind: "kv", source: "provider" },
+          { id: "many-items", kind: "kv", source: "provider" },
+          { id: "throwing", kind: "kv", source: "provider" }
+        ]
+      }
     ],
     source: `
       export function activate(ctx) {
-        ctx.ui.register("test.bad-form", { getValues: () => ({ rows: [] }) });
-        ctx.ui.register("test.bad-list", { getValues: () => ({ rows: ["nope"] }) });
-        ctx.ui.register("test.many-rows", {
-          getValues: () => ({ rows: Array(501).fill({ a: 1 }) })
-        });
-        ctx.ui.register("test.bad-kv", { getValues: () => ({ items: [{ key: "k" }] }) });
-        ctx.ui.register("test.many-kv", {
-          getValues: () => ({ items: Array(65).fill({ key: "k", value: "v" }) })
-        });
-        ctx.ui.register("test.throwing", {
-          getValues: () => {
-            throw new Error("getValues exploded");
+        ctx.ui.register("test.bad-values", {
+          getValues(sectionId) {
+            switch (sectionId) {
+              case "not-rows":
+                return { values: {} };
+              case "bad-row":
+                return { rows: ["nope"] };
+              case "many-rows":
+                return { rows: Array(501).fill({ a: 1 }) };
+              case "cell-object":
+                return { rows: [{ a: { nested: true } }] };
+              case "cell-array":
+                return { rows: [{ a: [1, 2] }] };
+              case "cell-null":
+                return { rows: [{ a: null }] };
+              case "not-items":
+                return { rows: [] };
+              case "missing-key":
+                return { items: [{ value: "v" }] };
+              case "empty-key":
+                return { items: [{ key: "", value: "v" }] };
+              case "non-string-value":
+                return { items: [{ key: "k", value: 42 }] };
+              case "many-items":
+                return { items: Array(65).fill({ key: "k", value: "v" }) };
+              case "throwing":
+                throw new Error("getValues exploded");
+              default:
+                return null;
+            }
           }
         });
       }
+      export function deactivate() {}
     `
   });
 
@@ -926,78 +979,107 @@ test("ui/values round-trips per-section values and validates shapes", async (t) 
       result.plugins.map((plugin) => plugin.id),
       ["example.hello", "test.board", "test.bad-values"]
     );
-    // initialize 结果带 uiViews（声明的视图 id 列表）。
+    // initialize 结果回显完整节描述 DTO（id/kind/source/fields/columns 全保留）。
     const boardPlugin = result.plugins.find((plugin) => plugin.id === "test.board");
-    assert.deepEqual(boardPlugin.uiViews, ["test.board"]);
+    assert.deepEqual(boardPlugin.uiViews, [
+      {
+        id: "test.board",
+        sections: [
+          { id: "intro", kind: "markdown" },
+          {
+            id: "filter",
+            kind: "form",
+            fields: [
+              { key: "q", type: "text" },
+              { key: "limit", type: "number", min: 1, max: 200, default: 50 },
+              { key: "done", type: "boolean", default: false },
+              { key: "sort", type: "select", options: ["new", "old"], default: "new" },
+              { key: "token", type: "password" }
+            ]
+          },
+          { id: "tasks", kind: "list", source: "provider", columns: [{ key: "title" }, { key: "state" }] },
+          { id: "stats", kind: "kv", source: "provider" },
+          { id: "static-stats", kind: "kv" }
+        ]
+      }
+    ]);
     const helloPlugin = result.plugins.find((plugin) => plugin.id === "example.hello");
     assert.deepEqual(helloPlugin.uiViews, []);
 
-    // form 节：values 任意 JSON 原样保留（含嵌套对象）。
-    const form = await client.uiValues("test.board", "test.board", "1", "u-form");
-    assert.deepEqual(form.result, {
-      values: { q: "demo", limit: 50, done: false, token: "secret", nested: { a: [1, 2] } }
-    });
-
-    // list 节：非标量单元格丢弃，多余键丢弃。
-    const list = await client.uiValues("test.board", "test.board", "2", "u-list");
+    // list 节按稳定 id 派发：provider 收到 "tasks"；未知列丢弃、缺列不补。
+    const list = await client.uiValues("test.board", "test.board", "tasks", "u-list");
     assert.deepEqual(list.result, {
-      rows: [{ title: "Alpha", state: 1 }, { title: "Beta", state: false }]
+      rows: [{ title: "Alpha", state: 1 }, { title: "Beta", state: false }, { title: "Gamma" }]
     });
+    assert.match(client.stderr, /board getValues tasks/);
 
-    // kv 节：条目白名单归一。
-    const kv = await client.uiValues("test.board", "test.board", "3", "u-kv");
+    // kv 节：条目白名单归一，多余键丢弃。
+    const kv = await client.uiValues("test.board", "test.board", "stats", "u-kv");
     assert.deepEqual(kv.result, { items: [{ key: "总数", value: "42" }] });
 
-    // markdown 节无回读：-32000 reason=invalid-values，不调用 provider。
-    const markdown = await client.uiValues("test.board", "test.board", "0", "u-md");
+    // markdown 节无回读：-32000 reason=invalid-values，provider 零调用。
+    const markdown = await client.uiValues("test.board", "test.board", "intro", "u-md");
     assert.equal(markdown.error.code, -32000);
     assert.equal(markdown.error.data.reason, "invalid-values");
-    assert.equal(markdown.error.data.sectionId, "0");
+    assert.equal(markdown.error.data.sectionId, "intro");
+    assert.doesNotMatch(client.stderr, /board getValues intro/);
 
-    // 越界/非数字节序号：invalid-values。
-    const outOfRange = await client.uiValues("test.board", "test.board", "4", "u-oob");
-    assert.equal(outOfRange.error.code, -32000);
-    assert.equal(outOfRange.error.data.reason, "invalid-values");
-    const notANumber = await client.uiValues("test.board", "test.board", "abc", "u-nan");
-    assert.equal(notANumber.error.code, -32000);
-    assert.equal(notANumber.error.data.reason, "invalid-values");
+    // form 节无回读：invalid-values，provider 零调用。
+    const form = await client.uiValues("test.board", "test.board", "filter", "u-form");
+    assert.equal(form.error.code, -32000);
+    assert.equal(form.error.data.reason, "invalid-values");
+    assert.doesNotMatch(client.stderr, /board getValues filter/);
+
+    // 无 source:"provider" 的静态 kv 节：invalid-values，provider 零调用。
+    const staticKv = await client.uiValues("test.board", "test.board", "static-stats", "u-static");
+    assert.equal(staticKv.error.code, -32000);
+    assert.equal(staticKv.error.data.reason, "invalid-values");
+    assert.doesNotMatch(client.stderr, /board getValues static-stats/);
+
+    // 未知节（旧序号语义不再接受）：invalid-values，provider 零调用。
+    const unknown = await client.uiValues("test.board", "test.board", "0", "u-oob");
+    assert.equal(unknown.error.code, -32000);
+    assert.equal(unknown.error.data.reason, "invalid-values");
+    const numeric = await client.uiValues("test.board", "test.board", "3", "u-nan");
+    assert.equal(numeric.error.code, -32000);
+    assert.equal(numeric.error.data.reason, "invalid-values");
+    assert.equal((client.stderr.match(/board getValues/g) ?? []).length, 2);
 
     // 未声明视图 / 未知插件：-32601 带 reason。
-    const undeclared = await client.uiValues("test.board", "test.undeclared", "0", "u-none");
+    const undeclared = await client.uiValues("test.board", "test.undeclared", "tasks", "u-none");
     assert.equal(undeclared.error.code, -32601);
     assert.equal(undeclared.error.data.reason, "view-not-declared");
-    const unknownPlugin = await client.uiValues("test.nope", "test.board", "0", "u-nope");
+    const unknownPlugin = await client.uiValues("test.nope", "test.board", "tasks", "u-nope");
     assert.equal(unknownPlugin.error.code, -32601);
     assert.equal(unknownPlugin.error.data.reason, "plugin-not-loaded");
 
     // 形状非法全集：-32000 reason=invalid-values。
-    const badForm = await client.uiValues("test.bad-values", "test.bad-form", "0", "u-bad-form");
-    assert.equal(badForm.error.code, -32000);
-    assert.equal(badForm.error.data.reason, "invalid-values");
-
-    const badList = await client.uiValues("test.bad-values", "test.bad-list", "0", "u-bad-list");
-    assert.equal(badList.error.code, -32000);
-    assert.equal(badList.error.data.reason, "invalid-values");
-
-    const manyRows = await client.uiValues("test.bad-values", "test.many-rows", "0", "u-many");
-    assert.equal(manyRows.error.code, -32000);
-    assert.equal(manyRows.error.data.reason, "invalid-values");
-    assert.match(manyRows.error.message, /500 rows/);
-
-    const badKv = await client.uiValues("test.bad-values", "test.bad-kv", "0", "u-bad-kv");
-    assert.equal(badKv.error.code, -32000);
-    assert.equal(badKv.error.data.reason, "invalid-values");
-
-    const manyKv = await client.uiValues("test.bad-values", "test.many-kv", "0", "u-many-kv");
-    assert.equal(manyKv.error.code, -32000);
-    assert.equal(manyKv.error.data.reason, "invalid-values");
-    assert.match(manyKv.error.message, /64 items/);
+    const badShapeCases = [
+      ["not-rows", /must return \{ rows/],
+      ["bad-row", /invalid row at index 0/],
+      ["many-rows", /more than 500 rows/],
+      ["cell-object", /invalid value in column "a"/],
+      ["cell-array", /invalid value in column "a"/],
+      ["cell-null", /invalid value in column "a"/],
+      ["not-items", /must return \{ items/],
+      ["missing-key", /non-empty string key/],
+      ["empty-key", /non-empty string key/],
+      ["non-string-value", /without a string value/],
+      ["many-items", /more than 64 items/]
+    ];
+    for (let index = 0; index < badShapeCases.length; index++) {
+      const [sectionId, pattern] = badShapeCases[index];
+      const response = await client.uiValues("test.bad-values", "test.bad-values", sectionId, `u-bad-${index}`);
+      assert.equal(response.error.code, -32000, sectionId);
+      assert.equal(response.error.data.reason, "invalid-values", sectionId);
+      assert.match(response.error.message, pattern, sectionId);
+    }
 
     // provider 抛错：-32000 带原始错误，宿主保持可用。
-    const thrown = await client.uiValues("test.bad-values", "test.throwing", "0", "u-throw");
+    const thrown = await client.uiValues("test.bad-values", "test.bad-values", "throwing", "u-throw");
     assert.equal(thrown.error.code, -32000);
     assert.match(thrown.error.message, /getValues exploded/);
-    const afterThrow = await client.uiValues("test.board", "test.board", "3", "u-after");
+    const afterThrow = await client.uiValues("test.board", "test.board", "stats", "u-after");
     assert.equal(afterThrow.error, undefined);
 
     // 参数形状校验。
@@ -1032,27 +1114,64 @@ test("ctx.ui.register is restricted to declared ui views and payload shapes", as
       export function activate(ctx) {}
     `
   });
+  const legacy = await writePlugin(fixture.pluginsRoot, "test.legacy-ui", {
+    commands: [],
+    uiViews: [{ id: "test.legacy", sectionKinds: ["kv"] }],
+    source: `
+      export function activate(ctx) {}
+    `
+  });
+  const badKind = await writePlugin(fixture.pluginsRoot, "test.bad-kind-ui", {
+    commands: [],
+    uiViews: [{ id: "test.bad-kind", sections: [{ id: "s", kind: "chart" }] }],
+    source: `
+      export function activate(ctx) {}
+    `
+  });
+  const badSource = await writePlugin(fixture.pluginsRoot, "test.bad-source-ui", {
+    commands: [],
+    uiViews: [
+      {
+        id: "test.bad-source",
+        sections: [{ id: "s", kind: "list", columns: [{ key: "a" }] }]
+      }
+    ],
+    source: `
+      export function activate(ctx) {}
+    `
+  });
 
   const client = new HostClient(fixture.workspaceRoot);
   try {
     const result = await initializeHost(client, fixture, [
       fixture.spec,
       { ...undeclared, main: path.join(undeclared.path, "index.mjs") },
-      { ...malformed, main: path.join(malformed.path, "index.mjs") }
+      { ...malformed, main: path.join(malformed.path, "index.mjs") },
+      { ...legacy, main: path.join(legacy.path, "index.mjs") },
+      { ...badKind, main: path.join(badKind.path, "index.mjs") },
+      { ...badSource, main: path.join(badSource.path, "index.mjs") }
     ]);
-    assert.equal(result.errors.length, 2);
+    assert.equal(result.errors.length, 5);
     const errors = new Map(result.errors.map((error) => [error.pluginId, error]));
     assert.equal(errors.get("test.undeclared-ui").stage, "activate");
     assert.match(errors.get("test.undeclared-ui").message, /not declared/);
     assert.equal(errors.get("test.malformed-ui").stage, "manifest");
-    assert.match(errors.get("test.malformed-ui").message, /sectionKinds/);
+    assert.match(errors.get("test.malformed-ui").message, /must declare sections/);
+    // 旧 sectionKinds 载荷明确拒绝：插件级 manifest 错误，不做猜测转换。
+    assert.equal(errors.get("test.legacy-ui").stage, "manifest");
+    assert.match(errors.get("test.legacy-ui").message, /sectionKinds/);
+    // 节 kind/source 闭集校验（宿主防御层，Rust 校验期为第一道）。
+    assert.equal(errors.get("test.bad-kind-ui").stage, "manifest");
+    assert.match(errors.get("test.bad-kind-ui").message, /invalid kind/);
+    assert.equal(errors.get("test.bad-source-ui").stage, "manifest");
+    assert.match(errors.get("test.bad-source-ui").message, /source "provider"/);
     assert.deepEqual(
       result.plugins.map((plugin) => plugin.id),
       ["example.hello"]
     );
 
     // 注册失败的插件不在注册表：-32601 plugin-not-loaded。
-    const missing = await client.uiValues("test.undeclared-ui", "test.not-declared", "0", "ru-1");
+    const missing = await client.uiValues("test.undeclared-ui", "test.not-declared", "s", "ru-1");
     assert.equal(missing.error.code, -32601);
     assert.equal(missing.error.data.reason, "plugin-not-loaded");
     assert.deepEqual(client.protocolErrors, []);
@@ -1065,15 +1184,24 @@ test("onUiView lazy-activates ui providers; failures return -32601 without retry
   const fixture = await createFixture(t);
   const lazyBoard = await writePlugin(fixture.pluginsRoot, "test.lazy-board", {
     commands: ["test.lazy-board.run"],
-    uiViews: [{ id: "test.lazy-board.board", sectionKinds: ["form", "list"] }],
+    uiViews: [
+      {
+        id: "test.lazy-board.board",
+        sections: [
+          { id: "filter", kind: "form", fields: [{ key: "q", type: "text" }] },
+          { id: "tasks", kind: "list", source: "provider", columns: [{ key: "title" }] }
+        ]
+      }
+    ],
     activationEvents: ["onUiView:test.lazy-board.board"],
     source: `
       export function activate(ctx) {
         ctx.log("test.lazy-board activated");
         ctx.ui.register("test.lazy-board.board", {
           getValues(sectionId) {
-            if (sectionId === "1") return { rows: [{ title: "lazy row" }] };
-            return { values: { from: sectionId } };
+            ctx.log("lazy-board getValues " + sectionId);
+            if (sectionId === "tasks") return { rows: [{ title: "lazy row" }] };
+            return { anything: true };
           }
         });
       }
@@ -1084,7 +1212,12 @@ test("onUiView lazy-activates ui providers; failures return -32601 without retry
   });
   const brokenBoard = await writePlugin(fixture.pluginsRoot, "test.broken-board", {
     commands: ["test.broken-board.run"],
-    uiViews: [{ id: "test.broken-board.board", sectionKinds: ["kv"] }],
+    uiViews: [
+      {
+        id: "test.broken-board.board",
+        sections: [{ id: "items", kind: "kv", source: "provider" }]
+      }
+    ],
     activationEvents: ["onUiView:test.broken-board.board"],
     source: `
       export function activate() {
@@ -1095,7 +1228,12 @@ test("onUiView lazy-activates ui providers; failures return -32601 without retry
   });
   const eagerBoard = await writePlugin(fixture.pluginsRoot, "test.eager-board", {
     commands: [],
-    uiViews: [{ id: "test.eager-board.board", sectionKinds: ["kv"] }],
+    uiViews: [
+      {
+        id: "test.eager-board.board",
+        sections: [{ id: "items", kind: "kv", source: "provider" }]
+      }
+    ],
     activationEvents: ["*"],
     source: `
       export function activate(ctx) {
@@ -1121,34 +1259,38 @@ test("onUiView lazy-activates ui providers; failures return -32601 without retry
     );
     assert.doesNotMatch(client.stderr, /test\.lazy-board activated/);
 
-    // ui/values 命中延迟插件声明的视图：懒激活后按节 kind 归一返回。
+    // ui/values 命中延迟插件声明的视图：懒激活后按稳定节 id 派发并归一。
     const first = await client.uiValues(
       "test.lazy-board",
       "test.lazy-board.board",
-      "0",
+      "tasks",
       "lu-1"
     );
     assert.equal(first.error, undefined);
-    assert.deepEqual(first.result, { values: { from: "0" } });
+    assert.deepEqual(first.result, { rows: [{ title: "lazy row" }] });
     assert.match(client.stderr, /test\.lazy-board activated/);
+    assert.match(client.stderr, /lazy-board getValues tasks/);
 
-    const second = await client.uiValues(
+    // form 节无回读：invalid-values，provider 零调用。
+    const form = await client.uiValues(
       "test.lazy-board",
       "test.lazy-board.board",
-      "1",
-      "lu-2"
+      "filter",
+      "lu-form"
     );
-    assert.deepEqual(second.result, { rows: [{ title: "lazy row" }] });
+    assert.equal(form.error.code, -32000);
+    assert.equal(form.error.data.reason, "invalid-values");
+    assert.doesNotMatch(client.stderr, /lazy-board getValues filter/);
 
     // 幂等：重复请求不再次激活。
-    await client.uiValues("test.lazy-board", "test.lazy-board.board", "0", "lu-3");
+    await client.uiValues("test.lazy-board", "test.lazy-board.board", "tasks", "lu-3");
     assert.equal((client.stderr.match(/test\.lazy-board activated/g) ?? []).length, 1);
 
     // activate 失败的延迟插件：-32601 + reason/stage，且不重试。
     const broken = await client.uiValues(
       "test.broken-board",
       "test.broken-board.board",
-      "0",
+      "items",
       "bu-1"
     );
     assert.equal(broken.error.code, -32601);
@@ -1158,14 +1300,14 @@ test("onUiView lazy-activates ui providers; failures return -32601 without retry
     const brokenAgain = await client.uiValues(
       "test.broken-board",
       "test.broken-board.board",
-      "0",
+      "items",
       "bu-2"
     );
     assert.equal(brokenAgain.error.code, -32601);
     assert.equal((client.stderr.match(/test\.broken-board activating/g) ?? []).length, 1);
 
     // 立即插件未注册 provider：-32601 view-not-registered。
-    const eager = await client.uiValues("test.eager-board", "test.eager-board.board", "0", "eu-1");
+    const eager = await client.uiValues("test.eager-board", "test.eager-board.board", "items", "eu-1");
     assert.equal(eager.error.code, -32601);
     assert.equal(eager.error.data.reason, "view-not-registered");
 
@@ -1184,7 +1326,12 @@ test("ui/values provider timeout returns -32000 and host stays responsive", asyn
   const fixture = await createFixture(t);
   const hanging = await writePlugin(fixture.pluginsRoot, "test.hanging-ui", {
     commands: [],
-    uiViews: [{ id: "test.hanging-ui.board", sectionKinds: ["kv"] }],
+    uiViews: [
+      {
+        id: "test.hanging-ui.board",
+        sections: [{ id: "items", kind: "kv", source: "provider" }]
+      }
+    ],
     source: `
       export function activate(ctx) {
         ctx.ui.register("test.hanging-ui.board", {
@@ -1209,7 +1356,7 @@ test("ui/values provider timeout returns -32000 and host stays responsive", asyn
     const timedOut = await client.uiValues(
       "test.hanging-ui",
       "test.hanging-ui.board",
-      "0",
+      "items",
       "ut-1"
     );
     assert.equal(timedOut.error.code, -32000);

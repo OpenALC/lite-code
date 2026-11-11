@@ -3009,14 +3009,16 @@ fn ui_manifest(id: &str, views: Value) -> Value {
 }
 
 /// §3.1 示例形状的完整合法视图：四种节 + 五种 field type 全覆盖。
+/// M2-R：每节带稳定 id；list/kv 用 source:"provider" 声明动态回读。
 fn valid_ui_view() -> Value {
     json!({
         "id": "task-board",
         "name": "任务看板",
         "openCommand": "demo.board",
         "sections": [
-            { "kind": "markdown", "text": "# 说明\n\n**任务看板** 使用手册。" },
+            { "id": "intro", "kind": "markdown", "text": "# 说明\n\n**任务看板** 使用手册。" },
             {
+                "id": "filter",
                 "kind": "form",
                 "title": "筛选",
                 "command": "demo.filter",
@@ -3029,9 +3031,10 @@ fn valid_ui_view() -> Value {
                 ]
             },
             {
+                "id": "tasks",
                 "kind": "list",
                 "title": "任务",
-                "valuesCommand": "demo.list",
+                "source": "provider",
                 "columns": [
                     { "key": "title", "label": "标题", "width": 3 },
                     { "key": "state", "label": "状态" }
@@ -3039,9 +3042,10 @@ fn valid_ui_view() -> Value {
                 "rowCommand": "demo.open"
             },
             {
+                "id": "stats",
                 "kind": "kv",
                 "title": "统计",
-                "valuesCommand": "demo.stats",
+                "source": "provider",
                 "items": [
                     { "key": "总数", "value": "42" },
                     { "key": "进行中", "value": "7" }
@@ -3084,27 +3088,36 @@ fn ui_views_are_validated_and_serialized() {
     let serialized = serde_json::to_value(&list).expect("serialize");
     let dto = &serialized["plugins"][0]["uiViews"][0];
     assert_eq!(dto["openCommand"], json!("demo.board"));
-    // markdown 节：text 原样保留（渲染层转义，不归 Rust trim）。
+    // markdown 节：稳定 id + text 原样保留（渲染层转义，不归 Rust trim）。
+    assert_eq!(dto["sections"][0]["id"], json!("intro"));
     assert_eq!(dto["sections"][0]["kind"], json!("markdown"));
     assert_eq!(
         dto["sections"][0]["text"],
         json!("# 说明\n\n**任务看板** 使用手册。")
     );
     assert!(dto["sections"][0].get("evil").is_none());
-    // form 节：五种 field type 归一，select 带 options，number 带 min/max，
-    // 缺省 width 的列回落 1，多余键丢弃。
+    // form 节：稳定 id + 五种 field type 归一，select 带 options，number 带
+    // min/max，多余键丢弃。
     let form = &dto["sections"][1];
+    assert_eq!(form["id"], json!("filter"));
     assert_eq!(form["fields"].as_array().expect("fields").len(), 5);
     assert!(form["fields"][0].get("onload").is_none());
     assert_eq!(form["fields"][3]["options"], json!(["new", "old"]));
     assert_eq!(form["fields"][1]["min"], json!(1));
     assert_eq!(form["fields"][1]["max"], json!(200));
+    // list 节：稳定 id + 必填 source:"provider"（M2-R 取代 valuesCommand），
+    // 缺省 width 的列回落 1。
     let list_section = &dto["sections"][2];
-    assert_eq!(list_section["valuesCommand"], json!("demo.list"));
+    assert_eq!(list_section["id"], json!("tasks"));
+    assert_eq!(list_section["source"], json!("provider"));
+    assert!(list_section.get("valuesCommand").is_none());
     assert_eq!(list_section["rowCommand"], json!("demo.open"));
     assert_eq!(list_section["columns"][1]["width"], json!(1));
-    // kv 节：静态 items 与 valuesCommand 并存（M1 渲染静态 items）。
-    assert_eq!(dto["sections"][3]["items"][0]["key"], json!("总数"));
+    // kv 节：稳定 id + source:"provider" 与静态 items 并存（动态优先）。
+    let kv = &dto["sections"][3];
+    assert_eq!(kv["id"], json!("stats"));
+    assert_eq!(kv["source"], json!("provider"));
+    assert_eq!(kv["items"][0]["key"], json!("总数"));
 }
 
 #[test]
@@ -3134,20 +3147,116 @@ fn ui_section_kinds_and_fields_are_validated() {
 
     for (tag, sections_value, expected) in [
         ("sections-not-array", json!("nope"), "sections 必须是数组"),
-        ("missing-kind", json!([{ "text": "x" }]), "缺少 kind"),
+        // ---- M2-R 稳定节 id（§3.1）----
+        (
+            "section-missing-id",
+            json!([{ "kind": "markdown", "text": "x" }]),
+            "缺少 id",
+        ),
+        (
+            "section-id-not-string",
+            json!([{ "id": 1, "kind": "markdown", "text": "x" }]),
+            "id 必须是字符串",
+        ),
+        (
+            "section-id-empty",
+            json!([{ "id": "", "kind": "markdown", "text": "x" }]),
+            "缺少 id",
+        ),
+        (
+            "section-id-uppercase",
+            json!([{ "id": "Intro", "kind": "markdown", "text": "x" }]),
+            "id 无效",
+        ),
+        (
+            "section-id-leading-digit",
+            json!([{ "id": "1abc", "kind": "markdown", "text": "x" }]),
+            "id 无效",
+        ),
+        (
+            "section-id-illegal-char",
+            json!([{ "id": "a b", "kind": "markdown", "text": "x" }]),
+            "id 无效",
+        ),
+        (
+            "section-id-oversize",
+            json!([{ "id": "a".repeat(65), "kind": "markdown", "text": "x" }]),
+            "id 无效",
+        ),
+        (
+            "section-id-duplicate",
+            json!([
+                { "id": "s1", "kind": "markdown", "text": "a" },
+                { "id": "s1", "kind": "markdown", "text": "b" }
+            ]),
+            "id `s1` 重复",
+        ),
+        // ---- M2-R valuesCommand 拒绝（§3.1 迁移边界）----
+        (
+            "markdown-values-command",
+            json!([{ "id": "s1", "kind": "markdown", "text": "x", "valuesCommand": "demo.list" }]),
+            "已移除的 `valuesCommand`",
+        ),
+        (
+            "form-values-command",
+            json!([{ "id": "s1", "kind": "form", "valuesCommand": "demo.list", "fields": [{ "key": "q", "label": "Q", "type": "text" }] }]),
+            "已移除的 `valuesCommand`",
+        ),
+        (
+            "list-values-command",
+            json!([{ "id": "s1", "kind": "list", "valuesCommand": "demo.list", "source": "provider", "columns": [{ "key": "t", "label": "T" }] }]),
+            "已移除的 `valuesCommand`",
+        ),
+        (
+            "kv-values-command",
+            json!([{ "id": "s1", "kind": "kv", "valuesCommand": "demo.stats" }]),
+            "已移除的 `valuesCommand`",
+        ),
+        // ---- M2-R source 规则（§3.1）----
+        (
+            "markdown-source",
+            json!([{ "id": "s1", "kind": "markdown", "text": "x", "source": "provider" }]),
+            "不接受 `source`",
+        ),
+        (
+            "form-source",
+            json!([{ "id": "s1", "kind": "form", "source": "provider", "fields": [{ "key": "q", "label": "Q", "type": "text" }] }]),
+            "不接受 `source`",
+        ),
+        (
+            "list-source-missing",
+            json!([{ "id": "s1", "kind": "list", "columns": [{ "key": "t", "label": "T" }] }]),
+            "缺少 `source",
+        ),
+        (
+            "list-source-bad",
+            json!([{ "id": "s1", "kind": "list", "source": "command", "columns": [{ "key": "t", "label": "T" }] }]),
+            "source 非法",
+        ),
+        (
+            "kv-source-bad",
+            json!([{ "id": "s1", "kind": "kv", "source": "local" }]),
+            "source 非法",
+        ),
+        // ---- kind 闭集与既有形状校验（fixture 均带稳定 id）----
+        (
+            "missing-kind",
+            json!([{ "id": "s1", "text": "x" }]),
+            "缺少 kind",
+        ),
         (
             "unknown-kind",
-            json!([{ "kind": "html", "text": "x" }]),
+            json!([{ "id": "s1", "kind": "html", "text": "x" }]),
             "kind 非法",
         ),
         (
             "markdown-no-text",
-            json!([{ "kind": "markdown" }]),
+            json!([{ "id": "s1", "kind": "markdown" }]),
             "缺少 text",
         ),
         (
             "markdown-text-oversize",
-            json!([{ "kind": "markdown", "text": oversize_text }]),
+            json!([{ "id": "s1", "kind": "markdown", "text": oversize_text }]),
             "16 KiB 上限",
         ),
         (
@@ -3158,17 +3267,17 @@ fn ui_section_kinds_and_fields_are_validated() {
         ("ui-block-oversize", fat_block, "32 KiB 上限"),
         (
             "form-no-fields",
-            json!([{ "kind": "form", "fields": [] }]),
+            json!([{ "id": "s1", "kind": "form", "fields": [] }]),
             "fields 必须是非空数组",
         ),
         (
             "form-fields-oversize",
-            json!([{ "kind": "form", "fields": many_fields }]),
+            json!([{ "id": "s1", "kind": "form", "fields": many_fields }]),
             "fields 超过 32 个上限",
         ),
         (
             "form-dup-key",
-            json!([{ "kind": "form", "fields": [
+            json!([{ "id": "s1", "kind": "form", "fields": [
                 { "key": "q", "label": "A", "type": "text" },
                 { "key": "q", "label": "B", "type": "text" }
             ] }]),
@@ -3176,57 +3285,73 @@ fn ui_section_kinds_and_fields_are_validated() {
         ),
         (
             "form-bad-type",
-            json!([{ "kind": "form", "fields": [{ "key": "d", "label": "D", "type": "date" }] }]),
+            json!([{ "id": "s1", "kind": "form", "fields": [{ "key": "d", "label": "D", "type": "date" }] }]),
             "type 非法",
         ),
         (
             "form-default-mismatch",
-            json!([{ "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "default": "x" }] }]),
-            "default 必须是 number 类型",
+            json!([{ "id": "s1", "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "default": "x" }] }]),
+            "default 必须是 number 类型的 JSON 值",
         ),
         (
             "form-select-no-options",
-            json!([{ "kind": "form", "fields": [{ "key": "s", "label": "S", "type": "select", "default": "a" }] }]),
+            json!([{ "id": "s1", "kind": "form", "fields": [{ "key": "s", "label": "S", "type": "select", "default": "a" }] }]),
             "缺少 options",
         ),
         (
             "form-min-not-number",
-            json!([{ "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "min": "1" }] }]),
+            json!([{ "id": "s1", "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "min": "1" }] }]),
             "min 必须是数字",
+        ),
+        // ---- M2-R default 边界（§3.1：number 在 min/max 内、select ∈ options）----
+        (
+            "form-number-default-below-min",
+            json!([{ "id": "s1", "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "min": 1, "max": 200, "default": 0 }] }]),
+            "小于 min",
+        ),
+        (
+            "form-number-default-above-max",
+            json!([{ "id": "s1", "kind": "form", "fields": [{ "key": "n", "label": "N", "type": "number", "min": 1, "max": 200, "default": 500 }] }]),
+            "大于 max",
+        ),
+        (
+            "form-select-default-not-in-options",
+            json!([{ "id": "s1", "kind": "form", "fields": [{ "key": "s", "label": "S", "type": "select", "options": ["new", "old"], "default": "x" }] }]),
+            "options 中的一项",
         ),
         (
             "list-no-columns",
-            json!([{ "kind": "list" }]),
+            json!([{ "id": "s1", "kind": "list", "source": "provider" }]),
             "columns 必须是非空数组",
         ),
         (
             "list-columns-oversize",
-            json!([{ "kind": "list", "columns": many_columns }]),
+            json!([{ "id": "s1", "kind": "list", "source": "provider", "columns": many_columns }]),
             "columns 超过 8 个上限",
         ),
         (
             "list-width-zero",
-            json!([{ "kind": "list", "columns": [{ "key": "t", "label": "T", "width": 0 }] }]),
+            json!([{ "id": "s1", "kind": "list", "source": "provider", "columns": [{ "key": "t", "label": "T", "width": 0 }] }]),
             "width 必须是 1..=5 的整数",
         ),
         (
             "list-width-six",
-            json!([{ "kind": "list", "columns": [{ "key": "t", "label": "T", "width": 6 }] }]),
+            json!([{ "id": "s1", "kind": "list", "source": "provider", "columns": [{ "key": "t", "label": "T", "width": 6 }] }]),
             "width 必须是 1..=5 的整数",
         ),
         (
             "kv-items-oversize",
-            json!([{ "kind": "kv", "items": many_items }]),
+            json!([{ "id": "s1", "kind": "kv", "items": many_items }]),
             "items 超过 64 个上限",
         ),
         (
             "kv-item-empty-key",
-            json!([{ "kind": "kv", "items": [{ "key": "  ", "value": "v" }] }]),
+            json!([{ "id": "s1", "kind": "kv", "items": [{ "key": "  ", "value": "v" }] }]),
             "key 必须是非空字符串",
         ),
         (
             "kv-item-bad-value",
-            json!([{ "kind": "kv", "items": [{ "key": "k", "value": 1 }] }]),
+            json!([{ "id": "s1", "kind": "kv", "items": [{ "key": "k", "value": 1 }] }]),
             "value 必须是字符串",
         ),
     ] {
@@ -3257,9 +3382,56 @@ fn ui_section_kinds_and_fields_are_validated() {
 }
 
 #[test]
+fn ui_field_default_boundaries_are_accepted() {
+    // M2-R §3.1 边界：number default == min / == max、无 min/max 的小数
+    // 缺省、select default 取首/末项均合法；静态 kv 无 source。
+    let temp = TempDir::new("ui-default-boundary");
+    let paths = test_paths(&temp);
+    let view = json!({
+        "id": "panel",
+        "name": "Panel",
+        "sections": [
+            {
+                "id": "form",
+                "kind": "form",
+                "fields": [
+                    { "key": "lo", "label": "L", "type": "number", "min": 1, "max": 200, "default": 1 },
+                    { "key": "hi", "label": "H", "type": "number", "min": 1, "max": 200, "default": 200 },
+                    { "key": "pi", "label": "P", "type": "number", "default": 0.5 },
+                    { "key": "first", "label": "F", "type": "select", "options": ["new", "old"], "default": "new" },
+                    { "key": "last", "label": "La", "type": "select", "options": ["new", "old"], "default": "old" }
+                ]
+            },
+            { "id": "tasks", "kind": "list", "source": "provider", "columns": [{ "key": "t", "label": "T" }] },
+            { "id": "stats", "kind": "kv", "source": "provider", "items": [{ "key": "k", "value": "v" }] },
+            { "id": "static", "kind": "kv" }
+        ],
+    });
+    write_plugin(
+        &paths.user_dir,
+        "ui",
+        ui_manifest("example.defaults", json!([view])),
+        &["index.mjs"],
+    );
+    let list = list_plugins_at(&paths, false, false).expect("list");
+    assert!(
+        list.plugins[0].error.is_none(),
+        "{:?}",
+        list.plugins[0].error
+    );
+    let serialized = serde_json::to_value(&list).expect("serialize");
+    let sections = &serialized["plugins"][0]["uiViews"][0]["sections"];
+    assert_eq!(sections[1]["source"], json!("provider"));
+    assert_eq!(sections[2]["source"], json!("provider"));
+    assert!(sections[3].get("source").is_none());
+}
+
+#[test]
 fn ui_view_command_closures_are_validated() {
-    // command / valuesCommand / rowCommand / openCommand 一律做
-    // 「出现在 contributes.commands」闭包校验（tools.command 模式）。
+    // command / rowCommand / openCommand 一律做「出现在
+    // contributes.commands」闭包校验（tools.command 模式）；valuesCommand
+    // 已在 M2-R 移除，任何节出现即清单错误（见
+    // ui_section_kinds_and_fields_are_validated 的拒绝用例）。
     for (tag, view_patch, expected) in [
         (
             "open-command",
@@ -3268,23 +3440,13 @@ fn ui_view_command_closures_are_validated() {
         ),
         (
             "form-command",
-            json!({ "sections": [{ "kind": "form", "command": "demo.undeclared", "fields": [{ "key": "q", "label": "Q", "type": "text" }] }] }),
+            json!({ "sections": [{ "id": "s1", "kind": "form", "command": "demo.undeclared", "fields": [{ "key": "q", "label": "Q", "type": "text" }] }] }),
             "`command` 引用的命令",
         ),
         (
-            "list-values-command",
-            json!({ "sections": [{ "kind": "list", "valuesCommand": "demo.undeclared", "columns": [{ "key": "t", "label": "T" }] }] }),
-            "`valuesCommand` 引用的命令",
-        ),
-        (
             "list-row-command",
-            json!({ "sections": [{ "kind": "list", "columns": [{ "key": "t", "label": "T" }], "rowCommand": "demo.undeclared" }] }),
+            json!({ "sections": [{ "id": "s1", "kind": "list", "source": "provider", "columns": [{ "key": "t", "label": "T" }], "rowCommand": "demo.undeclared" }] }),
             "`rowCommand` 引用的命令",
-        ),
-        (
-            "kv-values-command",
-            json!({ "sections": [{ "kind": "kv", "valuesCommand": "demo.undeclared" }] }),
-            "`valuesCommand` 引用的命令",
         ),
     ] {
         let temp = TempDir::new(&format!("ui-cmd-{tag}"));
@@ -3292,7 +3454,7 @@ fn ui_view_command_closures_are_validated() {
         let mut view = json!({
             "id": "panel",
             "name": "Panel",
-            "sections": [{ "kind": "markdown", "text": "x" }],
+            "sections": [{ "id": "intro", "kind": "markdown", "text": "x" }],
         });
         for (key, value) in view_patch.as_object().expect("patch object") {
             view[key.clone()] = value.clone();
@@ -3366,7 +3528,7 @@ fn ui_view_errors_do_not_poison_other_plugins() {
         "zzz-bad",
         ui_manifest(
             "example.bad",
-            json!([{ "id": "panel", "name": "Panel", "sections": [{ "kind": "html" }] }]),
+            json!([{ "id": "panel", "name": "Panel", "sections": [{ "id": "s1", "kind": "html" }] }]),
         ),
         &["index.mjs"],
     );
@@ -3392,20 +3554,22 @@ fn ui_view_errors_do_not_poison_other_plugins() {
     assert!(bad.ui_views.is_empty());
 }
 
-// ---- UI 视图数据回读 ui/values（docs/plans/plugin-webview.md §3.2/§3.3，M2）----
+// ---- UI 视图数据回读 ui/values（docs/plans/plugin-webview.md §3.2/§3.3，M2-R）----
 
 /// 带 UI 视图声明的 node 清单（不声明命令，多插件同目录场景零冲突）：
-/// 单视图 sections 为四种 kind 全覆盖。
+/// 单视图 sections 五种形态全覆盖——静态 markdown/form/list 动态节/
+/// 静态 kv/动态 kv。
 fn ui_values_manifest(id: &str, view_id: &str) -> Value {
     let mut manifest = node_manifest(id, "./index.mjs", &[]);
     manifest["contributes"]["ui"] = json!({ "views": [{
         "id": view_id,
         "name": "Panel",
         "sections": [
-            { "kind": "markdown", "text": "x" },
-            { "kind": "form", "fields": [{ "key": "q", "label": "Q", "type": "text" }] },
-            { "kind": "list", "columns": [{ "key": "t", "label": "T" }] },
-            { "kind": "kv" }
+            { "id": "intro", "kind": "markdown", "text": "x" },
+            { "id": "filter", "kind": "form", "fields": [{ "key": "q", "label": "Q", "type": "text" }] },
+            { "id": "tasks", "kind": "list", "source": "provider", "columns": [{ "key": "t", "label": "T" }] },
+            { "id": "stats", "kind": "kv", "items": [{ "key": "k", "value": "v" }] },
+            { "id": "live", "kind": "kv", "source": "provider" }
         ],
     }] });
     manifest
@@ -3434,7 +3598,7 @@ fn ui_values_requires_declared_view_and_enabled_node_plugin() {
             "main": "./plugin.wasm",
             "contributes": {
                 "commands": [{ "command": "example.wasm.run", "title": "run" }],
-                "ui": { "views": [{ "id": "board", "name": "Board", "sections": [{ "kind": "kv" }] }] }
+                "ui": { "views": [{ "id": "board", "name": "Board", "sections": [{ "id": "s1", "kind": "kv" }] }] }
             }
         }),
         &["plugin.wasm"],
@@ -3455,7 +3619,7 @@ fn ui_values_requires_declared_view_and_enabled_node_plugin() {
             &temp.path,
             "example.node",
             "missing.view",
-            "0",
+            "live",
         )
         .expect_err("undeclared view");
     assert!(
@@ -3468,25 +3632,104 @@ fn ui_values_requires_declared_view_and_enabled_node_plugin() {
     assert_eq!(error.code(), ErrorCode::NotFound);
 
     let error = host
-        .ui_values_with_paths(&paths, false, &temp.path, "example.nope", "board", "0")
+        .ui_values_with_paths(&paths, false, &temp.path, "example.nope", "board", "live")
         .expect_err("unknown plugin");
     assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
 
     let error = host
-        .ui_values_with_paths(&paths, false, &temp.path, "example.wasm", "board", "0")
+        .ui_values_with_paths(&paths, false, &temp.path, "example.wasm", "board", "live")
         .expect_err("wasm view");
     assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
 
     let error = host
-        .ui_values_with_paths(&paths, false, &temp.path, "example.disabled", "board", "0")
+        .ui_values_with_paths(
+            &paths,
+            false,
+            &temp.path,
+            "example.disabled",
+            "board",
+            "live",
+        )
         .expect_err("disabled plugin");
     assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
 
-    // Node 缺失在目标校验之后报告。
+    // Node 缺失在目标与节门控之后报告（live 是 source:"provider" 动态节）。
     let error = host
-        .ui_values_with_paths(&paths, false, &temp.path, "example.node", "board", "0")
+        .ui_values_with_paths(&paths, false, &temp.path, "example.node", "board", "live")
         .expect_err("node unavailable");
     assert_eq!(error, ExtError::NodeUnavailable);
+}
+
+#[test]
+fn ui_values_gates_unknown_and_static_sections_before_host() {
+    // M2-R §3.2：section_id 是清单稳定 id。转发宿主前按清单描述门控——
+    // 未知节 → UiSectionNotFound（not_found）；markdown/form/静态 kv 节非
+    // source:"provider" → UiSectionNotDynamic（invalid-values）；只有动态
+    // 节能走到下一步（Node 缺失即证明门控在转发之前，未启动任何宿主）。
+    let temp = TempDir::new("ui-values-gate");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "node",
+        ui_values_manifest("example.node", "board"),
+        &["index.mjs"],
+    );
+
+    let mut host = ExtHost::new(None);
+    // 门控失败不得启动宿主：node 为 None，若误转发会先撞 NodeUnavailable。
+    let error = host
+        .ui_values_with_paths(&paths, false, &temp.path, "example.node", "board", "nope")
+        .expect_err("unknown section");
+    assert!(
+        matches!(
+            error,
+            ExtError::UiSectionNotFound { ref plugin, ref view, ref section }
+                if plugin == "example.node" && view == "board" && section == "nope"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::NotFound);
+
+    for (tag, section_id) in [
+        ("markdown", "intro"),
+        ("form", "filter"),
+        ("static-kv", "stats"),
+    ] {
+        let error = host
+            .ui_values_with_paths(
+                &paths,
+                false,
+                &temp.path,
+                "example.node",
+                "board",
+                section_id,
+            )
+            .expect_err(tag);
+        assert!(
+            matches!(
+                error,
+                ExtError::UiSectionNotDynamic { ref plugin, ref view, ref section }
+                    if plugin == "example.node" && view == "board" && section == section_id
+            ),
+            "{tag}: {error:?}"
+        );
+        assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    }
+
+    // 动态 list/kv 节通过门控，下一道失败是 Node 缺失。
+    for section_id in ["tasks", "live"] {
+        let error = host
+            .ui_values_with_paths(
+                &paths,
+                false,
+                &temp.path,
+                "example.node",
+                "board",
+                section_id,
+            )
+            .expect_err(section_id);
+        assert_eq!(error, ExtError::NodeUnavailable, "{section_id}");
+    }
 }
 
 #[test]
@@ -3513,7 +3756,10 @@ fn initialize_payload_carries_ui_view_declarations() {
     let result = host
         .execute_with_paths(&paths, false, &workspace, "test.echo", json!({}))
         .expect("execute");
-    // initialize 载荷带 UI 视图声明（id + 节 kind 白名单）。
+    // initialize 载荷带 UI 视图完整节描述 DTO（M2-R §3.2，替代旧
+    // sectionKinds 数组）：markdown 只下发 id/kind；form 只下发
+    // key/type/default/options/min/max；list 强制 source:"provider"、columns
+    // 只下发 key；kv 只下发 source?。label/width/items 归 web（PluginList）。
     let plugins = result["plugins"].as_array().expect("plugins echo");
     let ui_plugin = plugins
         .iter()
@@ -3523,7 +3769,13 @@ fn initialize_payload_carries_ui_view_declarations() {
         ui_plugin["uiViews"],
         json!([{
             "id": "board",
-            "sectionKinds": ["markdown", "form", "list", "kv"],
+            "sections": [
+                { "id": "intro", "kind": "markdown" },
+                { "id": "filter", "kind": "form", "fields": [{ "key": "q", "type": "text" }] },
+                { "id": "tasks", "kind": "list", "source": "provider", "columns": [{ "key": "t" }] },
+                { "id": "stats", "kind": "kv" },
+                { "id": "live", "kind": "kv", "source": "provider" }
+            ],
         }])
     );
     let plain = plugins
@@ -3547,9 +3799,9 @@ fn node_host_ui_values_round_trips_and_maps_errors() {
         ui_manifest(
             "example.views",
             json!([
-                { "id": "uivalues", "name": "A", "sections": [{ "kind": "kv" }] },
-                { "id": "uifail", "name": "B", "sections": [{ "kind": "kv" }] },
-                { "id": "uihang", "name": "C", "sections": [{ "kind": "kv" }] }
+                { "id": "uivalues", "name": "A", "sections": [{ "id": "live", "kind": "kv", "source": "provider" }] },
+                { "id": "uifail", "name": "B", "sections": [{ "id": "live", "kind": "kv", "source": "provider" }] },
+                { "id": "uihang", "name": "C", "sections": [{ "id": "live", "kind": "kv", "source": "provider" }] }
             ]),
         ),
         &["index.mjs"],
@@ -3562,18 +3814,25 @@ fn node_host_ui_values_round_trips_and_maps_errors() {
     let mut host = ExtHost::new(Some(node));
     host.set_host_script(Some(script));
 
-    // sectionId 透传宿主，结果原样返回。
+    // 稳定节 id 透传宿主，结果原样返回。
     let result = host
-        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uivalues", "2")
+        .ui_values_with_paths(
+            &paths,
+            false,
+            &workspace,
+            "example.views",
+            "uivalues",
+            "live",
+        )
         .expect("ui values");
     assert_eq!(result["pluginId"], "example.views");
     assert_eq!(result["viewId"], "uivalues");
-    assert_eq!(result["sectionId"], "2");
+    assert_eq!(result["sectionId"], "live");
     assert_eq!(result["workspaceRoot"], crate::fs::display_path(&workspace));
 
     // 宿主返回 JSON-RPC error → HostRpc 结构化错误。
     let error = host
-        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uifail", "0")
+        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uifail", "live")
         .expect_err("ui error");
     match error {
         ExtError::HostRpc { code, message, .. } => {
@@ -3586,7 +3845,7 @@ fn node_host_ui_values_round_trips_and_maps_errors() {
     // 超时可注入（默认 30s），超时后宿主仍可服务。
     host.set_view_timeout(Duration::from_millis(150));
     let error = host
-        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uihang", "0")
+        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uihang", "live")
         .expect_err("ui timeout");
     assert!(
         matches!(error, ExtError::HostTimeout { timeout_ms: 150 }),
@@ -3595,7 +3854,14 @@ fn node_host_ui_values_round_trips_and_maps_errors() {
     assert_eq!(error.code(), ErrorCode::Timeout);
 
     host.set_view_timeout(Duration::from_secs(5));
-    host.ui_values_with_paths(&paths, false, &workspace, "example.views", "uivalues", "0")
-        .expect("host recovers after ui timeout");
+    host.ui_values_with_paths(
+        &paths,
+        false,
+        &workspace,
+        "example.views",
+        "uivalues",
+        "live",
+    )
+    .expect("host recovers after ui timeout");
     host.shutdown();
 }

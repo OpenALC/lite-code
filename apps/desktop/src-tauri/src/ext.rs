@@ -61,8 +61,8 @@ pub struct ExtViewChildrenResult {
     pub nodes: Vec<Value>,
 }
 
-/// `ext_ui_values` 的返回：`{ "values": <节归一值 JSON> }`（form→{ values }、
-/// list→{ rows }、kv→{ items }，宿主已按节 kind 白名单归一）。
+/// `ext_ui_values` 的返回：`{ "values": <节归一值 JSON> }`（list→`{ rows }`、
+/// kv→`{ items }`，宿主已按节声明归一；markdown/form 节 v1 无回读）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExtUiValuesResult {
     pub values: Value,
@@ -234,7 +234,10 @@ pub(crate) async fn ext_view_children(
 }
 
 /// 读取插件 UI 视图的节值（docs/plans/plugin-webview.md §3.3）：薄转发
-/// `ExtHost::ui_values`，视图未声明/插件禁用/非 node runtime → not_found。
+/// `ExtHost::ui_values`。`section_id` 为清单稳定节 id（M2-R，不再是数组
+/// 序号）；视图未声明/插件禁用/非 node runtime → not_found；节不存在 →
+/// not_found；节非 `source:"provider"` → invalid-values。错误经
+/// `to_error_body` 复用既有 ErrorCode 映射，不新增错误码；鸿蒙入口隐藏。
 #[tauri::command]
 pub(crate) async fn ext_ui_values(
     plugin_id: String,

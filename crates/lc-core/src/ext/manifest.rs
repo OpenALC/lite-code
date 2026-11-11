@@ -885,15 +885,20 @@ fn validate_manifest(
     Ok((manifest, main_path))
 }
 
-/// UI 视图声明校验（docs/plans/plugin-webview.md §3.1）：视图 id 合法
+/// UI 视图声明校验（docs/plans/plugin-webview.md §3.1，M2-R）：视图 id 合法
 /// （小写字母/数字/线，与 views.id 同规则）且插件内唯一、name 非空；
-/// openCommand 必须出现在 contributes.commands；节 kind 闭集
-/// （markdown|form|list|kv），field type 闭集（text|number|boolean|select|
-/// password）且 default 类型合法；command/valuesCommand/rowCommand 一律
-/// 闭包校验（tools.command 模式）；规模上限 sections≤16、fields≤32、
-/// columns≤8、kv items≤64、markdown text≤16 KiB，整棵 ui 块序列化 ≤32 KiB。
-/// 节在校验时按 kind 重建为白名单键集合，多余键丢弃；任一失败只把该插件
-/// 标记为 error（既有 validate_manifest 全局语义）。
+/// openCommand 必须出现在 contributes.commands；每节必须有稳定 id
+/// （1–64 个小写字母、数字或连字符，首字符为字母，视图内唯一；数组只定
+/// 显示顺序）；节 kind 闭集（markdown|form|list|kv），field type 闭集
+/// （text|number|boolean|select|password），default 必须匹配类型且 number
+/// 在 min/max 内、select ∈ options；`source` 仅 list/kv 允许且唯一动态值
+/// `provider`（list 必填，kv 省略=静态 items，markdown/form 出现即拒绝）；
+/// 旧 `valuesCommand` 字段在任何节出现即清单错误（M2-R 明确拒绝，不做
+/// 兼容转换）；command/rowCommand 闭包校验（tools.command 模式）；规模
+/// 上限 sections≤16、fields≤32、columns≤8、kv items≤64、options≤32、
+/// markdown text≤16 KiB，整棵 ui 块序列化 ≤32 KiB。节在校验时按 kind 重建
+/// 为白名单键集合（含 id/source），多余键丢弃；任一失败只把该插件标记为
+/// error（既有 validate_manifest 全局语义）。
 fn validate_ui(ui: &mut UiContrib, command_ids: &HashSet<&str>) -> Result<(), String> {
     // 整棵 ui 块序列化上限：校验形状前先兜体积，避免超大块浪费校验开销。
     let block = serde_json::to_string(&*ui).map_err(|error| format!("ui 块序列化失败：{error}"))?;
@@ -941,8 +946,9 @@ fn validate_ui(ui: &mut UiContrib, command_ids: &HashSet<&str>) -> Result<(), St
     Ok(())
 }
 
-/// 视图节数组校验：闭集 kind 分派 + 按 kind 白名单重建。节序号（1 起）进
-/// 错误文案，方便插件作者定位。
+/// 视图节数组校验（M2-R）：稳定节 id（视图内唯一）、valuesCommand 拒绝、
+/// 闭集 kind 分派 + source 规则 + 按 kind 白名单重建。节序号（1 起）进
+/// 错误文案，方便插件作者定位；身份以稳定 id 为准。
 fn validate_ui_sections(
     view_id: &str,
     sections: &mut Value,
@@ -956,17 +962,54 @@ fn validate_ui_sections(
             "ui.views `{view_id}` 的 sections 超过 {MAX_UI_SECTIONS} 个上限"
         ));
     }
+    let mut section_ids = HashSet::new();
     for (index, section) in list.iter_mut().enumerate() {
-        let label = format!("ui.views `{view_id}` 第 {} 节", index + 1);
-        let Some(kind) = section.get("kind").and_then(Value::as_str) else {
+        let positional = format!("ui.views `{view_id}` 第 {} 节", index + 1);
+        let Some(map) = section.as_object() else {
+            return Err(format!("{positional} 必须是对象"));
+        };
+        // 旧 M2 声明的 valuesCommand 一律明确拒绝（M2-R 迁移边界，不猜测
+        // 转换）：动态回读改用 source:"provider"，由 provider 按稳定 id 分派。
+        if map.contains_key("valuesCommand") {
+            return Err(format!(
+                "{positional} 包含已移除的 `valuesCommand` 字段：动态回读改用 `source: \"provider\"`（docs/plans/plugin-webview.md §3.1 M2-R）"
+            ));
+        }
+        // 稳定节 id（§3.1）：身份与回读门控都按它定位，数组只决定显示顺序。
+        match map.get("id") {
+            None => {
+                return Err(format!(
+                    "{positional} 缺少 id（每节必须有稳定 id：1–64 个小写字母、数字或连字符，首字符为字母）"
+                ));
+            }
+            Some(value) if !value.is_string() => {
+                return Err(format!("{positional} 的 id 必须是字符串"));
+            }
+            Some(value) if value.as_str().is_some_and(str::is_empty) => {
+                return Err(format!("{positional} 缺少 id（不能为空字符串）"));
+            }
+            _ => {}
+        }
+        let id = map["id"].as_str().expect("id 字符串已校验");
+        if !valid_ui_section_id(id) {
+            return Err(format!(
+                "{positional} 的 id 无效：`{id}`（1–64 个小写字母、数字或连字符，首字符为字母）"
+            ));
+        }
+        if !section_ids.insert(id.to_string()) {
+            return Err(format!("{positional} 的 id `{id}` 重复（视图内唯一）"));
+        }
+        let label = format!("{positional} `{id}`");
+        let Some(kind) = map.get("kind").and_then(Value::as_str) else {
             return Err(format!("{label} 缺少 kind"));
         };
         let kind = kind.trim();
+        let source = validate_ui_source(&label, map, kind)?;
         let normalized = match kind {
-            "markdown" => validate_ui_markdown(&label, section)?,
-            "form" => validate_ui_form(&label, section, command_ids)?,
-            "list" => validate_ui_list(&label, section, command_ids)?,
-            "kv" => validate_ui_kv(&label, section, command_ids)?,
+            "markdown" => validate_ui_markdown(&label, id, section)?,
+            "form" => validate_ui_form(&label, id, section, command_ids)?,
+            "list" => validate_ui_list(&label, id, source, section, command_ids)?,
+            "kv" => validate_ui_kv(&label, id, source, section)?,
             other => {
                 return Err(format!(
                     "{label} kind 非法：`{other}`（仅支持 markdown/form/list/kv）"
@@ -976,6 +1019,55 @@ fn validate_ui_sections(
         *section = normalized;
     }
     Ok(())
+}
+
+/// 节 id 形态（docs/plans/plugin-webview.md §3.1）：1–64 个小写字母、数字
+/// 或连字符，首字符必须是字母。
+fn valid_ui_section_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.as_bytes()[0].is_ascii_lowercase()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// `source` 数据源校验（§3.1 M2-R）：仅 list/kv 允许，唯一动态值
+/// `provider`——list 必填（v1 动态 list 恒为 provider），kv 省略=静态
+/// items、存在时动态结果优先；markdown/form 出现 source 即拒绝。
+fn validate_ui_source<'a>(
+    label: &str,
+    map: &'a serde_json::Map<String, Value>,
+    kind: &str,
+) -> Result<Option<&'a str>, String> {
+    match kind {
+        "markdown" | "form" => {
+            if map.contains_key("source") {
+                return Err(format!(
+                    "{label}（{kind}）不接受 `source`（仅 list/kv 允许，见 docs/plans/plugin-webview.md §3.1）"
+                ));
+            }
+            Ok(None)
+        }
+        "list" => match map.get("source").and_then(Value::as_str) {
+            Some("provider") => Ok(Some("provider")),
+            Some(other) => Err(format!(
+                "{label}（list）的 source 非法：`{other}`（唯一动态值为 `provider`）"
+            )),
+            None => Err(format!(
+                "{label}（list）缺少 `source: \"provider\"`（v1 动态 list 必填）"
+            )),
+        },
+        "kv" => match map.get("source") {
+            None => Ok(None),
+            Some(Value::String(source)) if source == "provider" => Ok(Some("provider")),
+            Some(other) => Err(format!(
+                "{label}（kv）的 source 非法：{}（仅支持 `provider` 或省略，省略=静态 items）",
+                other
+            )),
+        },
+        _ => Ok(None),
+    }
 }
 
 /// 取可空字符串字段：trim 后为空视为缺省（调用方丢弃该键）。
@@ -1010,7 +1102,7 @@ fn optional_command(
 }
 
 /// markdown 节：text 必须是字符串且 ≤16 KiB；无回读（§3.2），纯静态渲染。
-fn validate_ui_markdown(label: &str, section: &Value) -> Result<Value, String> {
+fn validate_ui_markdown(label: &str, id: &str, section: &Value) -> Result<Value, String> {
     let Some(map) = section.as_object() else {
         return Err(format!("{label} 必须是对象"));
     };
@@ -1024,14 +1116,16 @@ fn validate_ui_markdown(label: &str, section: &Value) -> Result<Value, String> {
             MAX_UI_TEXT_BYTES / 1024
         ));
     }
-    Ok(json!({ "kind": "markdown", "text": text }))
+    Ok(json!({ "id": id, "kind": "markdown", "text": text }))
 }
 
 /// form 节：fields 1..=32 个；field key/label 非空、key 节内唯一；type 闭集；
-/// default 必须是该类型的合法 JSON 值；select 必须有 1..=32 个非空字符串
-/// options；number 的 min/max 必须是数字；command 闭包校验。
+/// select 必须有 1..=32 个非空字符串 options；number 的 min/max 必须是数字，
+/// default 必须在 min/max 范围内；default 必须匹配 type（文本/密码=string、
+/// boolean=boolean、select∈options、number=有限数）；command 闭包校验。
 fn validate_ui_form(
     label: &str,
+    id: &str,
     section: &Value,
     command_ids: &HashSet<&str>,
 ) -> Result<Value, String> {
@@ -1087,28 +1181,8 @@ fn validate_ui_form(
             }
         }
 
-        let mut normalized = serde_json::Map::new();
-        normalized.insert("key".into(), json!(key));
-        normalized.insert("label".into(), json!(field_label_name));
-        normalized.insert("type".into(), json!(field_type));
-        if let Some(placeholder) = optional_string(field_map, "placeholder") {
-            normalized.insert("placeholder".into(), json!(placeholder));
-        }
-        // default 必须是该 field type 的合法 JSON 值（§3.1）。
-        if let Some(default) = field_map.get("default") {
-            let valid = match field_type {
-                "text" | "password" | "select" => default.is_string(),
-                "number" => default.is_number(),
-                "boolean" => default.is_boolean(),
-                _ => unreachable!("field type 闭集已校验"),
-            };
-            if !valid {
-                return Err(format!(
-                    "{field_label}`{key}` 的 default 必须是 {field_type} 类型的 JSON 值"
-                ));
-            }
-            normalized.insert("default".into(), default.clone());
-        }
+        // select 的 options 先归一（default ∈ options 校验依赖去重后的集合）。
+        let mut normalized_options: Option<Vec<String>> = None;
         if field_type == "select" {
             let options = field_map
                 .get("options")
@@ -1120,7 +1194,7 @@ fn validate_ui_form(
                 ));
             }
             let mut seen = HashSet::new();
-            let mut normalized_options = Vec::with_capacity(options.len());
+            let mut options_vec = Vec::with_capacity(options.len());
             for option in options {
                 let option = option
                     .as_str()
@@ -1130,23 +1204,94 @@ fn validate_ui_form(
                         format!("{field_label}`{key}`（select）的 options 必须是非空字符串")
                     })?;
                 if seen.insert(option.to_string()) {
-                    normalized_options.push(option);
+                    options_vec.push(option.to_string());
                 }
             }
-            normalized.insert("options".into(), json!(normalized_options));
+            normalized_options = Some(options_vec);
         }
-        // min/max 只对 number 有意义：非 number 字段静默丢弃；number 字段
-        // 类型非法则报错。
+        // number 的 min/max 形状先校验（default 范围检查依赖数值）。
         if field_type == "number" {
             for bound in ["min", "max"] {
                 match field_map.get(bound) {
                     Some(value) if !value.is_number() => {
                         return Err(format!("{field_label}`{key}` 的 {bound} 必须是数字"));
                     }
-                    Some(value) => {
-                        normalized.insert(bound.to_string(), value.clone());
+                    _ => {}
+                }
+            }
+        }
+
+        let mut normalized = serde_json::Map::new();
+        normalized.insert("key".into(), json!(key));
+        normalized.insert("label".into(), json!(field_label_name));
+        normalized.insert("type".into(), json!(field_type));
+        if let Some(placeholder) = optional_string(field_map, "placeholder") {
+            normalized.insert("placeholder".into(), json!(placeholder));
+        }
+        if let Some(default) = field_map.get("default") {
+            match field_type {
+                "text" | "password" => {
+                    if !default.is_string() {
+                        return Err(format!(
+                            "{field_label}`{key}` 的 default 必须是 {field_type} 类型的 JSON 值（字符串）"
+                        ));
                     }
-                    None => {}
+                }
+                "boolean" => {
+                    if !default.is_boolean() {
+                        return Err(format!(
+                            "{field_label}`{key}` 的 default 必须是 boolean 类型的 JSON 值"
+                        ));
+                    }
+                }
+                "select" => {
+                    let default_str = default.as_str().ok_or_else(|| {
+                        format!(
+                            "{field_label}`{key}` 的 default 必须是 {field_type} 类型的 JSON 值（字符串）"
+                        )
+                    })?;
+                    let options = normalized_options.as_ref().expect("select options 已归一");
+                    if !options.iter().any(|option| option == default_str) {
+                        return Err(format!(
+                            "{field_label}`{key}` 的 default 必须是 options 中的一项（当前 `{default_str}`）"
+                        ));
+                    }
+                }
+                "number" => {
+                    if !default.is_number() {
+                        return Err(format!(
+                            "{field_label}`{key}` 的 default 必须是 {field_type} 类型的 JSON 值（数字）"
+                        ));
+                    }
+                    // JSON 数字天然有限；范围按声明的 min/max 收敛（§3.1）。
+                    let value = default.as_f64().expect("default 数字已校验");
+                    if let Some(min) = field_map.get("min").and_then(Value::as_f64)
+                        && value < min
+                    {
+                        return Err(format!(
+                            "{field_label}`{key}` 的 default {value} 小于 min {min}"
+                        ));
+                    }
+                    if let Some(max) = field_map.get("max").and_then(Value::as_f64)
+                        && value > max
+                    {
+                        return Err(format!(
+                            "{field_label}`{key}` 的 default {value} 大于 max {max}"
+                        ));
+                    }
+                }
+                _ => unreachable!("field type 闭集已校验"),
+            }
+            normalized.insert("default".into(), default.clone());
+        }
+        if let Some(options) = normalized_options {
+            normalized.insert("options".into(), json!(options));
+        }
+        // min/max 只对 number 有意义：非 number 字段静默丢弃。
+        if field_type == "number" {
+            for bound in ["min", "max"] {
+                if let Some(value) = field_map.get(bound) {
+                    normalized.insert(bound.to_string(), value.clone());
                 }
             }
         }
@@ -1154,6 +1299,7 @@ fn validate_ui_form(
     }
 
     let mut normalized = serde_json::Map::new();
+    normalized.insert("id".into(), json!(id));
     normalized.insert("kind".into(), json!("form"));
     if let Some(title) = title {
         normalized.insert("title".into(), json!(title));
@@ -1166,9 +1312,12 @@ fn validate_ui_form(
 }
 
 /// list 节：columns 1..=8 个，key/label 非空、key 节内唯一，width 缺省 1、
-/// 声明时必须是 1..=5 的整数权重；valuesCommand/rowCommand 闭包校验。
+/// 声明时必须是 1..=5 的整数权重；source:"provider" 必填（v1 动态 list）；
+/// rowCommand 闭包校验。
 fn validate_ui_list(
     label: &str,
+    id: &str,
+    source: Option<&str>,
     section: &Value,
     command_ids: &HashSet<&str>,
 ) -> Result<Value, String> {
@@ -1176,7 +1325,6 @@ fn validate_ui_list(
         return Err(format!("{label} 必须是对象"));
     };
     let title = optional_string(map, "title");
-    let values_command = optional_command(map, "valuesCommand", label, command_ids)?;
     let row_command = optional_command(map, "rowCommand", label, command_ids)?;
     let columns = map
         .get("columns")
@@ -1235,13 +1383,15 @@ fn validate_ui_list(
     }
 
     let mut normalized = serde_json::Map::new();
+    normalized.insert("id".into(), json!(id));
     normalized.insert("kind".into(), json!("list"));
     if let Some(title) = title {
         normalized.insert("title".into(), json!(title));
     }
-    if let Some(command) = values_command {
-        normalized.insert("valuesCommand".into(), json!(command));
-    }
+    normalized.insert(
+        "source".into(),
+        json!(source.expect("list source 已校验为 provider")),
+    );
     normalized.insert("columns".into(), json!(normalized_columns));
     if let Some(command) = row_command {
         normalized.insert("rowCommand".into(), json!(command));
@@ -1249,19 +1399,20 @@ fn validate_ui_list(
     Ok(Value::Object(normalized))
 }
 
-/// kv 节：静态 items（0..=64 对，key 非空字符串、value 字符串）与
-/// valuesCommand（M2 动态回读）至少结构合法；M1 只渲染静态 items。
+/// kv 节：静态 items（0..=64 对，key 非空字符串、value 字符串）；声明
+/// `source: "provider"` 时动态结果优先于静态 items（§3.1）。
 fn validate_ui_kv(
     label: &str,
+    id: &str,
+    source: Option<&str>,
     section: &Value,
-    command_ids: &HashSet<&str>,
 ) -> Result<Value, String> {
     let Some(map) = section.as_object() else {
         return Err(format!("{label} 必须是对象"));
     };
     let title = optional_string(map, "title");
-    let values_command = optional_command(map, "valuesCommand", label, command_ids)?;
     let mut normalized = serde_json::Map::new();
+    normalized.insert("id".into(), json!(id));
     normalized.insert("kind".into(), json!("kv"));
     if let Some(title) = title {
         normalized.insert("title".into(), json!(title));
@@ -1293,8 +1444,8 @@ fn validate_ui_kv(
         }
         normalized.insert("items".into(), json!(normalized_items));
     }
-    if let Some(command) = values_command {
-        normalized.insert("valuesCommand".into(), json!(command));
+    if let Some(source) = source {
+        normalized.insert("source".into(), json!(source));
     }
     Ok(Value::Object(normalized))
 }

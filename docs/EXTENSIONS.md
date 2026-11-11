@@ -266,11 +266,11 @@ node ext-host.mjs
 stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
 
 - Rust → host：
-  - `initialize` `{ workspaceRoot, plugins: [{ id, path, main, commands, tools: [{ name, command }], views: [viewId], activationEvents }] }`——`activationEvents` 为清单原样的字符串数组；空数组（缺省字段）或含 `"*"` 表示立即激活，否则该插件延迟激活。`views` 为清单 `contributes.views` 的 id 列表。
+  - `initialize` `{ workspaceRoot, plugins: [{ id, path, main, commands, tools: [{ name, command }], views: [viewId], uiViews: [{ id, sections }], activationEvents }] }`——`activationEvents` 为清单原样的字符串数组；空数组（缺省字段）或含 `"*"` 表示立即激活，否则该插件延迟激活。`views` 为清单 `contributes.views` 的 id 列表。`uiViews` 为清单 `contributes.ui.views` 的完整节描述 DTO（markdown `{id,kind}`；form `{id,kind,fields:[{key,type,default?,options?,min?,max?}]}`；list `{id,kind,source:"provider",columns:[{key}]}`；kv `{id,kind,source?}`，见 `docs/plans/plugin-webview.md` §3.2）。
   - `command/execute` `{ pluginId, command, args }`
   - `tool/execute` `{ pluginId, tool, args }` → `{ result: <插件返回值> }`（默认超时 30s）
   - `view/children` `{ pluginId, viewId, nodeId? }` → 节点数组 `[{ id, label, icon?, command?, tooltip? }]`（空数组合法；默认超时 30s）
-  - `ui/values` `{ pluginId, viewId, sectionId }` → 按节 kind 归一的值载荷（form→`{values}`、list→`{rows}`≤500、kv→`{items}`≤64；markdown 节无回读；默认超时 30s；reason 全集与 `view/children` 同构，规格见 `docs/plans/plugin-webview.md` §3.2）
+  - `ui/values` `{ pluginId, viewId, sectionId }` → 按节声明归一的值载荷（list→`{rows}`≤500、kv→`{items}`≤64；markdown/form 节无回读；`sectionId` 为清单稳定节 id——M2-R 起不再是数组序号——仅 `source:"provider"` 的 list/kv 节可回读，未知节与静态节在 provider 执行前拒绝；默认超时 30s；reason 全集与 `view/children` 同构，规格见 `docs/plans/plugin-webview.md` §3.2）
   - `shutdown` {}
 - host → Rust：只使用 JSON-RPC response；v0 不反向调用 Rust。
 - 插件模块导出 `activate(ctx)` / `deactivate()`；ctx 提供：
