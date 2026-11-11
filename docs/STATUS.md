@@ -410,6 +410,26 @@ plan §3.7）。**Webview UI 设计定稿**（`docs/plans/plugin-webview.md`，
 iframe 沙箱 v2 规格化（附 §7 修订建议文本）——EXTENSIONS §8 全部事项
 已有设计或落地，仅剩 API 兼容（v0 文档首行即不承诺）。
 
+### Webview M1+M2 收口（2026-11-11 上午，main `7ff026e`）
+
+- **M1**（`f5e1d10` 区域）：声明式节渲染 + 编辑器区 __ui__ 标签，桌面运行时
+  e2e 全链路透。
+- **M2**（`101ab3c`）：交互回传——表单 ext_execute_command、list/kv
+  ui/values 动态回读、行点击 rowCommand，与 view/children 全同构。
+- **运行时 e2e 连抓三真缺陷，全部修复并运行时复验**：
+  1. `4a17c5c` 表单提交成功后缺回读刷新（行命令路径同款已有，表单路径漏）。
+  2. `220c739` 渲染根因——pluginUi store patch 不换根对象，
+     `ref.value=next` 订阅判 hasChanged=false 不重渲染：表现「提交后 store
+     已新、DOM 停旧」（看似数据滞后一拍）。回归单测入档。
+  3. `7ff026e` 同款根因修到 pluginViews 树视图（分区展开/节点/槽位加载
+     全部改不可变更新）；顺手修 4a17c5c 的 TS 窄化（vue-tsc 零错）。
+- **运行时复验证据**：demo.ui-live 表单提交「vfinal」→ +200ms 行列表原地
+  刷新为当前值（无需重开视图）；临时树视图插件「实时树」两级展开子节点
+  原地渲染（.tmp/demo-shots/m2-final-pass.png / tree-view-pass.png）。
+- 测试基线：web 601（41 文件，含新回归项）· vue-tsc 零错 · 远端 CI 绿。
+- M3（iframe 沙箱）默认不做：字面违反 EXTENSIONS §7 红线，需用户决策 +
+  §7 修订（建议文本在 plugin-webview.md §4）。
+
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
 - **M3b 已按审查合并**（`be84ab6`）：冲突按意见解决（3b 取分支版 lc-core 落点
@@ -1034,5 +1054,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 99 · lsp stdio 2 · web 408（28 文件）· 合计 **1016**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、lspDiagnostics 7、history 7、quickPalette 6、tabs 51、agentFind 3、quickRecent 3）。
+lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 99 · lsp stdio 2 · web 601（41 文件）· 合计 **1209**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、lspDiagnostics 7、history 7、quickPalette 6、tabs 51、agentFind 3、quickRecent 3、pluginUi 32、marketplace 67）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。

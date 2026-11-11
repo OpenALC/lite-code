@@ -138,6 +138,7 @@
 - 插件市场 M1+M2：静态 index/多源/原子安装/GC 挂启动/deps 自动安装（同源优先/深度 8/Tarjan 环复用）；浏览 tab+§3.7 确认对话框（web 563 项）——市场设计见 `docs/plans/plugin-marketplace.md`（agent-93/94/95）
 - 插件市场 M3：签名强制档（minisign-verify，sha256 文本签名+trusted comment 三重绑定防跨包挪用）+ 多镜像回退（sha 不符也换镜像）——市场线 M1-M3 全部关闭（agent-96）
 - 插件 Webview UI M1：数据驱动声明（markdown/form/list/kv 闭集+命令闭包）+ 静态渲染（markdown 唯一 v-html 点走 renderMarkdown、openCommand 别名零 invoke 拦截）+ 编辑器区 __ui__ 标签；桌面运行时 e2e 全链路透（磁盘插件→palette 别名→节渲染，web 584 项）（agent-98）
+- 插件 Webview UI M2：交互回传（表单 ext_execute_command + list/kv ui/values 动态回读 + 行点击 rowCommand，与 view/children 全同构）；桌面运行时 e2e 连抓三缺陷并修复：表单成功后回读刷新缺失（行命令路径同款已有）、store patch 不换根对象致 `ref.value=next` 订阅不重渲染（提交后行列表原地不刷新）、pluginViews 树视图同款一并修；web 601 项 + vue-tsc 零错（agent-99）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
