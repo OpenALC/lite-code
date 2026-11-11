@@ -19,6 +19,7 @@ mod mcp;
 mod state;
 mod tools;
 mod wasm;
+mod webview;
 
 #[cfg(test)]
 mod tests;
@@ -39,6 +40,13 @@ pub use host::TOOL_TIMEOUT;
 pub use mcp::plugin_mcp_servers;
 pub use state::ExtensionsState;
 pub use tools::{ExtToolExecutor, HostToolRunner, PluginTool, PluginToolRunner, plugin_tools};
+pub use webview::{
+    LINUX_ASSET_BASE, MAX_WEBVIEW_STATE_KEY_CHARS, MAX_WEBVIEW_STATE_TOTAL_BYTES,
+    MAX_WEBVIEW_STATE_VALUE_BYTES, PLUGIN_ASSET_SCHEME, WINDOWS_ASSET_BASE, WebviewAssetResponse,
+    WebviewAssetStatus, WebviewStateStore, checked_asset_url, content_type_for, parse_asset_uri,
+    parse_asset_uri_for, plugin_asset_url, plugin_asset_url_with_base, serve_webview_asset,
+    serve_webview_asset_at, validate_webview_command, webview_child_csp,
+};
 
 /// 项目级插件目录的显式开关；只有值（去掉首尾空白）等于 `1` 时生效。
 pub const PROJECT_ALLOW_ENV: &str = "LC_EXT_ALLOW_PROJECT";
@@ -120,6 +128,21 @@ pub struct PluginUiView {
     pub sections: Vec<Value>,
 }
 
+/// 插件贡献的 webview 声明（`PluginInfo.webviews` 元素，
+/// docs/plans/plugin-webview.md §3.8，M3）：sandbox iframe 的入口与资产
+/// 白名单，资源只能经 `lc-plugin` 协议由宿主 handler 按白名单服务。
+/// 随 PluginList 全量下发：web 侧据此渲染 iframe（URL 一律由宿主经
+/// `ext_webview_asset_url` 生成）并做安装确认 UI 固定文案（声明存在与否）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginWebview {
+    pub id: String,
+    pub entry: String,
+    /// 显式资产白名单（entry 之外额外可访问的文件）；清单省略 assets 时
+    /// 为空数组——此时仅 entry 可访问，不开放整个插件目录。
+    pub assets: Vec<String>,
+}
+
 /// 单个插件的展示信息（`PluginList.plugins` 元素）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,6 +168,9 @@ pub struct PluginInfo {
     pub views: Vec<PluginView>,
     /// 贡献的 UI 视图（无声明为空数组，docs/plans/plugin-webview.md §3.1）。
     pub ui_views: Vec<PluginUiView>,
+    /// 贡献的 webview 声明（无声明为空数组，docs/plans/plugin-webview.md
+    /// §3.8 M3）：id/entry/assets 原样下发，安装确认 UI 固定文案用。
+    pub webviews: Vec<PluginWebview>,
 }
 
 /// 插件列表（`ext_list` / `ext_reload` / `ext_set_enabled` 的返回）。
@@ -233,6 +259,20 @@ pub enum ExtError {
         view: String,
         section: String,
     },
+    #[error("插件 `{plugin}` 的 webview `{webview}` 不存在、未声明或所属插件已禁用")]
+    WebviewNotFound { plugin: String, webview: String },
+    #[error("插件 `{plugin}` 的 webview `{webview}` 资产 `{asset}` 不存在或未声明")]
+    WebviewAssetNotFound {
+        plugin: String,
+        webview: String,
+        asset: String,
+    },
+    #[error("webview 状态键不能为空或超过 64 字符")]
+    WebviewStateKeyInvalid,
+    #[error("插件 `{plugin}` 的 webview 状态值超过 64 KiB 上限")]
+    WebviewStateValueTooLarge { plugin: String },
+    #[error("插件 `{plugin}` 的 webview 状态总量超过 256 KiB 上限")]
+    WebviewStateTotalTooLarge { plugin: String },
 }
 
 impl ExtError {
@@ -267,6 +307,12 @@ impl ExtError {
             ExtError::ViewNotFound { .. } => ErrorCode::NotFound,
             ExtError::UiSectionNotFound { .. } => ErrorCode::NotFound,
             ExtError::UiSectionNotDynamic { .. } => ErrorCode::InvalidArgument,
+            ExtError::WebviewNotFound { .. } | ExtError::WebviewAssetNotFound { .. } => {
+                ErrorCode::NotFound
+            }
+            ExtError::WebviewStateKeyInvalid
+            | ExtError::WebviewStateValueTooLarge { .. }
+            | ExtError::WebviewStateTotalTooLarge { .. } => ErrorCode::InvalidArgument,
         }
     }
 

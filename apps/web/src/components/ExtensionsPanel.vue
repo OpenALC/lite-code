@@ -15,8 +15,10 @@ import {
   type PluginList,
   type PluginRuntime,
   type PluginUiView,
+  type PluginWebview,
 } from '../services/extensions'
 import { openPluginUiView } from '../services/pluginUi'
+import { openPluginWebview } from '../services/pluginWebview'
 import {
   marketplaceInstall,
   marketplaceSearch,
@@ -185,6 +187,12 @@ function feedbackFor(pluginId: string, command: string): CommandFeedback | null 
 function openUiView(plugin: PluginInfo, view: PluginUiView): void {
   if (!plugin.enabled || plugin.error !== null) return
   openPluginUiView(plugin.id, view.id)
+}
+
+/** 「打开视图」：打开（或激活）该沙箱 webview 的编辑器区标签（§3.8 M3）。 */
+function openWebview(plugin: PluginInfo, webview: PluginWebview): void {
+  if (!plugin.enabled || plugin.error !== null) return
+  openPluginWebview(plugin.id, webview.id)
 }
 
 // ==== 浏览市场 tab（§3.8）：搜索/安装/更新/卸载状态由本组件自持 ====
@@ -599,6 +607,41 @@ onMounted(load)
                 </div>
               </div>
             </section>
+
+            <!-- 插件沙箱 webview（docs/plans/plugin-webview.md §3.8 M3 入口）：
+              清单显式 opt-in；iframe 走 lc-plugin 协议 + sandbox allow-scripts。 -->
+            <section
+              v-if="plugin.webviews.length > 0"
+              class="commands"
+            >
+              <div class="commands-head">
+                <h3>{{ t('extensions.webviews') }}</h3>
+                <span class="command-count">{{ plugin.webviews.length }}</span>
+              </div>
+              <div class="command-list">
+                <div
+                  v-for="webview in plugin.webviews"
+                  :key="webview.id"
+                  class="command-item"
+                >
+                  <div class="command-row">
+                    <div class="command-copy">
+                      <span class="command-title">{{ webview.id }}</span>
+                      <code class="command-id">{{ webview.entry }}</code>
+                    </div>
+                    <button
+                      type="button"
+                      class="ghost small run-button"
+                      :disabled="!plugin.enabled || plugin.error !== null"
+                      :title="(!plugin.enabled || plugin.error !== null) ? t('extensions.viewDisabledHint') : undefined"
+                      @click="openWebview(plugin, webview)"
+                    >
+                      {{ t('extensions.openView') }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
           </article>
         </div>
       </template>
@@ -834,6 +877,15 @@ onMounted(load)
           class="node-warning"
         >
           {{ t('marketplace.nodeWarning') }}
+        </p>
+
+        <!-- §3.8 M3：清单声明 contributes.ui.webviews 的插件（iframe 沙箱是
+          §7 红线修订后的显式 opt-in）——固定文案明示 sandbox 语义与白名单桥。 -->
+        <p
+          v-if="(confirmState.plugin.webviews?.length ?? 0) > 0"
+          class="node-warning"
+        >
+          {{ t('marketplace.webviewWarning') }}
         </p>
 
         <div

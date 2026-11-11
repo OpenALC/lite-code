@@ -23,6 +23,12 @@ export interface MarketPlugin {
   deps: string[]
   /** 提示用权限列表（Node 插件本质是可信代码，§7）。 */
   permissions: string[]
+  /**
+   * 清单声明的 contributes.ui.webviews id 列表（docs/plans/plugin-webview.md
+   * §3.8/§4：安装确认据此明示 sandbox iframe 固定文案）。缺省 = 无 webview
+   * （旧索引/Rust 侧未下发时兼容）；存在时必须是字符串数组（fail-closed）。
+   */
+  webviews?: string[]
   /** 命中该条目的源名（多源按 id 去重后 semver 最高的来源）。 */
   source: string
   /** dist.url 为 file:// 时 true——UI 须标「本地源，自行承担信任」。 */
@@ -121,6 +127,7 @@ function isMarketPlugin(value: unknown): value is MarketPlugin {
     isStringRecord(value.engines) &&
     isStringArray(value.deps) &&
     isStringArray(value.permissions) &&
+    (value.webviews === undefined || isStringArray(value.webviews)) &&
     typeof value.source === 'string' &&
     typeof value.fileSource === 'boolean' &&
     isSignatureState(value.signatureState) &&
@@ -190,6 +197,7 @@ function demoMarketPlugins(): MarketPlugin[] {
       engines: { 'lite-code': '>=0.6.1' },
       deps: [],
       permissions: ['filesystem.read'],
+      webviews: ['demo-panel'],
       source: 'demo',
       fileSource: false,
       signatureState: 'signed',
@@ -230,6 +238,7 @@ function demoPluginList(): PluginList {
     languages: [],
     views: [],
     uiViews: [],
+    webviews: [],
   }))
   return { plugins, dir: DEMO_EXTENSIONS_DIR, nodeAvailable: true }
 }

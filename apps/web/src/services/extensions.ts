@@ -55,6 +55,21 @@ export interface PluginUiView {
   sections: unknown[]
 }
 
+/**
+ * 插件贡献的沙箱 webview（ext_list 携带，docs/plans/plugin-webview.md §3.8）：
+ * 声明 contributes.ui.webviews 的 [{ id, entry, assets? }]。entry/assets 的可访问
+ * 白名单与根内校验由 Rust handler 执行；web 侧只用 id/entry 生成 iframe src，
+ * 不渲染插件提供的任何其它 URL（注入防御红线）。
+ */
+export interface PluginWebview {
+  /** 插件内唯一（小写字母/数字/线，同 views.id 规则）。 */
+  id: string
+  /** 入口资产相对路径（插件目录内，Rust 校验存在且已声明）。 */
+  entry: string
+  /** 显式附加资产白名单（省略 = 仅 entry 可访问；Rust 校验）。 */
+  assets?: string[]
+}
+
 /** 树视图节点（docs/EXTENSIONS.md §4）：id/label 必填，其余可空。 */
 export interface ViewNode {
   id: string
@@ -81,6 +96,8 @@ export interface PluginInfo {
   views: PluginView[]
   /** 贡献的 UI 视图（无声明为空数组，docs/plans/plugin-webview.md §3.1）。 */
   uiViews: PluginUiView[]
+  /** 贡献的沙箱 webview（无声明为空数组，docs/plans/plugin-webview.md §3.8）。 */
+  webviews: PluginWebview[]
 }
 
 export interface PluginList {
@@ -178,6 +195,15 @@ function isPluginUiView(value: unknown): value is PluginUiView {
   )
 }
 
+/** webview 声明守卫（§3.8）：id/entry 非空字符串；assets 缺省或可空字符串数组。 */
+function isPluginWebview(value: unknown): value is PluginWebview {
+  if (!isRecord(value)) return false
+  if (typeof value.id !== 'string' || value.id.length === 0) return false
+  if (typeof value.entry !== 'string' || value.entry.length === 0) return false
+  if (value.assets !== undefined && !isStringArray(value.assets)) return false
+  return true
+}
+
 function isPluginCommand(value: unknown): value is PluginCommand {
   return (
     isRecord(value) &&
@@ -208,7 +234,9 @@ function isPluginInfo(value: unknown): value is PluginInfo {
     Array.isArray(value.views) &&
     value.views.every(isPluginView) &&
     Array.isArray(value.uiViews) &&
-    value.uiViews.every(isPluginUiView)
+    value.uiViews.every(isPluginUiView) &&
+    Array.isArray(value.webviews) &&
+    value.webviews.every(isPluginWebview)
   )
 }
 
@@ -276,6 +304,9 @@ function demoPluginList(): PluginList {
           },
         ],
         views: [{ id: 'demo-tree', name: 'Demo Tree' }],
+        // 演示沙箱 webview（docs/plans/plugin-webview.md §3.8 M3）：浏览器 dev
+        // 的 iframe 无法服务 lc-plugin:// 资源，组件显示加载失败态（属预期）。
+        webviews: [{ id: 'demo-panel', entry: './webviews/demo-panel/index.html' }],
         // 演示 UI 视图：markdown + kv 节（M2-R DTO：稳定节 id；kv 声明
         // source:"provider"，browser dev 走演示数据动态回读）；openCommand 走
         // palette 别名。
@@ -315,6 +346,7 @@ function demoPluginList(): PluginList {
         themes: [],
         languages: [],
         views: [],
+        webviews: [],
         // 声明式插件的演示视图：form 静态 default 只读渲染 + list 空态注记
         // （M2-R DTO：稳定节 id；list 未声明 source 时不回读）。
         uiViews: [
@@ -457,10 +489,13 @@ export async function extensionsOpenDir(): Promise<BridgeResult<AckResult>> {
   }
 }
 
-/** 执行插件贡献的命令；args 原样透传为 JSON。 */
+/** 执行插件贡献的命令；args 原样透传为 JSON。pluginId 仅供 webview bridge
+ * 的 postCommand 携带（Rust 侧据此做绑定插件的归属校验，§3.8）；缺省走全局
+ * 命令映射（palette/视图等既有来源）。 */
 export async function extensionsExecuteCommand(
   command: string,
   args?: unknown,
+  pluginId?: string,
 ): Promise<BridgeResult<ExtCommandResult>> {
   if (!isTauri()) {
     return {
@@ -477,10 +512,9 @@ export async function extensionsExecuteCommand(
     }
   }
   try {
-    const raw = await tauriInvoke<unknown>('ext_execute_command', {
-      command,
-      args: args ?? null,
-    })
+    const payload: Record<string, unknown> = { command, args: args ?? null }
+    if (pluginId !== undefined) payload.plugin_id = pluginId
+    const raw = await tauriInvoke<unknown>('ext_execute_command', payload)
     if (!isRecord(raw) || !('result' in raw)) {
       return {
         ok: false,
@@ -624,6 +658,147 @@ export async function extensionsViewChildren(
 export interface ExtUiValuesResult {
   /** 节归一值载荷（form→{ values }、list→{ rows }、kv→{ items }）；形状由 pluginUi.ts 按节 kind 白名单归一。 */
   values: unknown
+}
+
+/** 浏览器 dev 的 webview 状态演示表（内存态，刷新即失；形状与 Rust 侧一致）。 */
+const demoWebviewState = new Map<string, Record<string, unknown>>()
+
+/** ext_webview_state_get 返回体：{ value }；未设置时 value=null。 */
+export interface ExtWebviewStateResult {
+  value: unknown
+}
+
+// ==== webview 资源 URL（§3.8 统一 URL 与路由） ====
+
+/** Linux 基址（WebKitGTK custom protocol）。Windows 桌面实际基址以
+ *  `ext_webview_asset_url` 命令返回为准（WebView2 http(s) 映射）。 */
+export const LC_PLUGIN_BASE_LINUX = 'lc-plugin://localhost'
+/** Windows 默认基址（与 lc-core WINDOWS_ASSET_BASE 同规则；HTTPS 映射由
+ *  Rust 侧开启后由同一命令输出，web 侧不拼字符串）。 */
+export const LC_PLUGIN_BASE_WINDOWS = 'http://lc-plugin.localhost'
+
+/** 平台基址（纯函数，浏览器 dev/测试用）：Windows UA → http 映射。 */
+export function lcPluginAssetBase(userAgent?: string): string {
+  const ua =
+    userAgent ?? (typeof navigator === 'undefined' ? '' : navigator.userAgent)
+  return /windows/i.test(ua) ? LC_PLUGIN_BASE_WINDOWS : LC_PLUGIN_BASE_LINUX
+}
+
+/**
+ * 纯函数 URL 生成（§3.8 逻辑路径 /<pluginId>/<webviewId>/<asset>，
+ * pluginId/webviewId 不放 authority）：asset 剥前导斜杠与 ./ 后逐段
+ * encodeURIComponent（编码斜杠在 Rust handler 侧拒绝，防穿越）。
+ */
+export function pluginAssetUrlWithBase(
+  base: string,
+  pluginId: string,
+  webviewId: string,
+  asset: string,
+): string {
+  const cleanAsset = asset.replace(/^[\\/]+/, '').replace(/^(\.\/)+/, '')
+  const path = cleanAsset
+    .split('/')
+    .filter(segment => segment.length > 0)
+    .map(encodeURIComponent)
+    .join('/')
+  return `${base}/${encodeURIComponent(pluginId)}/${encodeURIComponent(webviewId)}/${path}`
+}
+
+/**
+ * 读取插件 webview 的持久化状态（docs/plans/plugin-webview.md §3.8 bridge
+ * getState）：Rust 侧 per-plugin JSON 存储（键 ≤64 字符、单值 ≤64 KiB、每插件
+ * ≤256 KiB，超出 Rust 拒绝；web 侧在 pluginWebview.ts 做同约束预校验）。
+ * 未设置时 value=null。浏览器 dev 走内存演示表。
+ */
+export async function extensionsWebviewStateGet(
+  pluginId: string,
+  key: string,
+): Promise<BridgeResult<ExtWebviewStateResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { value: demoWebviewState.get(pluginId)?.[key] ?? null },
+      fallback: true,
+    }
+  }
+  try {
+    const raw = await tauriInvoke<unknown>('ext_webview_state_get', { pluginId, key })
+    if (!isRecord(raw) || !('value' in raw)) {
+      return {
+        ok: false,
+        error: internalError('ext_webview_state_get 返回了非预期载荷'),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { value: raw.value }, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
+/** 写入插件 webview 的持久化状态（§3.8 bridge setState）；ack 表示已受理。 */
+export async function extensionsWebviewStateSet(
+  pluginId: string,
+  key: string,
+  value: unknown,
+): Promise<BridgeResult<AckResult>> {
+  if (!isTauri()) {
+    const store = demoWebviewState.get(pluginId) ?? {}
+    store[key] = value
+    demoWebviewState.set(pluginId, store)
+    return { ok: true, data: { kind: 'ack' }, fallback: true }
+  }
+  try {
+    const raw = await tauriInvoke<unknown>('ext_webview_state_set', { pluginId, key, value })
+    if (!isRecord(raw) || raw.kind !== 'ack') {
+      return {
+        ok: false,
+        error: internalError('ext_webview_state_set 返回了非预期载荷'),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { kind: 'ack' }, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
+/** ext_webview_asset_url 返回体：{ url }（宿主生成的唯一合法 iframe src）。 */
+export interface ExtWebviewAssetUrlResult {
+  url: string
+}
+
+/**
+ * 宿主生成 webview 资源 URL（§3.8「统一 URL 与路由」）：Tauri 环境一律经
+ * ext_webview_asset_url 命令（Rust 校验插件启用/webview 已声明/资产在白名单，
+ * 失败按错误返回而不是给出必然 404 的地址）；浏览器 dev 用纯生成器回退
+ * （演示模式 iframe 无法真正服务 lc-plugin 资源，组件显示加载失败态）。
+ */
+export async function extensionsWebviewAssetUrl(
+  pluginId: string,
+  webviewId: string,
+  asset: string,
+): Promise<BridgeResult<ExtWebviewAssetUrlResult>> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      data: { url: pluginAssetUrlWithBase(LC_PLUGIN_BASE_LINUX, pluginId, webviewId, asset) },
+      fallback: true,
+    }
+  }
+  try {
+    const raw = await tauriInvoke<unknown>('ext_webview_asset_url', { pluginId, webviewId, asset })
+    if (!isRecord(raw) || typeof raw.url !== 'string') {
+      return {
+        ok: false,
+        error: internalError('ext_webview_asset_url 返回了非预期载荷'),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { url: raw.url }, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
 }
 
 /**

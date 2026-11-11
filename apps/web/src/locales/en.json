@@ -763,7 +763,8 @@
     "nodeHint": "Node is unavailable, so this command cannot run",
     "uiViews": "Views",
     "openView": "Open View",
-    "viewDisabledHint": "Plugin is disabled; enable it before opening views"
+    "viewDisabledHint": "Plugin is disabled; enable it before opening views",
+    "webviews": "Webviews"
   },
   "marketplace": {
     "tabInstalled": "Installed",
@@ -803,6 +804,7 @@
     "confirmUpdateTitle": "Confirm plugin update",
     "confirmIncomplete": "Plugin information is incomplete; please confirm carefully.",
     "nodeWarning": "This plugin will execute arbitrary code with your user permissions.",
+    "webviewWarning": "This plugin contributes a webview: its HTML/JS runs in a sandboxed iframe (allow-scripts only, no same-origin storage) and talks to the host through a whitelist bridge (getState/setState/postCommand).",
     "precheckFailed": "Install precheck failed: ",
     "cancel": "Cancel",
     "confirmInstall": "Install",
@@ -815,5 +817,11 @@
     "minimize": "Minimize",
     "maximize": "Maximize",
     "close": "Close"
+  },
+  "webview": {
+    "unavailable": "This webview is no longer available (plugin disabled or declaration removed).",
+    "bridgeLost": "The view navigated away from its approved entry; the connection was closed.",
+    "loadFailed": "Failed to load the webview.",
+    "reload": "Reload"
   }
 }

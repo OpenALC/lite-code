@@ -356,7 +356,15 @@ node wasm-host.mjs --wasm <plugin.wasm> --command <id> --args <json> --workspace
 
 ## 7. 安全边界
 
-- 插件代码永远不进入 Tauri 渲染进程；Node 插件在独立扩展宿主进程中执行。
+- 插件可执行代码永不进入主 webview 的**特权上下文**；插件 UI 资源仅可经
+  `lc-plugin` 协议在 sandbox iframe（opaque origin、`sandbox="allow-scripts"` only）
+  中渲染，且仅能经白名单 postMessage bridge（`ready`/`getState`/`setState`/
+  `postCommand`）通信（docs/plans/plugin-webview.md §3.8，M3：宿主生成 URL、
+  handler 按 entry+显式 assets 白名单服务、bridge 状态为 Rust 侧 per-plugin
+  JSON 并持久化、postCommand 校验命令属于绑定插件清单）。
+- 数据驱动 UI（`contributes.ui.views` 声明式节）仍是默认渲染方式；iframe
+  webview 为清单显式 opt-in（`contributes.ui.webviews`），安装确认 UI 以
+  固定文案明示。
 - 清单路径必须落在插件目录内；项目级插件默认关闭。
 - Node 插件是**可信代码**（与 VS Code 相同），`permissions` 只用于安装提示；
   WASM 才是强隔离层。
@@ -379,6 +387,9 @@ LSP 补全/悬停/跳转、插件管理页、命令面板入口、插件级 Agen
 协议与 30s 超时、`onView:` 隐式懒激活、`ext_view_children` 转发、web 资源管理器
 侧栏底部可折叠分区渲染、节点命令执行、错误态可重试）、
 插件依赖（`extensionDependencies` 校验：格式/去重/自依赖/缺失依赖、环依赖
-整环报错并退出下发；initialize 插件列表按依赖拓扑排序，依赖先于被依赖者）。
+整环报错并退出下发；initialize 插件列表按依赖拓扑排序，依赖先于被依赖者）、
+webview UI（`contributes.ui.webviews` 校验、宿主生成 `lc-plugin` 资源 URL、
+白名单 handler + Content-Type 闭集 + 子文档 CSP、per-plugin bridge 状态
+`ext_webview_state_get/set`、postCommand 命令归属校验，§3.8/§7）。
 
-未实现：插件市场、Webview UI、插件签名、VS Code API 兼容。
+未实现：插件市场、插件签名、VS Code API 兼容。

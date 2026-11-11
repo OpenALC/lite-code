@@ -86,6 +86,7 @@ function plugin(partial: Partial<PluginInfo> & { id: string }): PluginInfo {
     languages: [],
     views: [],
     uiViews: [],
+    webviews: [],
     ...partial,
   }
 }

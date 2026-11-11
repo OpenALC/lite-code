@@ -14,6 +14,7 @@ import FileTree from './components/FileTree.vue'
 import GitPanel from './components/GitPanel.vue'
 import PluginUiView from './components/PluginUiView.vue'
 import PluginViews from './components/PluginViews.vue'
+import PluginWebviewView from './components/PluginWebviewView.vue'
 import SearchView from './components/SearchView.vue'
 import SettingsPanel, { type SettingsSection } from './components/SettingsPanel.vue'
 import TabBar from './components/TabBar.vue'
@@ -88,6 +89,7 @@ import {
   syncPluginUiViews,
   type PluginUiState,
 } from './services/pluginUi'
+import { parseWebviewTabId, syncPluginWebviews } from './services/pluginWebview'
 import { subscribeAgentContext } from './services/agentContext'
 import { requestReveal } from './services/editorReveal'
 import { resolveEditorStrategy } from './services/largeFile'
@@ -406,6 +408,10 @@ const activeTabId = computed(() => tabsState.value.activeId)
 const activeUiTab = computed(() =>
   activeTabId.value ? parseUiTabId(activeTabId.value) : null,
 )
+/** 激活标签是插件沙箱 webview 标签（`__wvb__:<pluginId>:<webviewId>`）时的引用。 */
+const activeWebviewTab = computed(() =>
+  activeTabId.value ? parseWebviewTabId(activeTabId.value) : null,
+)
 
 function activateEditor(id: string): void {
   activateTab(id)
@@ -497,6 +503,7 @@ function onExtensionsChanged(): void {
   void syncPluginLanguages()
   void syncPluginViews()
   void syncPluginUiViews()
+  void syncPluginWebviews()
   if (projectRoot.value) startLsp()
 }
 
@@ -1027,6 +1034,7 @@ onMounted(() => {
   void syncPluginLanguages()
   void syncPluginViews()
   void syncPluginUiViews()
+  void syncPluginWebviews()
   void workspaceRoot().then(res => {
     if (res.ok && res.data.root) {
       projectRoot.value = res.data.root
@@ -1455,7 +1463,15 @@ onBeforeUnmount(() => {
             :plugin-id="activeUiTab.pluginId"
             :view-id="activeUiTab.viewId"
           />
-          <template v-if="activeTabId !== '__extensions__' && !activeUiTab">
+          <!-- 插件沙箱 webview 标签容器（§3.8 M3：id
+            `__wvb__:<pluginId>:<webviewId>`，sandbox iframe + 一次性握手桥）。 -->
+          <PluginWebviewView
+            v-if="activeWebviewTab"
+            :key="`${activeWebviewTab.pluginId}:${activeWebviewTab.webviewId}`"
+            :plugin-id="activeWebviewTab.pluginId"
+            :webview-id="activeWebviewTab.webviewId"
+          />
+          <template v-if="activeTabId !== '__extensions__' && !activeUiTab && !activeWebviewTab">
             <CodeEditor v-if="openTabs.length > 0" />
             <div
               v-else

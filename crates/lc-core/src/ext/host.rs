@@ -251,6 +251,25 @@ impl ExtHost {
         }
     }
 
+    /// webview bridge 的 postCommand 入口（docs/plans/plugin-webview.md §3.8，
+    /// M3）：不新增命令——webview 经既有 `ext_execute_command` 执行，但 Rust
+    /// 端先做一次显式归属校验（[`super::webview::validate_webview_command`]：
+    /// 命令必须在绑定插件的清单 contributes.commands 中，插件已启用），通过
+    /// 后再走 execute_with_paths 的全局命令映射（命令 id 跨插件唯一，两道
+    /// 校验结果一致）。校验失败按 CommandNotFound/UnknownPlugin 拒绝。
+    pub fn execute_webview_command(
+        &mut self,
+        workspace_root: &Path,
+        plugin_id: &str,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, ExtError> {
+        let paths = ExtPaths::default_for(Some(workspace_root))?;
+        let allow_project = project_allowed();
+        super::webview::validate_webview_command(&paths, allow_project, plugin_id, command)?;
+        self.execute_with_paths(&paths, allow_project, workspace_root, command, args)
+    }
+
     /// 指定布局下执行插件级 Agent 工具（docs/EXTENSIONS.md §4）：
     /// 向扩展宿主发送 `tool/execute`。工具不存在/插件禁用/非 node runtime
     /// 返回 [`ExtError::ToolNotFound`]；宿主未运行时按 node 插件命令的

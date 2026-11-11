@@ -763,7 +763,8 @@
     "nodeHint": "Node 不可用，暂时无法运行该命令",
     "uiViews": "视图",
     "openView": "打开视图",
-    "viewDisabledHint": "插件已禁用，先启用再打开视图"
+    "viewDisabledHint": "插件已禁用，先启用再打开视图",
+    "webviews": "Webview"
   },
   "marketplace": {
     "tabInstalled": "已安装",
@@ -803,6 +804,7 @@
     "confirmUpdateTitle": "确认更新插件",
     "confirmIncomplete": "插件信息不完整，请谨慎确认。",
     "nodeWarning": "该插件将以你的用户权限执行任意代码。",
+    "webviewWarning": "该插件包含 Webview 界面：插件 HTML/JS 将在沙箱 iframe（仅 allow-scripts、禁同源存储）中运行，并经白名单桥接（getState/setState/postCommand）与宿主通信。",
     "precheckFailed": "安装预检未通过：",
     "cancel": "取消",
     "confirmInstall": "确认安装",
@@ -815,5 +817,11 @@
     "minimize": "最小化",
     "maximize": "最大化",
     "close": "关闭"
+  },
+  "webview": {
+    "unavailable": "该 webview 已不可用（插件被禁用或声明已移除）。",
+    "bridgeLost": "视图已离开批准的入口地址，连接已断开。",
+    "loadFailed": "Webview 加载失败。",
+    "reload": "重新加载"
   }
 }

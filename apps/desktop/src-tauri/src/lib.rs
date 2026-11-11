@@ -795,6 +795,21 @@ pub fn run() {
         .manage(DbState::default())
         .manage(DbEvents::default())
         .manage(lsp::LspState::new())
+        // 插件 webview 资源协议（docs/plans/plugin-webview.md §3.8，M3）：
+        // 解析/白名单/Content-Type 全在 lc-core::ext::serve_webview_asset，
+        // 这里只做薄挂接——抽 URI/Method → 阻塞线程执行 → 补 nosniff/CSP 头。
+        // Windows 上 WebView2 以 http://lc-plugin.localhost 请求该 scheme，
+        // Linux 为 lc-plugin://localhost，两侧共用同一 handler 核心。
+        .register_asynchronous_uri_scheme_protocol("lc-plugin", |ctx, request, responder| {
+            use tauri::Manager as _;
+            let root = ctx.app_handle().state::<WorkspaceState>().get();
+            let uri = request.uri().to_string();
+            let method = request.method().to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                let response = lc_core::ext::serve_webview_asset(root.as_deref(), &uri, &method);
+                responder.respond(ext::webview_http_response(response));
+            });
+        })
         .invoke_handler(tauri::generate_handler![
             node_detect,
             node_set_manual,
@@ -821,6 +836,9 @@ pub fn run() {
             ext::ext_set_enabled,
             ext::ext_reload,
             ext::ext_execute_command,
+            ext::ext_webview_state_get,
+            ext::ext_webview_state_set,
+            ext::ext_webview_asset_url,
             ext::ext_open_dir,
             ext::ext_read_theme,
             ext::ext_read_grammar,

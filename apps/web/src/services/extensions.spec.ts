@@ -56,6 +56,7 @@ const sampleList: PluginList = {
         },
       ],
       views: [{ id: 'demo-tree', name: 'Demo Tree' }],
+      webviews: [],
       uiViews: [
         {
           id: 'demo-board',
