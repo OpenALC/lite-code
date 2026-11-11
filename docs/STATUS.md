@@ -405,7 +405,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
 发版脚本 `/tmp` 坑修复。
 
 **待维护者/用户**：真机签名、2in1、B 类门禁、市场发布端仓库（约定已入
-plan §3.7）、Webview/API 兼容设计。
+plan §3.7）。**Webview UI 设计定稿**（`docs/plans/plugin-webview.md`，
+`44730d5`，agent-97）：数据驱动 v1 主线（§7 红线零妥协，树视图边界延伸），
+iframe 沙箱 v2 规格化（附 §7 修订建议文本）——EXTENSIONS §8 全部事项
+已有设计或落地，仅剩 API 兼容（v0 文档首行即不承诺）。
 
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
