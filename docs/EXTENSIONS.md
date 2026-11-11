@@ -270,6 +270,7 @@ stdin/stdout 每行一个 JSON-RPC 2.0 消息（UTF-8，单行）。
   - `command/execute` `{ pluginId, command, args }`
   - `tool/execute` `{ pluginId, tool, args }` → `{ result: <插件返回值> }`（默认超时 30s）
   - `view/children` `{ pluginId, viewId, nodeId? }` → 节点数组 `[{ id, label, icon?, command?, tooltip? }]`（空数组合法；默认超时 30s）
+  - `ui/values` `{ pluginId, viewId, sectionId }` → 按节 kind 归一的值载荷（form→`{values}`、list→`{rows}`≤500、kv→`{items}`≤64；markdown 节无回读；默认超时 30s；reason 全集与 `view/children` 同构，规格见 `docs/plans/plugin-webview.md` §3.2）
   - `shutdown` {}
 - host → Rust：只使用 JSON-RPC response；v0 不反向调用 Rust。
 - 插件模块导出 `activate(ctx)` / `deactivate()`；ctx 提供：

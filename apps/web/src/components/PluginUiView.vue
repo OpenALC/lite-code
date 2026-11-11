@@ -1,23 +1,32 @@
 <script setup lang="ts">
 /* eslint-disable vue/no-v-html -- 全组件唯一 v-html 点：renderMarkdown 先转义全文，只插入固定标签 */
-// 插件 UI 视图面板（docs/plans/plugin-webview.md §3.4）：渲染一个视图的
-// 声明式节（kind 闭集 markdown|form|list|kv）。注入防御红线：
+// 插件 UI 视图面板（docs/plans/plugin-webview.md §3.4/§3.5）：渲染一个视图的
+// 声明式节（kind 闭集 markdown|form|list|kv）并承载 M2 交互回传。注入防御红线：
 // - 所有节文本/值一律 {{ }} 插值渲染；
 // - 全组件唯一 v-html 点是 markdown 节，且必须走 services/markdown.ts 的
 //   renderMarkdown（先转义全部文本、再插固定标签，v1 子集无链接语法 →
 //   零 <a>/javascript: 面）；
 // - 不渲染插件提供的任何 URL/图片，不注入插件 CSS，全部继承 var(--*) token。
-// M1 只渲染静态节：form 只读 + 禁用态，list/kv 动态数据注记「需要 Node 运行时」。
-import { computed, onBeforeUnmount, ref } from 'vue'
+// M2：表单可编辑提交（values 按 field.type 强制转换），list/kv 经 ui/values
+// 动态回读（节错误态可重试），list 行点击走 rowCommand；状态在 pluginUi.ts。
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { renderMarkdown } from '../services/markdown'
 import {
+  ensureUiSectionLoaded,
   findUiView,
   getPluginUiState,
+  retryUiSection,
+  runUiRowCommand,
+  submitUiForm,
   subscribePluginUi,
+  uiSectionDataKey,
   type PluginUiState,
-  type UiField,
+  type UiKvItem,
+  type UiScalar,
+  type UiSection,
+  type UiSectionDataState,
 } from '../services/pluginUi'
 
 const props = defineProps<{ pluginId: string; viewId: string }>()
@@ -42,20 +51,102 @@ function markdownHtml(text: string): string {
   return renderMarkdown(text, { copyLabel: t('agent.copy') })
 }
 
-function fieldTextDefault(field: UiField): string {
-  return typeof field.default === 'string' ? field.default : ''
+/** 单节运行时状态（无条目时给默认空态，不写入 store）。 */
+function sectionData(index: number): UiSectionDataState {
+  return (
+    state.value.sectionData[uiSectionDataKey(props.pluginId, props.viewId, index)] ?? {
+      status: 'idle',
+      values: null,
+      error: null,
+      note: null,
+      busy: false,
+    }
+  )
 }
 
-function fieldNumberDefault(field: UiField): string {
-  return typeof field.default === 'number' ? String(field.default) : ''
+// 挂载与声明热更新：为声明 valuesCommand 的 list/kv 节触发首次回读（幂等）。
+watch(
+  () => entry.value?.sections,
+  nextSections => {
+    if (!nextSections) return
+    nextSections.forEach((section, index) => {
+      if (
+        section &&
+        (section.kind === 'list' || section.kind === 'kv') &&
+        section.valuesCommand
+      ) {
+        void ensureUiSectionLoaded(props.pluginId, props.viewId, index)
+      }
+    })
+  },
+  { immediate: true },
+)
+
+/** 交互注记文案：成功固定文案；失败带宿主错误信息。 */
+function noteText(data: UiSectionDataState): string {
+  if (!data.note) return ''
+  return data.note.kind === 'success'
+    ? t('ui.submitOk')
+    : t('ui.actionFailed', { message: data.note.message })
 }
 
-function fieldChecked(field: UiField): boolean {
-  return field.default === true
+// ==== form 节：草稿为组件本地状态（保留用户输入），提交时服务层强制转换 ====
+
+const formDrafts = reactive<Record<number, Record<string, unknown>>>({})
+
+type FormSection = Extract<UiSection, { kind: 'form' }>
+
+function formDraft(index: number, section: FormSection): Record<string, unknown> {
+  let draft = formDrafts[index]
+  if (!draft) {
+    draft = {}
+    for (const field of section.fields) {
+      if (field.type === 'boolean') draft[field.key] = field.default === true
+      else if (field.type === 'number') {
+        draft[field.key] = typeof field.default === 'number' ? String(field.default) : ''
+      } else {
+        draft[field.key] = typeof field.default === 'string' ? field.default : ''
+      }
+    }
+    formDrafts[index] = draft
+  }
+  return draft
 }
 
-function isSelectedOption(field: UiField, option: string): boolean {
-  return field.default === option
+function onFormSubmit(index: number, section: FormSection): void {
+  if (!section.command || sectionData(index).busy) return
+  void submitUiForm(props.pluginId, props.viewId, index, formDraft(index, section))
+}
+
+// ==== list 节：行数据来自 ui/values 回读，行点击走 rowCommand ====
+
+function listRows(index: number): Record<string, UiScalar>[] {
+  return sectionData(index).values?.rows ?? []
+}
+
+function cellText(row: Record<string, UiScalar>, key: string): string {
+  const value = row[key]
+  return value === undefined || value === null ? '' : String(value)
+}
+
+function onRowClick(index: number, section: Extract<UiSection, { kind: 'list' }>, row: Record<string, UiScalar>): void {
+  if (!section.rowCommand || sectionData(index).busy) return
+  void runUiRowCommand(props.pluginId, props.viewId, index, row)
+}
+
+// ==== kv 节：声明 valuesCommand 时动态回读优先，静态 items 兜底 ====
+
+function kvItems(index: number, section: Extract<UiSection, { kind: 'kv' }>): UiKvItem[] {
+  const data = sectionData(index)
+  if (section.valuesCommand) {
+    if (data.status === 'ready') return data.values?.items ?? []
+    return section.items ?? []
+  }
+  return section.items ?? []
+}
+
+function onSectionRetry(index: number): void {
+  void retryUiSection(props.pluginId, props.viewId, index)
 }
 </script>
 
@@ -104,7 +195,7 @@ function isSelectedOption(field: UiField, option: string): boolean {
             {{ section.title }}
           </h2>
 
-          <!-- form 节：M1 只读展示静态 default，禁用态 + 交互注记（M2 提交） -->
+          <!-- form 节：声明 command → 可编辑提交；否则 M1 只读禁用态 -->
           <div
             v-if="section.kind === 'form'"
             class="ui-form"
@@ -117,62 +208,86 @@ function isSelectedOption(field: UiField, option: string): boolean {
               <span class="ui-label">{{ field.label }}</span>
               <input
                 v-if="field.type === 'text'"
+                v-model="formDraft(index, section)[field.key]"
                 type="text"
                 class="ui-input"
-                :value="fieldTextDefault(field)"
                 :placeholder="field.placeholder ?? ''"
-                disabled
+                :disabled="!section.command"
               >
               <input
                 v-else-if="field.type === 'password'"
+                v-model="formDraft(index, section)[field.key]"
                 type="password"
                 class="ui-input"
-                :value="fieldTextDefault(field)"
                 :placeholder="field.placeholder ?? ''"
-                disabled
+                :disabled="!section.command"
               >
               <input
                 v-else-if="field.type === 'number'"
+                v-model="formDraft(index, section)[field.key]"
                 type="number"
                 class="ui-input"
-                :value="fieldNumberDefault(field)"
                 :min="field.min"
                 :max="field.max"
                 :placeholder="field.placeholder ?? ''"
-                disabled
+                :disabled="!section.command"
               >
               <label
                 v-else-if="field.type === 'boolean'"
                 class="ui-check"
               >
                 <input
+                  v-model="formDraft(index, section)[field.key]"
                   type="checkbox"
-                  :checked="fieldChecked(field)"
-                  disabled
+                  :disabled="!section.command"
                 >
-                <span>{{ fieldChecked(field) ? t('ui.booleanOn') : t('ui.booleanOff') }}</span>
+                <span>{{ formDraft(index, section)[field.key] === true ? t('ui.booleanOn') : t('ui.booleanOff') }}</span>
               </label>
               <select
                 v-else
+                v-model="formDraft(index, section)[field.key]"
                 class="ui-input"
-                disabled
+                :disabled="!section.command"
               >
                 <option
                   v-for="option in field.options ?? []"
                   :key="option"
                   :value="option"
-                  :selected="isSelectedOption(field, option)"
                 >
                   {{ option }}
                 </option>
               </select>
             </div>
-            <p class="ui-note">
+
+            <div
+              v-if="section.command"
+              class="ui-actions"
+            >
+              <button
+                type="button"
+                class="ui-submit"
+                :disabled="sectionData(index).busy"
+                @click="onFormSubmit(index, section)"
+              >
+                {{ sectionData(index).busy ? t('ui.submitting') : t('ui.submit') }}
+              </button>
+              <span
+                v-if="sectionData(index).note"
+                class="ui-note"
+                :class="sectionData(index).note?.kind"
+                :title="sectionData(index).note?.kind === 'error' ? sectionData(index).note?.message : ''"
+              >{{ noteText(sectionData(index)) }}</span>
+            </div>
+            <p
+              v-else
+              class="ui-note"
+            >
               {{ t('ui.formReadonly') }}
             </p>
           </div>
 
-          <!-- list 节：M1 无数据回读，渲染列头 + 「需要 Node 运行时」空态注记 -->
+          <!-- list 节：声明 valuesCommand → ui/values 动态回读（错误态可重试）；
+            行点击走 rowCommand（args=整行对象） -->
           <div
             v-else-if="section.kind === 'list'"
             class="ui-list"
@@ -185,18 +300,104 @@ function isSelectedOption(field: UiField, option: string): boolean {
                 :style="{ flexGrow: column.width }"
               >{{ column.label }}</span>
             </div>
-            <p class="ui-note">
+
+            <template v-if="section.valuesCommand">
+              <p
+                v-if="sectionData(index).status === 'loading' || sectionData(index).status === 'idle'"
+                class="ui-note"
+              >
+                {{ t('ui.loading') }}
+              </p>
+              <p
+                v-else-if="sectionData(index).status === 'error'"
+                class="ui-note error"
+              >
+                <span
+                  class="ui-note-text"
+                  :title="`${sectionData(index).error?.code}: ${sectionData(index).error?.message}`"
+                >{{ t('ui.loadError') }}</span>
+                <button
+                  type="button"
+                  class="ui-retry"
+                  @click="onSectionRetry(index)"
+                >
+                  {{ t('ui.retry') }}
+                </button>
+              </p>
+              <template v-else>
+                <p
+                  v-if="listRows(index).length === 0"
+                  class="ui-note"
+                >
+                  {{ t('ui.empty') }}
+                </p>
+                <button
+                  v-for="(row, rowIndex) in listRows(index)"
+                  :key="rowIndex"
+                  type="button"
+                  class="ui-row data"
+                  :class="{ clickable: section.rowCommand, busy: sectionData(index).busy }"
+                  :disabled="!section.rowCommand || sectionData(index).busy"
+                  @click="onRowClick(index, section, row)"
+                >
+                  <span
+                    v-for="column in section.columns"
+                    :key="column.key"
+                    class="ui-cell"
+                    :style="{ flexGrow: column.width }"
+                  >{{ cellText(row, column.key) }}</span>
+                </button>
+              </template>
+            </template>
+            <p
+              v-else
+              class="ui-note"
+            >
               {{ t('ui.listNeedsNode') }}
+            </p>
+
+            <p
+              v-if="section.valuesCommand && sectionData(index).note"
+              class="ui-note"
+              :class="sectionData(index).note?.kind"
+              :title="sectionData(index).note?.kind === 'error' ? sectionData(index).note?.message : ''"
+            >
+              {{ noteText(sectionData(index)) }}
             </p>
           </div>
 
-          <!-- kv 节：静态 items 渲染；声明 valuesCommand 但无静态 items → 空态注记 -->
+          <!-- kv 节：声明 valuesCommand → 动态回读优先（错误态可重试）；
+            无 valuesCommand → 静态 items（M1） -->
           <div
             v-else
             class="ui-kv"
           >
+            <template v-if="section.valuesCommand">
+              <p
+                v-if="sectionData(index).status === 'error'"
+                class="ui-note error"
+              >
+                <span
+                  class="ui-note-text"
+                  :title="`${sectionData(index).error?.code}: ${sectionData(index).error?.message}`"
+                >{{ t('ui.loadError') }}</span>
+                <button
+                  type="button"
+                  class="ui-retry"
+                  @click="onSectionRetry(index)"
+                >
+                  {{ t('ui.retry') }}
+                </button>
+              </p>
+              <p
+                v-else-if="sectionData(index).status === 'loading' && (section.items?.length ?? 0) === 0"
+                class="ui-note"
+              >
+                {{ t('ui.loading') }}
+              </p>
+            </template>
             <div
-              v-for="(item, itemIndex) in section.items ?? []"
+              v-for="(item, itemIndex) in kvItems(index, section)"
               :key="itemIndex"
               class="ui-kv-row"
             >
@@ -204,7 +405,7 @@ function isSelectedOption(field: UiField, option: string): boolean {
               <span class="ui-kv-value">{{ item.value }}</span>
             </div>
             <p
-              v-if="(section.items?.length ?? 0) === 0 && section.valuesCommand"
+              v-if="!section.valuesCommand && (section.items?.length ?? 0) === 0"
               class="ui-note"
             >
               {{ t('ui.kvNeedsNode') }}
@@ -281,6 +482,18 @@ function isSelectedOption(field: UiField, option: string): boolean {
   color: var(--red);
 }
 
+.ui-note.success {
+  color: var(--green, #7ec87e);
+}
+
+.ui-note-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* markdown 节：与 Agent 消息同一套 md 类名，复用全局样式基线。 */
 .ui-md {
   font-size: 12.5px;
@@ -344,6 +557,34 @@ function isSelectedOption(field: UiField, option: string): boolean {
   accent-color: var(--accent);
 }
 
+.ui-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ui-submit {
+  flex: none;
+  height: 26px;
+  padding: 0 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-xs);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.ui-submit:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.ui-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .ui-row {
   display: flex;
   align-items: center;
@@ -359,12 +600,46 @@ function isSelectedOption(field: UiField, option: string): boolean {
   color: var(--fg-dim);
 }
 
+.ui-row.data {
+  width: 100%;
+  min-height: 26px;
+  padding: 0 4px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--fg-2);
+  border-radius: var(--r-xs);
+}
+
+.ui-row.data.clickable:hover:not(:disabled) {
+  background: var(--panel-3);
+}
+
+.ui-row.data:disabled {
+  cursor: default;
+}
+
+.ui-row.data.busy {
+  opacity: 0.6;
+}
+
 .ui-cell {
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ui-retry {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--r-xs);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.ui-retry:hover {
+  background: var(--accent-soft);
 }
 
 .ui-kv {

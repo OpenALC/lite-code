@@ -8,6 +8,7 @@ import {
   extensionsReadTheme,
   extensionsReload,
   extensionsSetEnabled,
+  extensionsUiValues,
   extensionsViewChildren,
   type PluginList,
 } from './extensions'
@@ -172,6 +173,34 @@ describe('浏览器 fallback', () => {
     const missing = await extensionsViewChildren('demo.notes', 'demo-tree')
     expect(missing.ok).toBe(false)
   })
+
+  it('extensionsUiValues 返回演示节值；未声明节进 error', async () => {
+    const kv = await extensionsUiValues('demo.hello', 'demo-board', '1')
+    expect(kv.ok).toBe(true)
+    expect(kv.fallback).toBe(true)
+    if (kv.ok) {
+      expect(kv.data.values).toEqual({
+        items: [
+          { key: '版本', value: '0.1.0' },
+          { key: '消息数', value: '2' },
+        ],
+      })
+    }
+    const rows = await extensionsUiValues('demo.notes', 'notes-panel', '1')
+    expect(rows.ok).toBe(true)
+    expect(rows.fallback).toBe(true)
+    if (rows.ok) {
+      expect(rows.data.values).toEqual({
+        rows: [
+          { title: '示例笔记一', state: 'open' },
+          { title: '示例笔记二', state: 'done' },
+        ],
+      })
+    }
+    const missing = await extensionsUiValues('demo.notes', 'notes-panel', '0')
+    expect(missing.ok).toBe(false)
+    if (!missing.ok) expect(missing.error.code).toBe('internal')
+  })
 })
 
 describe('Tauri 路径', () => {
@@ -317,6 +346,46 @@ describe('Tauri 路径', () => {
     const res = await extensionsViewChildren('example.hello', 'demo-tree')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error.message).toContain('ext_view_children')
+  })
+
+  it('ext_ui_values 传 pluginId/viewId/sectionId，校验 { values } 载荷', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    installTauri({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args })
+        return { values: { rows: [{ title: 't1' }] } }
+      },
+    })
+    const res = await extensionsUiValues('example.hello', 'demo-board', '1')
+    expect(calls).toEqual([
+      {
+        cmd: 'ext_ui_values',
+        args: { pluginId: 'example.hello', viewId: 'demo-board', sectionId: '1' },
+      },
+    ])
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.data.values).toEqual({ rows: [{ title: 't1' }] })
+  })
+
+  it('ext_ui_values 缺 values 字段归入 internal', async () => {
+    installTauri({ invoke: async () => ({ nope: true }) })
+    const res = await extensionsUiValues('example.hello', 'demo-board', '1')
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error.message).toContain('ext_ui_values')
+  })
+
+  it('ext_ui_values reject 原样进入 error 分支（ohos 未转发场景）', async () => {
+    installTauri({
+      invoke: async () => {
+        throw { code: 'not_found', message: 'unknown command', detail: null }
+      },
+    })
+    const res = await extensionsUiValues('example.hello', 'demo-board', '1')
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.fallback).toBe(false)
+      expect(res.error.code).toBe('not_found')
+    }
   })
 
   it('ext_list 的 uiViews 守卫：节级形状由 pluginUi 归一，视图级形状非法整包拒绝', async () => {

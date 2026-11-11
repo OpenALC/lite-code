@@ -110,11 +110,19 @@
   "ui": {
     "unavailable": "该视图已不可用（插件被禁用或视图声明已移除）。",
     "sectionError": "该节数据无法渲染。",
-    "formReadonly": "表单为只读预览，交互将在后续版本提供。",
-    "listNeedsNode": "列表数据需要 Node 运行时，将在后续版本提供。",
-    "kvNeedsNode": "键值数据需要 Node 运行时，将在后续版本提供。",
+    "formReadonly": "表单未声明提交命令，仅作只读预览。",
+    "listNeedsNode": "列表未声明数据命令，无数据来源。",
+    "kvNeedsNode": "键值节暂无数据。",
     "booleanOn": "开",
-    "booleanOff": "关"
+    "booleanOff": "关",
+    "submit": "提交",
+    "submitting": "提交中…",
+    "submitOk": "已提交。",
+    "actionFailed": "操作失败：{message}",
+    "loading": "读取中…",
+    "loadError": "数据读取失败",
+    "retry": "重试",
+    "empty": "暂无数据"
   },
   "agent": {
     "placeholderTitle": "Agent 模式",

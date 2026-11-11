@@ -110,11 +110,19 @@
   "ui": {
     "unavailable": "This view is no longer available (plugin disabled or view removed).",
     "sectionError": "This section cannot be rendered.",
-    "formReadonly": "Read-only preview; form interaction ships in a later version.",
-    "listNeedsNode": "List data requires the Node runtime and ships in a later version.",
-    "kvNeedsNode": "Key-value data requires the Node runtime and ships in a later version.",
+    "formReadonly": "This form declares no submit command and is read-only.",
+    "listNeedsNode": "This list declares no data command and has no data source.",
+    "kvNeedsNode": "This key-value section has no data yet.",
     "booleanOn": "On",
-    "booleanOff": "Off"
+    "booleanOff": "Off",
+    "submit": "Submit",
+    "submitting": "Submitting…",
+    "submitOk": "Submitted.",
+    "actionFailed": "Action failed: {message}",
+    "loading": "Loading…",
+    "loadError": "Failed to load data",
+    "retry": "Retry",
+    "empty": "No data"
   },
   "agent": {
     "placeholderTitle": "Agent mode",

@@ -825,6 +825,7 @@ pub fn run() {
             ext::ext_read_theme,
             ext::ext_read_grammar,
             ext::ext_view_children,
+            ext::ext_ui_values,
             ext::ext_registry_list,
             ext::ext_registry_add,
             ext::ext_registry_remove,

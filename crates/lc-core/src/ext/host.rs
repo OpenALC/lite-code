@@ -44,6 +44,15 @@ struct HostTool {
     command: String,
 }
 
+/// 初始化参数里随插件下发的 UI 视图声明（docs/plans/plugin-webview.md §3.2）：
+/// 宿主按 id 校验 `ctx.ui.register` 范围，sectionKinds 供 ui/values 按节
+/// kind 白名单归一（markdown 节无回读）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostUiView {
+    id: String,
+    section_kinds: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostPlugin {
     id: String,
@@ -54,6 +63,9 @@ struct HostPlugin {
     /// 清单声明的树视图 id 列表（docs/EXTENSIONS.md §1）：initialize 载荷
     /// 下发，宿主据此登记 view → pluginId 映射并校验注册范围。
     views: Vec<String>,
+    /// 清单声明的 UI 视图（docs/plans/plugin-webview.md §3.1）：initialize
+    /// 载荷下发，宿主据此登记 ui/values 的懒激活映射并校验注册范围。
+    ui_views: Vec<HostUiView>,
     /// 激活事件（docs/EXTENSIONS.md §4 延迟激活）：空数组或含 `*` 表示
     /// 立即激活，否则宿主延迟到首次命令/工具/视图请求。
     activation_events: Vec<String>,
@@ -362,6 +374,79 @@ impl ExtHost {
         self.request("view/children", params, timeout)
     }
 
+    /// 默认目录布局下读取插件 UI 视图的节值（`ext_ui_values`）。
+    pub fn ui_values(
+        &mut self,
+        workspace_root: &Path,
+        plugin_id: &str,
+        view_id: &str,
+        section_id: &str,
+    ) -> Result<Value, ExtError> {
+        let paths = ExtPaths::default_for(Some(workspace_root))?;
+        self.ui_values_with_paths(
+            &paths,
+            project_allowed(),
+            workspace_root,
+            plugin_id,
+            view_id,
+            section_id,
+        )
+    }
+
+    /// 指定布局下读取插件 UI 视图的节值（docs/plans/plugin-webview.md §3.2）：
+    /// 向扩展宿主发送 `ui/values`。视图不存在/插件禁用/非 node runtime 返回
+    /// [`ExtError::ViewNotFound`]（模式同 `view_children_with_paths`）；宿主未
+    /// 运行时按 node 插件命令的既有逻辑惰性启动，Node 缺失返回
+    /// [`ExtError::NodeUnavailable`]；默认超时 30s。
+    pub fn ui_values_with_paths(
+        &mut self,
+        paths: &ExtPaths,
+        allow_project: bool,
+        workspace_root: &Path,
+        plugin_id: &str,
+        view_id: &str,
+        section_id: &str,
+    ) -> Result<Value, ExtError> {
+        let plugins = enabled_plugins(paths, allow_project)?;
+        let target = plugins
+            .iter()
+            .find(|plugin| {
+                plugin.info.enabled
+                    && plugin.info.id == plugin_id
+                    && plugin.manifest.as_ref().is_some_and(|manifest| {
+                        manifest
+                            .contributes
+                            .ui
+                            .views
+                            .iter()
+                            .any(|view| view.id == view_id)
+                    })
+            })
+            .ok_or_else(|| ExtError::ViewNotFound {
+                plugin: plugin_id.to_string(),
+                view: view_id.to_string(),
+            })?;
+        // v1 数据面只在扩展宿主（node runtime）分发；wasm/declarative 插件
+        // 声明的 UI 视图返回未找到（模式同树视图）。
+        if target.manifest.as_ref().map(|manifest| manifest.runtime) != Some(PluginRuntime::Node) {
+            return Err(ExtError::ViewNotFound {
+                plugin: plugin_id.to_string(),
+                view: view_id.to_string(),
+            });
+        }
+
+        let node = self.node.clone().ok_or(ExtError::NodeUnavailable)?;
+        let host_plugins = host_plugins(&plugins);
+        self.ensure_host(&node, workspace_root, &host_plugins)?;
+        let params = json!({
+            "pluginId": target.info.id,
+            "viewId": view_id,
+            "sectionId": section_id,
+        });
+        let timeout = self.view_timeout;
+        self.request("ui/values", params, timeout)
+    }
+
     fn ensure_host(
         &mut self,
         node: &Path,
@@ -405,6 +490,13 @@ impl ExtHost {
                         }))
                         .collect::<Vec<_>>(),
                     "views": plugin.views,
+                    "uiViews": plugin.ui_views
+                        .iter()
+                        .map(|view| json!({
+                            "id": view.id,
+                            "sectionKinds": view.section_kinds,
+                        }))
+                        .collect::<Vec<_>>(),
                     "activationEvents": plugin.activation_events,
                 }))
                 .collect::<Vec<_>>(),
@@ -512,6 +604,30 @@ fn host_plugins(plugins: &[DiscoveredPlugin]) -> Vec<HostPlugin> {
                     .views
                     .iter()
                     .map(|view| view.id.clone())
+                    .collect(),
+                ui_views: manifest
+                    .contributes
+                    .ui
+                    .views
+                    .iter()
+                    .map(|view| HostUiView {
+                        id: view.id.clone(),
+                        section_kinds: view
+                            .sections
+                            .as_array()
+                            .map(|sections| {
+                                sections
+                                    .iter()
+                                    .filter_map(|section| {
+                                        section
+                                            .get("kind")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_string)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
                     .collect(),
                 activation_events: manifest.activation_events.clone(),
                 dependencies: manifest.extension_dependencies.clone(),

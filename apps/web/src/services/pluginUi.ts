@@ -1,10 +1,15 @@
 // 插件 UI 视图（docs/plans/plugin-webview.md §3.1/§3.4）：编辑器区标签页的
 // 声明式节渲染（kind 闭集 markdown|form|list|kv）。分层镜像 pluginViews.ts：
-// 本服务管声明收集/白名单归一/标签生命周期/命令别名，PluginUiView.vue 纯渲染。
-// M1 只渲染静态节：markdown 文本、form 静态 default（只读 + 禁用态注记）、
-// kv 静态 items；list 与动态数据回读（ui/values）属 M2，M1 显示
-// 「需要 Node 运行时」空态注记。打开视图本身零宿主往返（§3.5）。
-import { extensionsList, type PluginList } from './extensions'
+// 本服务管声明收集/白名单归一/标签生命周期/节数据状态/命令别名，
+// PluginUiView.vue 纯渲染。M2 交互回传：list/kv 节经 ui/values 动态回读
+// （节错误态可重试），表单提交/行点击走既有命令回路（§3.5）。打开视图本身
+// 零宿主往返（§3.5）。
+import {
+  extensionsExecuteCommand,
+  extensionsList,
+  extensionsUiValues,
+  type PluginList,
+} from './extensions'
 import { closeTab, openTab, tabsStore } from './tabs'
 
 /** 节 kind 闭集（§3.1）；未知 kind 在 Rust 校验期拒绝，web 守卫再兜一层。 */
@@ -250,7 +255,7 @@ export interface UiValues {
 
 /** 宿主 ui/values 结果按节 kind 白名单归一（照抄 normalizeViewNodes 风格）：
  * 多余键丢弃、单元格/条目非白名单值丢弃或判非法；markdown 节无回读恒 null。
- * M1 静态渲染不调用本函数，此处是 M2 的纯函数骨架。 */
+ * 宿主侧已归一一次（§3.2），这里不信任 IPC 对端再兜一层（§3.4）。 */
 export function normalizeUiValues(kind: UiSectionKind, raw: unknown): UiValues | null {
   switch (kind) {
     case 'markdown':
@@ -323,12 +328,15 @@ export interface UiViewEntry {
 
 export interface PluginUiState {
   views: UiViewEntry[]
+  /** M2 节数据状态：键 `${pluginId}:${viewId}:${sectionIndex}`（list/kv 回读、
+   * form 提交注记共用；markdown 与静态节无条目）。 */
+  sectionData: Record<string, UiSectionDataState>
 }
 
 type Listener = (state: PluginUiState) => void
 
 const listeners = new Set<Listener>()
-let state: PluginUiState = { views: [] }
+let state: PluginUiState = { views: [], sectionData: {} }
 
 export function getPluginUiState(): PluginUiState {
   return state
@@ -345,7 +353,7 @@ function emit(): void {
 
 /** 测试用：清空声明状态。 */
 export function resetPluginUi(): void {
-  state = { views: [] }
+  state = { views: [], sectionData: {} }
   emit()
 }
 
@@ -453,4 +461,209 @@ export function openPluginUiViewByCommand(command: string): boolean {
   const alias = resolveUiOpenCommand(command)
   if (!alias) return false
   return openPluginUiView(alias.pluginId, alias.viewId)
+}
+
+// ==== 节数据回读与交互（§3.2/§3.5，M2） ====
+
+export type UiSectionStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+/** 单节运行时状态：list/kv 数据回读 + form/list 交互注记共用。 */
+export interface UiSectionDataState {
+  status: UiSectionStatus
+  /** list→rows、kv→items（回读成功时；form 不读回，恒 null）。 */
+  values: UiValues | null
+  /** 回读失败的展示信息（code 进 tooltip）。 */
+  error: { code: string; message: string } | null
+  /** 提交/行点击注记：success=成功；error=失败并保留用户输入。 */
+  note: { kind: 'success' | 'error'; message: string } | null
+  /** 提交/行点击进行中。 */
+  busy: boolean
+}
+
+/** 节状态键：`${pluginId}:${viewId}:${sectionIndex}`（节序号即 ui/values 的
+ * sectionId，与宿主侧节序号一致）。 */
+export function uiSectionDataKey(
+  pluginId: string,
+  viewId: string,
+  sectionIndex: number,
+): string {
+  return `${pluginId}:${viewId}:${sectionIndex}`
+}
+
+function emptySectionData(): UiSectionDataState {
+  return { status: 'idle', values: null, error: null, note: null, busy: false }
+}
+
+function sectionDataOf(key: string): UiSectionDataState {
+  return state.sectionData[key] ?? emptySectionData()
+}
+
+function patchSectionData(key: string, patch: Partial<UiSectionDataState>): void {
+  state.sectionData = { ...state.sectionData, [key]: { ...sectionDataOf(key), ...patch } }
+  emit()
+}
+
+/** 表单提交值组装（§3.5，纯函数测试入口）：按 field.type 强制转换——number
+ * 空输入回落数字 default（无则省略该键）、非有限数省略；boolean 仅 true；
+ * text/password/select 归一为字符串。password 值不进日志（调用方不得打印
+ * 本返回对象）。 */
+export function coerceUiFormValues(
+  section: Extract<UiSection, { kind: 'form' }>,
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {}
+  for (const field of section.fields) {
+    const value = raw[field.key]
+    switch (field.type) {
+      case 'number': {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          values[field.key] = value
+          break
+        }
+        const text = typeof value === 'string' ? value.trim() : ''
+        if (text === '') {
+          if (typeof field.default === 'number') values[field.key] = field.default
+          break
+        }
+        const num = Number(text)
+        if (Number.isFinite(num)) values[field.key] = num
+        break
+      }
+      case 'boolean':
+        values[field.key] = value === true
+        break
+      default:
+        values[field.key] = typeof value === 'string' ? value : String(value ?? '')
+        break
+    }
+  }
+  return values
+}
+
+type ReadableUiSection =
+  | Extract<UiSection, { kind: 'list' }>
+  | Extract<UiSection, { kind: 'kv' }>
+
+/** 可回读节：list/kv 且声明 valuesCommand。form 动态初始值协议面已支持
+ * （§3.2），web M2 仍用静态 default；markdown 无回读。 */
+function readableSection(
+  entry: UiViewEntry | undefined,
+  sectionIndex: number,
+): ReadableUiSection | null {
+  const section = entry?.sections[sectionIndex]
+  if (!section || (section.kind !== 'list' && section.kind !== 'kv')) return null
+  if (!section.valuesCommand) return null
+  return section
+}
+
+/** 拉取节数据（ui/values，§3.2）：失败/形状非法 → 节错误态（可重试，
+ * 照树视图错误态）。 */
+export async function loadUiSectionValues(
+  pluginId: string,
+  viewId: string,
+  sectionIndex: number,
+): Promise<void> {
+  const entry = findUiView(pluginId, viewId)
+  const section = readableSection(entry, sectionIndex)
+  if (!section) return
+  const key = uiSectionDataKey(pluginId, viewId, sectionIndex)
+  if (state.sectionData[key]?.status === 'loading') return
+  patchSectionData(key, { status: 'loading', error: null })
+  const res = await extensionsUiValues(pluginId, viewId, String(sectionIndex))
+  const current = state.sectionData[key]
+  if (!current || current.status !== 'loading') return // 加载期间被重置
+  if (!res.ok) {
+    patchSectionData(key, {
+      status: 'error',
+      error: { code: res.error.code, message: res.error.message },
+    })
+    return
+  }
+  const values = normalizeUiValues(section.kind, res.data.values)
+  if (values === null) {
+    patchSectionData(key, {
+      status: 'error',
+      error: { code: 'internal', message: '节数据形状非法' },
+    })
+    return
+  }
+  patchSectionData(key, { status: 'ready', values, error: null })
+}
+
+/** 挂载入口：无条目或 idle 才拉（watchEffect 可能重复触发）。 */
+export async function ensureUiSectionLoaded(
+  pluginId: string,
+  viewId: string,
+  sectionIndex: number,
+): Promise<void> {
+  const existing = state.sectionData[uiSectionDataKey(pluginId, viewId, sectionIndex)]
+  if (!existing || existing.status === 'idle') {
+    await loadUiSectionValues(pluginId, viewId, sectionIndex)
+  }
+}
+
+/** 错误态重试（节错误态的「重试」按钮）。 */
+export async function retryUiSection(
+  pluginId: string,
+  viewId: string,
+  sectionIndex: number,
+): Promise<void> {
+  await loadUiSectionValues(pluginId, viewId, sectionIndex)
+}
+
+/** 表单提交（§3.5）：ext_execute_command(section.command, { values })；ok →
+ * 成功注记；error → 错误注记（用户输入由组件持有的 draft 保留）。 */
+export async function submitUiForm(
+  pluginId: string,
+  viewId: string,
+  sectionIndex: number,
+  draft: Record<string, unknown>,
+): Promise<boolean> {
+  const section = findUiView(pluginId, viewId)?.sections[sectionIndex]
+  if (!section || section.kind !== 'form' || !section.command) return false
+  const key = uiSectionDataKey(pluginId, viewId, sectionIndex)
+  const values = coerceUiFormValues(section, draft)
+  patchSectionData(key, { busy: true, note: null })
+  const res = await extensionsExecuteCommand(section.command, { values })
+  const current = state.sectionData[key]
+  if (!current?.busy) return false // 提交期间被重置
+  if (!res.ok) {
+    patchSectionData(key, {
+      busy: false,
+      note: { kind: 'error', message: res.error.message },
+    })
+    return false
+  }
+  patchSectionData(key, { busy: false, note: { kind: 'success', message: '' } })
+  return true
+}
+
+/** list 行点击（§3.5）：rowCommand(row)（整行对象作 args，单元格为归一
+ * 标量）；成功后回读刷新 + 成功注记，失败 → 错误注记。 */
+export async function runUiRowCommand(
+  pluginId: string,
+  viewId: string,
+  sectionIndex: number,
+  row: Record<string, UiScalar>,
+): Promise<boolean> {
+  const section = findUiView(pluginId, viewId)?.sections[sectionIndex]
+  if (!section || section.kind !== 'list' || !section.rowCommand) return false
+  const key = uiSectionDataKey(pluginId, viewId, sectionIndex)
+  patchSectionData(key, { busy: true, note: null })
+  const res = await extensionsExecuteCommand(section.rowCommand, { ...row })
+  const current = state.sectionData[key]
+  if (!current?.busy) return false // 执行期间被重置
+  if (!res.ok) {
+    patchSectionData(key, {
+      busy: false,
+      note: { kind: 'error', message: res.error.message },
+    })
+    return false
+  }
+  await loadUiSectionValues(pluginId, viewId, sectionIndex)
+  patchSectionData(uiSectionDataKey(pluginId, viewId, sectionIndex), {
+    busy: false,
+    note: { kind: 'success', message: '' },
+  })
+  return true
 }

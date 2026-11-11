@@ -5,11 +5,14 @@ import type { PluginInfo, PluginList } from './extensions'
 import { extensionsExecuteCommand } from './extensions'
 import {
   UI_TAB_PREFIX,
+  coerceUiFormValues,
   declaredUiViews,
+  ensureUiSectionLoaded,
   findUiView,
   getPluginUiState,
   isUiSection,
   isUiView,
+  loadUiSectionValues,
   normalizeUiSection,
   normalizeUiValues,
   normalizeUiView,
@@ -18,15 +21,22 @@ import {
   parseUiTabId,
   resetPluginUi,
   resolveUiOpenCommand,
+  retryUiSection,
+  runUiRowCommand,
+  submitUiForm,
   syncPluginUiViews,
+  uiSectionDataKey,
   uiTabId,
 } from './pluginUi'
 import { INITIAL_TABS_STATE, tabsStore } from './tabs'
 
-// vi.mock 提升：用可变状态驱动 mock 的列表与命令执行计数。
+// vi.mock 提升：用可变状态驱动 mock 的列表、命令执行与 ui/values 回读。
 const extState = vi.hoisted(() => ({
   list: null as PluginList | null,
-  commandCalls: [] as string[],
+  commandCalls: [] as Array<{ command: string; args: unknown }>,
+  uiValuesCalls: [] as string[],
+  uiValuesPayload: { rows: [{ title: '任务一', state: 'open' }] } as unknown,
+  uiValuesError: null as { code: string; message: string; detail: null } | null,
 }))
 
 function internalError(message: string) {
@@ -35,7 +45,11 @@ function internalError(message: string) {
 
 type BridgeResult<T> =
   | { ok: true; data: T; fallback: boolean }
-  | { ok: false; error: ReturnType<typeof internalError>; fallback: boolean }
+  | {
+      ok: false
+      error: { code: string; message: string; detail: null }
+      fallback: boolean
+    }
 
 vi.mock('./extensions', async importOriginal => {
   const actual = await importOriginal<typeof import('./extensions')>()
@@ -47,10 +61,29 @@ vi.mock('./extensions', async importOriginal => {
       }
       return { ok: true, data: extState.list, fallback: false }
     }),
-    extensionsExecuteCommand: vi.fn(async (command: string): Promise<BridgeResult<unknown>> => {
-      extState.commandCalls.push(command)
-      return { ok: true, data: { result: null }, fallback: false }
-    }),
+    extensionsExecuteCommand: vi.fn(
+      async (command: string, args?: unknown): Promise<BridgeResult<unknown>> => {
+        extState.commandCalls.push({ command, args: args ?? null })
+        return { ok: true, data: { result: null }, fallback: false }
+      },
+    ),
+    extensionsUiValues: vi.fn(
+      async (
+        pluginId: string,
+        viewId: string,
+        sectionId: string,
+      ): Promise<BridgeResult<{ values: unknown }>> => {
+        extState.uiValuesCalls.push(`${pluginId}>${viewId}>${sectionId}`)
+        if (extState.uiValuesError) {
+          return { ok: false, error: extState.uiValuesError, fallback: false }
+        }
+        return {
+          ok: true,
+          data: { values: extState.uiValuesPayload },
+          fallback: false,
+        }
+      },
+    ),
   }
 })
 
@@ -100,6 +133,71 @@ function uiViewList(enabled: boolean): PluginList {
   }
 }
 
+/** M2 交互回传夹具：form（全 field type）+ list（valuesCommand/rowCommand）+
+ * kv（valuesCommand + 静态 items 并存）。 */
+function uiViewListM2(enabled: boolean): PluginList {
+  return {
+    plugins: [
+      plugin({
+        id: 'demo.tree',
+        name: 'Tree Demo',
+        enabled,
+        commands: [
+          { command: 'demo.tree.filter', title: 'Filter' },
+          { command: 'demo.tree.list', title: 'List' },
+          { command: 'demo.tree.open', title: 'Open' },
+          { command: 'demo.tree.stats', title: 'Stats' },
+        ],
+        uiViews: [
+          {
+            id: 'board',
+            name: '任务看板',
+            openCommand: null,
+            sections: [
+              {
+                kind: 'form',
+                title: '筛选',
+                command: 'demo.tree.filter',
+                fields: [
+                  { key: 'q', label: '关键词', type: 'text', default: '' },
+                  { key: 'limit', label: '条数', type: 'number', min: 1, max: 200, default: 50 },
+                  { key: 'done', label: '含已完成', type: 'boolean', default: false },
+                  {
+                    key: 'sort',
+                    label: '排序',
+                    type: 'select',
+                    options: ['new', 'old'],
+                    default: 'new',
+                  },
+                  { key: 'token', label: '令牌', type: 'password' },
+                ],
+              },
+              {
+                kind: 'list',
+                title: '任务',
+                valuesCommand: 'demo.tree.list',
+                columns: [
+                  { key: 'title', label: '标题', width: 3 },
+                  { key: 'state', label: '状态', width: 1 },
+                ],
+                rowCommand: 'demo.tree.open',
+              },
+              {
+                kind: 'kv',
+                title: '统计',
+                valuesCommand: 'demo.tree.stats',
+                items: [{ key: '静态', value: 'items' }],
+              },
+            ],
+          },
+        ],
+      }),
+    ],
+    dir: '~/.lite-code/extensions',
+    nodeAvailable: true,
+  }
+}
+
 function resetTabs(): void {
   tabsStore.set(JSON.parse(JSON.stringify(INITIAL_TABS_STATE)) as typeof INITIAL_TABS_STATE)
 }
@@ -111,6 +209,9 @@ beforeEach(() => {
 afterEach(() => {
   extState.list = null
   extState.commandCalls.length = 0
+  extState.uiValuesCalls.length = 0
+  extState.uiValuesPayload = { rows: [{ title: '任务一', state: 'open' }] }
+  extState.uiValuesError = null
   vi.clearAllMocks()
   resetPluginUi()
   resetTabs()
@@ -227,7 +328,7 @@ describe('视图守卫 isUiView / normalizeUiView', () => {
   })
 })
 
-describe('normalizeUiValues（§3.2 骨架，M1 静态渲染不调用）', () => {
+describe('normalizeUiValues（§3.2 双端白名单归一）', () => {
   it('form：values 对象归一，多余键丢弃；values 非对象 → null', () => {
     expect(normalizeUiValues('form', { values: { q: 'x', limit: 50 }, junk: 1 })).toEqual({
       values: { q: 'x', limit: 50 },
@@ -378,5 +479,215 @@ describe('markdown 节渲染契约（唯一 v-html 面）', () => {
     // v1 子集无链接语法：输出不含任何 <a>（javascript: 不可能变成 href）。
     expect(html).not.toContain('<a ')
     expect(html).not.toContain('<a>')
+  })
+})
+
+describe('M2 节数据回读（ui/values）', () => {
+  it('list 节挂载回读：ready 态 + 行数据，sectionId=节序号', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+
+    await ensureUiSectionLoaded('demo.tree', 'board', 1)
+    expect(extState.uiValuesCalls).toEqual(['demo.tree>board>1'])
+    const data = getPluginUiState().sectionData[uiSectionDataKey('demo.tree', 'board', 1)]
+    expect(data?.status).toBe('ready')
+    expect(data?.values).toEqual({ rows: [{ title: '任务一', state: 'open' }] })
+
+    // ensure 幂等：ready 后不再发起。
+    await ensureUiSectionLoaded('demo.tree', 'board', 1)
+    expect(extState.uiValuesCalls).toHaveLength(1)
+  })
+
+  it('kv 节回读：动态 items 优先于静态 items', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    extState.uiValuesPayload = { items: [{ key: '动态', value: '值' }] }
+
+    await loadUiSectionValues('demo.tree', 'board', 2)
+    const data = getPluginUiState().sectionData[uiSectionDataKey('demo.tree', 'board', 2)]
+    expect(data?.status).toBe('ready')
+    expect(data?.values).toEqual({ items: [{ key: '动态', value: '值' }] })
+  })
+
+  it('回读失败 → 节错误态（含错误码）；retryUiSection 重试成功转 ready', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    extState.uiValuesError = { code: 'not_found', message: 'Node 不可用', detail: null }
+
+    await loadUiSectionValues('demo.tree', 'board', 1)
+    const key = uiSectionDataKey('demo.tree', 'board', 1)
+    const failed = getPluginUiState().sectionData[key]
+    expect(failed?.status).toBe('error')
+    expect(failed?.error?.code).toBe('not_found')
+
+    // 重试：错误清除后成功。
+    extState.uiValuesError = null
+    await retryUiSection('demo.tree', 'board', 1)
+    const retried = getPluginUiState().sectionData[key]
+    expect(retried?.status).toBe('ready')
+    expect(retried?.values?.rows).toHaveLength(1)
+  })
+
+  it('形状非法回读 → internal 节错误态', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    extState.uiValuesPayload = { rows: 'nope' }
+
+    await loadUiSectionValues('demo.tree', 'board', 1)
+    const data = getPluginUiState().sectionData[uiSectionDataKey('demo.tree', 'board', 1)]
+    expect(data?.status).toBe('error')
+    expect(data?.error?.code).toBe('internal')
+  })
+
+  it('无 valuesCommand 的节不发起回读；未声明节安全忽略', async () => {
+    extState.list = uiViewList(true)
+    await syncPluginUiViews()
+
+    await loadUiSectionValues('demo.tree', 'board', 1) // kv 无 valuesCommand
+    await loadUiSectionValues('demo.tree', 'board', 9) // 越界
+    await loadUiSectionValues('demo.tree', 'missing', 0) // 视图不存在
+    expect(extState.uiValuesCalls).toEqual([])
+  })
+})
+
+describe('M2 表单提交（args 组装与类型强制）', () => {
+  const formSection = normalizeUiSection({
+    kind: 'form',
+    command: 'demo.tree.filter',
+    fields: [
+      { key: 'q', label: '关键词', type: 'text', default: '' },
+      { key: 'limit', label: '条数', type: 'number', min: 1, max: 200, default: 50 },
+      { key: 'done', label: '含已完成', type: 'boolean', default: false },
+      { key: 'sort', label: '排序', type: 'select', options: ['new', 'old'], default: 'new' },
+      { key: 'token', label: '令牌', type: 'password' },
+    ],
+  })
+
+  it('coerceUiFormValues：按 field.type 强制转换', () => {
+    if (!formSection || formSection.kind !== 'form') throw new Error('form section')
+
+    // number：数字字符串 → number；空输入回落数字 default；非数字省略。
+    expect(
+      coerceUiFormValues(formSection, {
+        q: '关键词',
+        limit: '30',
+        done: true,
+        sort: 'old',
+        token: 'secret-value',
+      }),
+    ).toEqual({ q: '关键词', limit: 30, done: true, sort: 'old', token: 'secret-value' })
+    expect(
+      coerceUiFormValues(formSection, { q: 'x', limit: '', done: false, sort: 'new', token: '' }),
+    ).toEqual({ q: 'x', limit: 50, done: false, sort: 'new', token: '' })
+    expect(
+      coerceUiFormValues(formSection, {
+        q: 'x',
+        limit: 'abc',
+        done: 'yes',
+        sort: 'new',
+        token: 1,
+      }),
+    ).toEqual({ q: 'x', done: false, sort: 'new', token: '1' })
+  })
+
+  it('submitUiForm：ext_execute_command(command, { values })，成功注记', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+
+    const ok = await submitUiForm('demo.tree', 'board', 0, {
+      q: 'hello',
+      limit: '10',
+      done: true,
+      sort: 'old',
+      token: 'secret-value',
+    })
+    expect(ok).toBe(true)
+    expect(extState.commandCalls).toEqual([
+      {
+        command: 'demo.tree.filter',
+        args: { values: { q: 'hello', limit: 10, done: true, sort: 'old', token: 'secret-value' } },
+      },
+    ])
+    const data = getPluginUiState().sectionData[uiSectionDataKey('demo.tree', 'board', 0)]
+    expect(data?.note?.kind).toBe('success')
+    expect(data?.busy).toBe(false)
+  })
+
+  it('submitUiForm：命令失败 → 错误注记（保留 draft，由组件持有）', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    vi.mocked(extensionsExecuteCommand).mockResolvedValueOnce({
+      ok: false,
+      error: internalError('handler 炸了'),
+      fallback: false,
+    })
+
+    const ok = await submitUiForm('demo.tree', 'board', 0, { q: 'x' })
+    expect(ok).toBe(false)
+    const data = getPluginUiState().sectionData[uiSectionDataKey('demo.tree', 'board', 0)]
+    expect(data?.note?.kind).toBe('error')
+    expect(data?.note?.message).toContain('handler 炸了')
+  })
+
+  it('表单无 command → 返回 false 且零调用', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    // 把声明里的 command 摘掉（模拟只读表单）。
+    const entry = findUiView('demo.tree', 'board')
+    const section = entry?.sections[0]
+    if (section && section.kind === 'form') delete section.command
+
+    expect(await submitUiForm('demo.tree', 'board', 0, { q: 'x' })).toBe(false)
+    expect(extState.commandCalls).toEqual([])
+  })
+})
+
+describe('M2 list 行点击（rowCommand）', () => {
+  it('整行对象作 args；成功后回读刷新 + 成功注记', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    await ensureUiSectionLoaded('demo.tree', 'board', 1)
+    extState.uiValuesCalls.length = 0
+
+    const ok = await runUiRowCommand('demo.tree', 'board', 1, {
+      title: '任务一',
+      state: 'open',
+    })
+    expect(ok).toBe(true)
+    expect(extState.commandCalls).toEqual([
+      { command: 'demo.tree.open', args: { title: '任务一', state: 'open' } },
+    ])
+    // 成功后回读刷新（又一次 ui/values）。
+    expect(extState.uiValuesCalls).toEqual(['demo.tree>board>1'])
+    const data = getPluginUiState().sectionData[uiSectionDataKey('demo.tree', 'board', 1)]
+    expect(data?.note?.kind).toBe('success')
+    expect(data?.status).toBe('ready')
+  })
+
+  it('行命令失败 → 错误注记且不回读', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    vi.mocked(extensionsExecuteCommand).mockResolvedValueOnce({
+      ok: false,
+      error: internalError('行命令失败'),
+      fallback: false,
+    })
+
+    const ok = await runUiRowCommand('demo.tree', 'board', 1, { title: 'x' })
+    expect(ok).toBe(false)
+    expect(extState.uiValuesCalls).toEqual([])
+    const data = getPluginUiState().sectionData[uiSectionDataKey('demo.tree', 'board', 1)]
+    expect(data?.note?.kind).toBe('error')
+  })
+
+  it('无 rowCommand → 返回 false 且零调用', async () => {
+    extState.list = uiViewListM2(true)
+    await syncPluginUiViews()
+    const entry = findUiView('demo.tree', 'board')
+    const section = entry?.sections[1]
+    if (section && section.kind === 'list') delete section.rowCommand
+
+    expect(await runUiRowCommand('demo.tree', 'board', 1, { title: 'x' })).toBe(false)
+    expect(extState.commandCalls).toEqual([])
   })
 })

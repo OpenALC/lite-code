@@ -412,13 +412,86 @@ function createViewRegistry() {
   return { createPlugin, remove, lookup, list };
 }
 
+// ---- ui.mjs ----
+
+// 插件 UI 视图数据注册表（docs/plans/plugin-webview.md §3.2）：插件 activate 时经
+// ctx.ui.register(viewId, provider) 注册 provider；ui/values 请求按
+// pluginId + viewId 查找并调用 provider.getValues(sectionId)。
+// 结构与 views.mjs 同构；sectionKinds 来自 initialize 载荷的节 kind 白名单
+// （markdown 节无回读，宿主在派发前直接拒绝，不调用 provider）。
+function createUiRegistry() {
+  const plugins = new Map(); // pluginId -> Map(viewId -> { provider, sectionKinds })
+
+  function createPlugin(pluginId, views) {
+    if (plugins.has(pluginId)) {
+      throw new Error(`Plugin "${pluginId}" is already registered`);
+    }
+    const declared = new Map();
+    for (const view of views) {
+      if (!view || typeof view !== "object" || Array.isArray(view)) {
+        throw new Error(`Plugin "${pluginId}" has an invalid ui view entry`);
+      }
+      if (typeof view.id !== "string" || view.id.length === 0) {
+        throw new Error(`Plugin "${pluginId}" has an invalid ui view entry`);
+      }
+      const sectionKinds = Array.isArray(view.sectionKinds) ? view.sectionKinds : [];
+      declared.set(view.id, { provider: null, sectionKinds });
+    }
+    plugins.set(pluginId, declared);
+
+    return function register(viewId, provider) {
+      if (typeof viewId !== "string" || viewId.length === 0) {
+        throw new TypeError("ui view must be a non-empty string");
+      }
+      if (!provider || typeof provider.getValues !== "function") {
+        throw new TypeError(`provider for ui view "${viewId}" must expose getValues(sectionId)`);
+      }
+      const views = plugins.get(pluginId);
+      if (!views) {
+        throw new Error(`Plugin "${pluginId}" is not registered`);
+      }
+      if (!views.has(viewId)) {
+        throw new Error(`UI view "${viewId}" is not declared in the manifest of plugin "${pluginId}"`);
+      }
+      const entry = views.get(viewId);
+      if (entry.provider) {
+        throw new Error(`UI view "${viewId}" is already registered by plugin "${pluginId}"`);
+      }
+      entry.provider = provider;
+    };
+  }
+
+  function remove(pluginId) {
+    plugins.delete(pluginId);
+  }
+
+  // 命中返回 { found: true, provider, sectionKinds }；未命中返回 { found: false,
+  // reason }：plugin-not-loaded（插件不在注册表）/ view-not-declared（清单未声明）/
+  // view-not-registered（activate 未注册 provider）。
+  function lookup(pluginId, viewId) {
+    const views = plugins.get(pluginId);
+    if (!views) return { found: false, reason: "plugin-not-loaded" };
+    if (!views.has(viewId)) return { found: false, reason: "view-not-declared" };
+    const entry = views.get(viewId);
+    if (!entry.provider) return { found: false, reason: "view-not-registered" };
+    return { found: true, provider: entry.provider, sectionKinds: entry.sectionKinds };
+  }
+
+  function list(pluginId) {
+    const views = plugins.get(pluginId);
+    return views ? [...views.keys()] : [];
+  }
+
+  return { createPlugin, remove, lookup, list };
+}
+
 // ---- host.mjs ----
 
 const DEACTIVATE_BUDGET_MS = 1500;
 const STDOUT_FLUSH_GRACE_MS = 500;
-// view/children provider 超时（docs/EXTENSIONS.md §4，与 tool/execute 同为
-// 30s，Rust 侧另有 recv_timeout 兜底）；测试可经 LC_EXT_HOST_VIEW_TIMEOUT_MS
-// 注入短超时。
+// view/children 与 ui/values provider 超时（docs/EXTENSIONS.md §4，与
+// tool/execute 同为 30s，Rust 侧另有 recv_timeout 兜底）；测试可经
+// LC_EXT_HOST_VIEW_TIMEOUT_MS 注入短超时。
 const VIEW_TIMEOUT_MS = (() => {
   const raw = Number(process.env.LC_EXT_HOST_VIEW_TIMEOUT_MS);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 30_000;
@@ -428,6 +501,7 @@ const stderrLog = console.error.bind(console);
 const commandRegistry = createCommandRegistry();
 const toolRegistry = createToolRegistry();
 const viewRegistry = createViewRegistry();
+const uiRegistry = createUiRegistry();
 
 let loadedPlugins = [];
 let pluginWorkspace = null;
@@ -435,6 +509,7 @@ const pendingPlugins = new Map(); // pluginId -> { descriptor, state, promise, s
 const pendingCommands = new Map(); // command -> pluginId（仅延迟插件声明的命令）
 const pendingTools = new Map(); // tool name -> pluginId（仅延迟插件声明的工具）
 const pendingViews = new Map(); // viewId -> pluginId（仅延迟插件声明的视图）
+const pendingUiViews = new Map(); // viewId -> pluginId（仅延迟插件声明的 UI 视图）
 let initialized = false;
 let shuttingDown = false;
 let deactivated = false;
@@ -594,6 +669,38 @@ function normalizeViews(pluginId, views) {
   return [...new Set(ids)];
 }
 
+// initialize 载荷里的 UI 视图声明（docs/plans/plugin-webview.md §3.2）：
+// { id, sectionKinds } 对象；sectionKinds 是节 kind 白名单（markdown|form|list|kv，
+// Rust 校验期已保证，宿主再兜一层），ui/values 按节序号的 kind 归一结果。
+function normalizeUiViewDecls(pluginId, uiViews) {
+  if (uiViews === undefined || uiViews === null) return [];
+  if (!Array.isArray(uiViews)) {
+    throw pluginError("manifest", `Plugin "${pluginId}" uiViews must be an array`);
+  }
+
+  const decls = [];
+  for (const item of uiViews) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has an invalid ui view entry`);
+    }
+    if (typeof item.id !== "string" || item.id.length === 0) {
+      throw pluginError("manifest", `Plugin "${pluginId}" has an invalid ui view entry`);
+    }
+    if (!Array.isArray(item.sectionKinds)) {
+      throw pluginError("manifest", `Plugin "${pluginId}" ui view "${item.id}" must declare sectionKinds`);
+    }
+    const sectionKinds = [];
+    for (const kind of item.sectionKinds) {
+      if (kind !== "markdown" && kind !== "form" && kind !== "list" && kind !== "kv") {
+        throw pluginError("manifest", `Plugin "${pluginId}" ui view "${item.id}" has an invalid section kind`);
+      }
+      sectionKinds.push(kind);
+    }
+    decls.push({ id: item.id, sectionKinds });
+  }
+  return decls;
+}
+
 // 视图节点形状校验（docs/EXTENSIONS.md §4）：id/label 必填非空字符串，
 // icon/command/tooltip 可空字符串；其余键一律丢弃。形状非法抛错。
 function normalizeViewNodes(pluginId, viewId, raw) {
@@ -618,6 +725,72 @@ function normalizeViewNodes(pluginId, viewId, raw) {
     if (typeof item.tooltip === "string" && item.tooltip.length > 0) node.tooltip = item.tooltip;
     return node;
   });
+}
+
+// UI 节值形状校验（docs/plans/plugin-webview.md §3.2）：按节 kind 白名单归一，
+// 照抄 normalizeViewNodes 风格。form → { values: { [fieldKey]: json } }；
+// list → { rows: [{ [columnKey]: 标量 }] }（≤500 行，单元格限 string/number/
+// boolean，非标量键丢弃）；kv → { items: [{ key, value }] }（≤64 对）；
+// markdown 节无回读，直接抛错（调用方映射 invalid-values）。形状非法抛错。
+function normalizeUiValues(pluginId, viewId, sectionId, kind, raw) {
+  const label = `Section "${sectionId}" (${kind}) of view "${viewId}" of plugin "${pluginId}"`;
+  if (kind === "markdown") {
+    throw pluginError("manifest", `${label} is markdown and has no values`);
+  }
+  if (kind === "form") {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw pluginError("manifest", `${label} must return { values: { [fieldKey]: json } }`);
+    }
+    if (!raw.values || typeof raw.values !== "object" || Array.isArray(raw.values)) {
+      throw pluginError("manifest", `${label} must return { values: { [fieldKey]: json } }`);
+    }
+    const values = {};
+    for (const [key, value] of Object.entries(raw.values)) values[key] = value;
+    return { values };
+  }
+  if (kind === "list") {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.rows)) {
+      throw pluginError("manifest", `${label} must return { rows: [{ [columnKey]: scalar }] }`);
+    }
+    if (raw.rows.length > 500) {
+      throw pluginError("manifest", `${label} returned more than 500 rows`);
+    }
+    const rows = raw.rows.map((row, index) => {
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        throw pluginError("manifest", `${label} returned an invalid row at index ${index}`);
+      }
+      const cells = {};
+      for (const [key, value] of Object.entries(row)) {
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          cells[key] = value;
+        }
+      }
+      return cells;
+    });
+    return { rows };
+  }
+  if (kind === "kv") {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.items)) {
+      throw pluginError("manifest", `${label} must return { items: [{ key, value }] }`);
+    }
+    if (raw.items.length > 64) {
+      throw pluginError("manifest", `${label} returned more than 64 items`);
+    }
+    const items = raw.items.map((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw pluginError("manifest", `${label} returned an invalid item at index ${index}`);
+      }
+      if (typeof item.key !== "string" || item.key.length === 0) {
+        throw pluginError("manifest", `${label} returned an item without a non-empty string key at index ${index}`);
+      }
+      if (typeof item.value !== "string") {
+        throw pluginError("manifest", `${label} returned item "${item.key}" without a string value`);
+      }
+      return { key: item.key, value: item.value };
+    });
+    return { items };
+  }
+  throw pluginError("manifest", `${label} has an unknown kind`);
 }
 
 // 延迟判定是插件级的：activationEvents 非空且不含 `*` 即为延迟插件，
@@ -653,6 +826,7 @@ function describePlugin(spec) {
     commands: normalizeCommands(spec.id, spec.commands),
     tools: normalizeTools(spec.id, spec.tools),
     views: normalizeViews(spec.id, spec.views),
+    uiViews: normalizeUiViewDecls(spec.id, spec.uiViews),
     activationEvents: normalizeActivationEvents(spec.id, spec.activationEvents)
   };
 }
@@ -675,10 +849,12 @@ async function loadPlugin(descriptor, pluginWorkspace) {
   let register;
   let registerTool;
   let registerView;
+  let registerUi;
   try {
     register = commandRegistry.createPlugin(descriptor.id, descriptor.commands);
     registerTool = toolRegistry.createPlugin(descriptor.id, descriptor.tools);
     registerView = viewRegistry.createPlugin(descriptor.id, descriptor.views);
+    registerUi = uiRegistry.createPlugin(descriptor.id, descriptor.uiViews);
   } catch (error) {
     throw pluginError("manifest", `Cannot register plugin "${descriptor.id}": ${messageOf(error)}`);
   }
@@ -689,6 +865,7 @@ async function loadPlugin(descriptor, pluginWorkspace) {
       commands: Object.freeze({ register }),
       tools: Object.freeze({ register: registerTool }),
       views: Object.freeze({ register: registerView }),
+      ui: Object.freeze({ register: registerUi }),
       workspace: pluginWorkspace,
       storage,
       window: Object.freeze({
@@ -704,6 +881,7 @@ async function loadPlugin(descriptor, pluginWorkspace) {
     commandRegistry.remove(descriptor.id);
     toolRegistry.remove(descriptor.id);
     viewRegistry.remove(descriptor.id);
+    uiRegistry.remove(descriptor.id);
     throw pluginError("activate", `Plugin "${descriptor.id}" failed to activate: ${messageOf(error)}`);
   }
 
@@ -739,6 +917,12 @@ function registerPendingPlugin(descriptor) {
       throw pluginError("manifest", `View "${view}" is already declared by pending plugin "${owner}"`);
     }
   }
+  for (const uiView of descriptor.uiViews) {
+    const owner = pendingUiViews.get(uiView.id);
+    if (owner && owner !== descriptor.id) {
+      throw pluginError("manifest", `UI view "${uiView.id}" is already declared by pending plugin "${owner}"`);
+    }
+  }
 
   pendingPlugins.set(descriptor.id, {
     descriptor,
@@ -750,6 +934,7 @@ function registerPendingPlugin(descriptor) {
   for (const command of descriptor.commands) pendingCommands.set(command, descriptor.id);
   for (const tool of descriptor.tools) pendingTools.set(tool.name, descriptor.id);
   for (const view of descriptor.views) pendingViews.set(view, descriptor.id);
+  for (const uiView of descriptor.uiViews) pendingUiViews.set(uiView.id, descriptor.id);
 }
 
 function forgetPendingPlugin(pluginId) {
@@ -762,6 +947,9 @@ function forgetPendingPlugin(pluginId) {
   }
   for (const [view, owner] of pendingViews) {
     if (owner === pluginId) pendingViews.delete(view);
+  }
+  for (const [view, owner] of pendingUiViews) {
+    if (owner === pluginId) pendingUiViews.delete(view);
   }
 }
 
@@ -848,7 +1036,8 @@ async function handleInitialize(id, params) {
       id: plugin.id,
       commands: commandRegistry.list(plugin.id),
       tools: toolRegistry.list(plugin.id),
-      views: viewRegistry.list(plugin.id)
+      views: viewRegistry.list(plugin.id),
+      uiViews: uiRegistry.list(plugin.id)
     })),
     errors
   });
@@ -1057,6 +1246,118 @@ async function handleViewChildren(id, params) {
   }
 }
 
+async function handleUiValues(id, params) {
+  if (!initialized) {
+    return errorResponse(id, RPC_INTERNAL_ERROR, "Extension host is not initialized");
+  }
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "ui/values expects an object with pluginId, viewId and sectionId");
+  }
+
+  const { pluginId, viewId, sectionId } = params;
+  if (typeof pluginId !== "string" || pluginId.length === 0) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "ui/values.pluginId must be a non-empty string");
+  }
+  if (typeof viewId !== "string" || viewId.length === 0) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "ui/values.viewId must be a non-empty string");
+  }
+  if (typeof sectionId !== "string" || sectionId.length === 0) {
+    return errorResponse(id, RPC_INVALID_PARAMS, "ui/values.sectionId must be a non-empty string");
+  }
+
+  // 延迟插件：命中其声明的 UI 视图（pendingUiViews 维度，docs/plans/
+  // plugin-webview.md §3.2）时先懒激活再派发，语义与 onView 完全一致。
+  let found = uiRegistry.lookup(pluginId, viewId);
+  if (!found.found && pendingUiViews.get(viewId) === pluginId) {
+    const activation = await activatePendingPlugin(pluginId);
+    if (activation && !activation.ok) {
+      return errorResponse(
+        id,
+        RPC_METHOD_NOT_FOUND,
+        `Plugin "${pluginId}" failed to activate: ${activation.message}`,
+        { pluginId, viewId, reason: "activation-failed", stage: activation.stage }
+      );
+    }
+    found = uiRegistry.lookup(pluginId, viewId);
+  }
+  if (!found.found) {
+    return errorResponse(id, RPC_METHOD_NOT_FOUND, `UI view not found: ${pluginId}/${viewId}`, {
+      pluginId,
+      viewId,
+      reason: found.reason
+    });
+  }
+
+  // sectionId 即清单节序号（web 按渲染序传 "0".."15"）；越界或 kind=markdown
+  // （无回读）按插件缺陷映射 -32000 reason=invalid-values。
+  const sectionKinds = found.sectionKinds ?? [];
+  const sectionIndex = /^\d+$/.test(sectionId) ? Number(sectionId) : -1;
+  const kind = sectionIndex >= 0 && sectionIndex < sectionKinds.length ? sectionKinds[sectionIndex] : null;
+  if (kind === null) {
+    return errorResponse(id, RPC_INTERNAL_ERROR, `UI view "${viewId}" of plugin "${pluginId}" has no section "${sectionId}"`, {
+      pluginId,
+      viewId,
+      sectionId,
+      reason: "invalid-values"
+    });
+  }
+  if (kind === "markdown") {
+    return errorResponse(id, RPC_INTERNAL_ERROR, `Section "${sectionId}" of view "${viewId}" of plugin "${pluginId}" is markdown and has no values`, {
+      pluginId,
+      viewId,
+      sectionId,
+      reason: "invalid-values"
+    });
+  }
+
+  const provider = found.provider;
+  let timer;
+  try {
+    // provider 可返回 Promise；超时（默认 30s，测试可注入短超时，与
+    // view/children 共用 LC_EXT_HOST_VIEW_TIMEOUT_MS）返回 -32000
+    // reason=provider-timeout。Rust 侧另有 recv_timeout 兜底。
+    const raw = await Promise.race([
+      Promise.resolve().then(() => provider.getValues(sectionId)),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(pluginError("timeout", `UI values provider timed out after ${VIEW_TIMEOUT_MS}ms`)),
+          VIEW_TIMEOUT_MS
+        );
+      })
+    ]);
+    const values = normalizeUiValues(pluginId, viewId, sectionId, kind, serializableResult(raw));
+    return resultResponse(id, values);
+  } catch (error) {
+    const details = thrownDetails(error);
+    if (error && error.pluginStage === "timeout") {
+      return errorResponse(id, RPC_INTERNAL_ERROR, details.message, {
+        pluginId,
+        viewId,
+        sectionId,
+        reason: "provider-timeout"
+      });
+    }
+    if (error && error.pluginStage === "manifest") {
+      // 节值形状非法：属插件缺陷，按内部错误上报（与 invalid-node 同款）。
+      return errorResponse(id, RPC_INTERNAL_ERROR, details.message, {
+        pluginId,
+        viewId,
+        sectionId,
+        reason: "invalid-values"
+      });
+    }
+    return errorResponse(id, RPC_INTERNAL_ERROR, `UI values failed: ${pluginId}/${viewId}/${sectionId}: ${details.message}`, {
+      pluginId,
+      viewId,
+      sectionId,
+      name: details.name,
+      stack: details.stack
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function dispatch(message, id) {
   switch (message.method) {
     case "initialize":
@@ -1067,6 +1368,8 @@ function dispatch(message, id) {
       return handleToolExecute(id, message.params);
     case "view/children":
       return handleViewChildren(id, message.params);
+    case "ui/values":
+      return handleUiValues(id, message.params);
     case "shutdown":
       return resultResponse(id, { ok: true });
     default:
@@ -1144,6 +1447,7 @@ async function deactivatePlugins() {
   pendingCommands.clear();
   pendingTools.clear();
   pendingViews.clear();
+  pendingUiViews.clear();
   initialized = false;
 
   for (const plugin of plugins) {

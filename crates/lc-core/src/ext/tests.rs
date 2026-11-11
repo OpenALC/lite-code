@@ -147,6 +147,14 @@ rl.on('line', (line) => {
     } else if (message.params.viewId === 'viewhang') {
       // 故意不回复，测试 Rust 侧 view/children 超时。
     }
+  } else if (message.method === 'ui/values') {
+    if (message.params.viewId === 'uivalues') {
+      reply({ pluginId: message.params.pluginId, viewId: message.params.viewId, sectionId: message.params.sectionId, plugins, workspaceRoot });
+    } else if (message.params.viewId === 'uifail') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'ui boom', data: { why: 'ui' } } }) + '\n');
+    } else if (message.params.viewId === 'uihang') {
+      // 故意不回复，测试 Rust 侧 ui/values 超时。
+    }
   } else if (message.method === 'shutdown') {
     reply({});
     process.exit(0);
@@ -3382,4 +3390,212 @@ fn ui_view_errors_do_not_poison_other_plugins() {
     assert!(error.contains("kind 非法"), "{error}");
     assert!(!bad.enabled);
     assert!(bad.ui_views.is_empty());
+}
+
+// ---- UI 视图数据回读 ui/values（docs/plans/plugin-webview.md §3.2/§3.3，M2）----
+
+/// 带 UI 视图声明的 node 清单（不声明命令，多插件同目录场景零冲突）：
+/// 单视图 sections 为四种 kind 全覆盖。
+fn ui_values_manifest(id: &str, view_id: &str) -> Value {
+    let mut manifest = node_manifest(id, "./index.mjs", &[]);
+    manifest["contributes"]["ui"] = json!({ "views": [{
+        "id": view_id,
+        "name": "Panel",
+        "sections": [
+            { "kind": "markdown", "text": "x" },
+            { "kind": "form", "fields": [{ "key": "q", "label": "Q", "type": "text" }] },
+            { "kind": "list", "columns": [{ "key": "t", "label": "T" }] },
+            { "kind": "kv" }
+        ],
+    }] });
+    manifest
+}
+
+#[test]
+fn ui_values_requires_declared_view_and_enabled_node_plugin() {
+    // 不启动宿主的错误路径：视图/插件未声明或已禁用 → ViewNotFound；
+    // wasm/declarative 声明的 UI 视图同样拒绝（v1 数据面只在扩展宿主分发）。
+    let temp = TempDir::new("ui-values-not-found");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "node",
+        ui_values_manifest("example.node", "board"),
+        &["index.mjs"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "wasm",
+        json!({
+            "id": "example.wasm",
+            "name": "Wasm",
+            "version": "0.1.0",
+            "runtime": "wasm",
+            "main": "./plugin.wasm",
+            "contributes": {
+                "commands": [{ "command": "example.wasm.run", "title": "run" }],
+                "ui": { "views": [{ "id": "board", "name": "Board", "sections": [{ "kind": "kv" }] }] }
+            }
+        }),
+        &["plugin.wasm"],
+    );
+    write_plugin(
+        &paths.user_dir,
+        "disabled",
+        ui_values_manifest("example.disabled", "board"),
+        &["index.mjs"],
+    );
+    set_enabled_at(&paths, false, "example.disabled", false, false).expect("disable");
+
+    let mut host = ExtHost::new(None);
+    let error = host
+        .ui_values_with_paths(
+            &paths,
+            false,
+            &temp.path,
+            "example.node",
+            "missing.view",
+            "0",
+        )
+        .expect_err("undeclared view");
+    assert!(
+        matches!(
+            error,
+            ExtError::ViewNotFound { ref plugin, ref view } if plugin == "example.node" && view == "missing.view"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::NotFound);
+
+    let error = host
+        .ui_values_with_paths(&paths, false, &temp.path, "example.nope", "board", "0")
+        .expect_err("unknown plugin");
+    assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
+
+    let error = host
+        .ui_values_with_paths(&paths, false, &temp.path, "example.wasm", "board", "0")
+        .expect_err("wasm view");
+    assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
+
+    let error = host
+        .ui_values_with_paths(&paths, false, &temp.path, "example.disabled", "board", "0")
+        .expect_err("disabled plugin");
+    assert!(matches!(error, ExtError::ViewNotFound { .. }), "{error:?}");
+
+    // Node 缺失在目标校验之后报告。
+    let error = host
+        .ui_values_with_paths(&paths, false, &temp.path, "example.node", "board", "0")
+        .expect_err("node unavailable");
+    assert_eq!(error, ExtError::NodeUnavailable);
+}
+
+#[test]
+fn initialize_payload_carries_ui_view_declarations() {
+    let Some(node) = test_node() else {
+        return;
+    };
+    let temp = TempDir::new("ui-values-payload");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "ui",
+        ui_values_manifest("example.views", "board"),
+        &["index.mjs"],
+    );
+    write_node_plugin(&paths, "plain", "example.plain", &["test.echo"]);
+    let workspace = temp.path.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let marker = temp.path.join("init-marker.txt");
+    let script = write_fake_host(&temp, &marker);
+
+    let mut host = ExtHost::new(Some(node));
+    host.set_host_script(Some(script));
+    let result = host
+        .execute_with_paths(&paths, false, &workspace, "test.echo", json!({}))
+        .expect("execute");
+    // initialize 载荷带 UI 视图声明（id + 节 kind 白名单）。
+    let plugins = result["plugins"].as_array().expect("plugins echo");
+    let ui_plugin = plugins
+        .iter()
+        .find(|plugin| plugin["id"] == "example.views")
+        .expect("ui plugin echo");
+    assert_eq!(
+        ui_plugin["uiViews"],
+        json!([{
+            "id": "board",
+            "sectionKinds": ["markdown", "form", "list", "kv"],
+        }])
+    );
+    let plain = plugins
+        .iter()
+        .find(|plugin| plugin["id"] == "example.plain")
+        .expect("plain plugin echo");
+    assert_eq!(plain["uiViews"], json!([]));
+    host.shutdown();
+}
+
+#[test]
+fn node_host_ui_values_round_trips_and_maps_errors() {
+    let Some(node) = test_node() else {
+        return;
+    };
+    let temp = TempDir::new("ui-values-host");
+    let paths = test_paths(&temp);
+    write_plugin(
+        &paths.user_dir,
+        "ui",
+        ui_manifest(
+            "example.views",
+            json!([
+                { "id": "uivalues", "name": "A", "sections": [{ "kind": "kv" }] },
+                { "id": "uifail", "name": "B", "sections": [{ "kind": "kv" }] },
+                { "id": "uihang", "name": "C", "sections": [{ "kind": "kv" }] }
+            ]),
+        ),
+        &["index.mjs"],
+    );
+    let workspace = temp.path.join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let marker = temp.path.join("init-marker.txt");
+    let script = write_fake_host(&temp, &marker);
+
+    let mut host = ExtHost::new(Some(node));
+    host.set_host_script(Some(script));
+
+    // sectionId 透传宿主，结果原样返回。
+    let result = host
+        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uivalues", "2")
+        .expect("ui values");
+    assert_eq!(result["pluginId"], "example.views");
+    assert_eq!(result["viewId"], "uivalues");
+    assert_eq!(result["sectionId"], "2");
+    assert_eq!(result["workspaceRoot"], crate::fs::display_path(&workspace));
+
+    // 宿主返回 JSON-RPC error → HostRpc 结构化错误。
+    let error = host
+        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uifail", "0")
+        .expect_err("ui error");
+    match error {
+        ExtError::HostRpc { code, message, .. } => {
+            assert_eq!(code, -32000);
+            assert!(message.contains("ui boom"), "{message}");
+        }
+        other => panic!("expected HostRpc, got {other:?}"),
+    }
+
+    // 超时可注入（默认 30s），超时后宿主仍可服务。
+    host.set_view_timeout(Duration::from_millis(150));
+    let error = host
+        .ui_values_with_paths(&paths, false, &workspace, "example.views", "uihang", "0")
+        .expect_err("ui timeout");
+    assert!(
+        matches!(error, ExtError::HostTimeout { timeout_ms: 150 }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), ErrorCode::Timeout);
+
+    host.set_view_timeout(Duration::from_secs(5));
+    host.ui_values_with_paths(&paths, false, &workspace, "example.views", "uivalues", "0")
+        .expect("host recovers after ui timeout");
+    host.shutdown();
 }

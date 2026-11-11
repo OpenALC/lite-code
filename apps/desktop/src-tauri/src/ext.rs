@@ -61,6 +61,13 @@ pub struct ExtViewChildrenResult {
     pub nodes: Vec<Value>,
 }
 
+/// `ext_ui_values` 的返回：`{ "values": <节归一值 JSON> }`（form→{ values }、
+/// list→{ rows }、kv→{ items }，宿主已按节 kind 白名单归一）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExtUiValuesResult {
+    pub values: Value,
+}
+
 /// 单宿主进程常驻：所有命令与 Agent 会话共享同一个 [`ExtHost`]，
 /// 首次使用时探测 Node。返回 Arc 以便 Agent worker 的工具执行器长期持有。
 pub(crate) fn shared_host() -> Arc<Mutex<ExtHost>> {
@@ -222,6 +229,27 @@ pub(crate) async fn ext_view_children(
             )
         })?;
         Ok(ExtViewChildrenResult { nodes })
+    })
+    .await
+}
+
+/// 读取插件 UI 视图的节值（docs/plans/plugin-webview.md §3.3）：薄转发
+/// `ExtHost::ui_values`，视图未声明/插件禁用/非 node runtime → not_found。
+#[tauri::command]
+pub(crate) async fn ext_ui_values(
+    plugin_id: String,
+    view_id: String,
+    section_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<ExtUiValuesResult, ErrorBody> {
+    let root = state.get().ok_or_else(crate::workspace_unavailable)?;
+    blocking(move || {
+        let host = shared_host();
+        let mut host = host.lock().map_err(|_| host_lock_error())?;
+        let values = host
+            .ui_values(&root, &plugin_id, &view_id, &section_id)
+            .map_err(|error| error.to_error_body())?;
+        Ok(ExtUiValuesResult { values })
     })
     .await
 }
@@ -467,6 +495,15 @@ mod tests {
         .expect("serialize");
         assert_eq!(value["nodes"][0]["id"], "n1");
         assert_eq!(value["nodes"][0]["label"], "Node 1");
+    }
+
+    #[test]
+    fn ui_values_result_serializes_values_field() {
+        let value = serde_json::to_value(ExtUiValuesResult {
+            values: json!({"rows": [{"title": "t1"}]}),
+        })
+        .expect("serialize");
+        assert_eq!(value["values"]["rows"][0]["title"], "t1");
     }
 
     #[test]

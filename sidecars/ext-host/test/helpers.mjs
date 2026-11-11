@@ -166,6 +166,10 @@ export class HostClient {
     return this.request("view/children", params, id);
   }
 
+  uiValues(pluginId, viewId, sectionId, id) {
+    return this.request("ui/values", { pluginId, viewId, sectionId }, id);
+  }
+
   initialize(workspaceRoot, plugins, id = "initialize") {
     return this.request("initialize", { workspaceRoot, plugins }, id);
   }
@@ -235,7 +239,7 @@ export async function createFixture(t) {
 export async function writePlugin(
   pluginsRoot,
   id,
-  { main = "./index.mjs", source, commands = [], tools, views, activationEvents } = {}
+  { main = "./index.mjs", source, commands = [], tools, views, uiViews, activationEvents } = {}
 ) {
   const dir = path.join(pluginsRoot, id);
   await fs.mkdir(dir, { recursive: true });
@@ -245,6 +249,7 @@ export async function writePlugin(
   const spec = { id, path: dir, main, commands };
   if (tools !== undefined) spec.tools = tools;
   if (views !== undefined) spec.views = views;
+  if (uiViews !== undefined) spec.uiViews = uiViews;
   if (activationEvents !== undefined) spec.activationEvents = activationEvents;
   return spec;
 }

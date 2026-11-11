@@ -276,7 +276,8 @@ function demoPluginList(): PluginList {
           },
         ],
         views: [{ id: 'demo-tree', name: 'Demo Tree' }],
-        // 演示 UI 视图：markdown + kv 静态节；openCommand 走 palette 别名。
+        // 演示 UI 视图：markdown + kv 节；kv 声明 valuesCommand，browser dev
+        // 走演示数据动态回读（M2）；openCommand 走 palette 别名。
         uiViews: [
           {
             id: 'demo-board',
@@ -287,6 +288,7 @@ function demoPluginList(): PluginList {
               {
                 kind: 'kv',
                 title: '统计',
+                valuesCommand: 'demo.hello.time',
                 items: [
                   { key: '版本', value: '0.1.0' },
                   { key: '运行时', value: 'node' },
@@ -386,6 +388,24 @@ const DEMO_VIEW_NODES: Record<string, unknown[]> = {
     { id: 'run', label: 'Run hello', command: 'demo.hello', tooltip: '执行演示命令' },
   ],
   'demo.hello>demo-tree>group': [{ id: 'leaf', label: 'Leaf item' }],
+}
+
+// 浏览器 dev 演示 UI 节值（docs/plans/plugin-webview.md §3.2）：键为
+// `${pluginId}>${viewId}>${sectionId}`（sectionId=节序号字符串），形状与宿主
+// normalizeUiValues 归一结果一致（list→{ rows }、kv→{ items }）。
+const DEMO_UI_VALUES: Record<string, unknown> = {
+  'demo.hello>demo-board>1': {
+    items: [
+      { key: '版本', value: '0.1.0' },
+      { key: '消息数', value: '2' },
+    ],
+  },
+  'demo.notes>notes-panel>1': {
+    rows: [
+      { title: '示例笔记一', state: 'open' },
+      { title: '示例笔记二', state: 'done' },
+    ],
+  },
 }
 
 // ==== 命令包装 ====
@@ -598,6 +618,52 @@ export async function extensionsViewChildren(
       }
     }
     return { ok: true, data: { nodes: raw.nodes }, fallback: false }
+  } catch (error) {
+    return { ok: false, error: asErrorBody(error), fallback: false }
+  }
+}
+
+export interface ExtUiValuesResult {
+  /** 节归一值载荷（form→{ values }、list→{ rows }、kv→{ items }）；形状由 pluginUi.ts 按节 kind 白名单归一。 */
+  values: unknown
+}
+
+/**
+ * 读取插件 UI 视图的节值（docs/plans/plugin-webview.md §3.2/§3.3）。Rust 侧
+ * 校验视图已声明且插件启用（node runtime），经扩展宿主转发 ui/values；浏览器
+ * dev 返回演示节值；ohos shim 未转发该命令时按 reject 的 ErrorBody 进入节
+ * 错误态（可重试）。
+ */
+export async function extensionsUiValues(
+  pluginId: string,
+  viewId: string,
+  sectionId: string,
+): Promise<BridgeResult<ExtUiValuesResult>> {
+  if (!isTauri()) {
+    const values = DEMO_UI_VALUES[`${pluginId}>${viewId}>${sectionId}`]
+    if (values === undefined) {
+      return {
+        ok: false,
+        error: internalError(`演示插件 ${pluginId} 未声明节 ${viewId}/${sectionId} 的数据`),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { values: structuredClone(values) }, fallback: true }
+  }
+  try {
+    const raw = await tauriInvoke<unknown>('ext_ui_values', {
+      pluginId,
+      viewId,
+      sectionId,
+    })
+    if (!isRecord(raw) || !('values' in raw)) {
+      return {
+        ok: false,
+        error: internalError('ext_ui_values 返回了非预期载荷'),
+        fallback: false,
+      }
+    }
+    return { ok: true, data: { values: raw.values }, fallback: false }
   } catch (error) {
     return { ok: false, error: asErrorBody(error), fallback: false }
   }
