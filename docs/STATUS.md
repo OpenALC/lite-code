@@ -361,7 +361,10 @@ Linux 额外跑 `saved_files_are_private_and_backup_has_no_key`。
   web UI 已随 M1b 落地（`d073d2a`：浏览 tab+§3.7 确认对话框+563 项；
   包大小暂显「未知」待 index 线补 size 字段）；Ubuntu CI 红已修
   （`8173a52` file_url_to_path Unix 绝对路径——教训：file:// 解析必须
-  按平台分支断言）。GC 挂启动/签名档留 M1b 接线/M2/M3。前置：
+  按平台分支断言）。M2 deps 自动装（`5a17798`）/M3 签名强制档+多镜像（`c8ce356`：
+  minisign-verify 0.3.0 过 deny，sha256 文本签名+trusted comment 三重
+  绑定，镜像 sha 不符也回退）——**市场线 M1-M3 全关**（marketplace
+  67 项）。前置：
   **插件市场设计定稿**
   （`docs/plans/plugin-marketplace.md`，agent-92）：
   静态 index+多源镜像（与 updater-manifest 同构，零服务端零新增重型依赖——
