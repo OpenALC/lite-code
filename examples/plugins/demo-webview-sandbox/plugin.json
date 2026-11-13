@@ -1,0 +1,18 @@
+{
+  "id": "demo.webview-sandbox",
+  "name": "Webview Sandbox Demo",
+  "version": "0.1.0",
+  "description": "iframe 沙箱示例：资产加载 + 一次性握手 + MessageChannel 桥 + postCommand 归属校验",
+  "engines": { "lite-code": ">=0.6.1" },
+  "runtime": "node",
+  "main": "./index.mjs",
+  "activationEvents": ["onCommand:demo.webview.ping"],
+  "contributes": {
+    "commands": [{ "command": "demo.webview.ping", "title": "Ping" }],
+    "ui": {
+      "webviews": [
+        { "id": "panel", "entry": "index.html", "assets": ["style.css", "app.js"] }
+      ]
+    }
+  }
+}

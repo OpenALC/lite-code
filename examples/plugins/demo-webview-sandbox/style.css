@@ -1,0 +1,5 @@
+body { font-family: system-ui; background: #10131a; color: #e8ecf4; }
+#title { color: #4da3ff; }
+#log div { padding: 2px 0; font-size: 13px; }
+.ok { color: #7ee787; }
+.err { color: #ff7b72; }

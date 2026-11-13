@@ -1,0 +1,78 @@
+name: webview-e2e
+
+# 插件 webview iframe 沙箱的 Linux/WebKitGTK 运行时复验
+# （docs/plans/plugin-webview.md §6 M3 双平台启用前提的 Linux 侧）。
+# xvfb 下真实拉起 lc-desktop 自测模式：构建 web 产物 → 嵌入二进制的 dev 构建
+# → 拷贝 demo 插件 → 断言桥往返（setState 写入的 greet 值可读回）。
+# 刻意独立于 ci.yml：有显示环境依赖、构建重，不拖慢主链路。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: webview-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  linux-webkitgtk:
+    name: webview selftest (ubuntu-22.04 WebKitGTK)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: webview-e2e-${{ hashFiles('rust-toolchain.toml') }}
+      - name: webkit/gtk deps + xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev xvfb
+      - uses: pnpm/action-setup@v4
+        # version 省略 → 读取根 package.json 的 packageManager 字段，单一来源
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 前端产物先落地：--features custom-protocol 把 ../../web/dist 嵌进二进制
+      # （tauri build 的 dev 等价物；不打包安装包）。
+      - name: build web frontend
+        run: pnpm --filter @lite-code/web build
+      - name: build lc-desktop (debug, embedded dist)
+        run: cargo build -p lc-desktop --features custom-protocol
+      - name: install demo plugin into user extensions dir
+        run: |
+          mkdir -p "$HOME/.lite-code/extensions"
+          cp -r examples/plugins/demo-webview-sandbox "$HOME/.lite-code/extensions/demo.webview-sandbox"
+      - name: run webview selftest under xvfb
+        shell: bash
+        env:
+          # 无 GPU CI 的 WebKitGTK 常见修复（合成器/DMABuf 渲染器退化）。
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+        run: |
+          set -euo pipefail
+          xvfb-run -a --server-args="-screen 0 1280x800x24" \
+            ./target/debug/lc-desktop --webview-selftest 2>&1 | tee webview-selftest.log
+      - name: assert PASS marker
+        shell: bash
+        run: grep -q 'WEBVIEW_SELFTEST: PASS' webview-selftest.log
+      - name: upload selftest log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-selftest-log
+          path: webview-selftest.log
+          if-no-files-found: ignore
+          retention-days: 7

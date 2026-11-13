@@ -18,6 +18,7 @@ mod history;
 mod lsp;
 mod lsp_plugins;
 mod providers;
+mod selftest;
 mod task;
 mod updater;
 
@@ -777,6 +778,9 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // webview 沙箱自测模式（仅显式传 --webview-selftest 时生效，逻辑全在
+    // selftest 模块；正常模式不启动注入/守护线程，仅多一个无人调用的命令）。
+    let selftest_mode = std::env::args().any(|arg| arg == selftest::SELFTEST_ARG);
     let builder = tauri::Builder::default();
 
     #[cfg(desktop)]
@@ -795,6 +799,7 @@ pub fn run() {
         .manage(DbState::default())
         .manage(DbEvents::default())
         .manage(lsp::LspState::new())
+        .manage(selftest::SelftestState::default())
         // 插件 webview 资源协议（docs/plans/plugin-webview.md §3.8，M3）：
         // 解析/白名单/Content-Type 全在 lc-core::ext::serve_webview_asset，
         // 这里只做薄挂接——抽 URI/Method → 阻塞线程执行 → 补 nosniff/CSP 头。
@@ -860,6 +865,7 @@ pub fn run() {
             lsp::lsp_hover,
             lsp::lsp_definition,
             lsp_plugins::lsp_start_plugins,
+            selftest::webview_selftest_report,
             session_create,
             agent_send,
             agent_cancel,
@@ -895,7 +901,13 @@ pub fn run() {
             git_commit,
             git_log
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            // 自测模式：跳过托盘（CI 无 SNI/panel），独立临时工作区，启动
+            // 注入 + 守护线程；结果以 WEBVIEW_SELFTEST 标记行 + 退出码报告。
+            if selftest_mode {
+                selftest::start(app.handle());
+                return Ok(());
+            }
             #[cfg(desktop)]
             build_tray(app.handle())?;
             Ok(())

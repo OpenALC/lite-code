@@ -7,6 +7,7 @@ Windows 一等公民，Linux 顺带，macOS 不构建。
 | 文件 | 触发 | 目标 | 阻断 |
 |---|---|---|---|
 | `.github/workflows/ci.yml` | PR、push `main` | 正确性 | 是 |
+| `.github/workflows/webview-e2e.yml` | push `main`、手动 | webview 沙箱 Linux/WebKitGTK 运行时复验（xvfb + `--webview-selftest`） | 是 |
 | `.github/workflows/perf.yml` | 手动、`perf` 标签、每日 03:00 UTC | 性能回归 | 是（超 15%） |
 | `.github/workflows/release.yml` | tag `v*` | 打包与发布 | 是 |
 | `.github/workflows/updater-manifest.yml` | release `published` | 把 `latest.json` 提升到滚动 release | 是 |
@@ -67,7 +68,22 @@ ci.yml env.RUST_TOOLCHAIN
 
 这是 R8（MSRV 漂移）的第一道闸。这个检查要**能故意失败一次**再合入，否则无法确认它真的生效（P0 出口标准第 4 条）。
 
-## 3. `perf.yml`
+## 3. `webview-e2e.yml`
+
+插件 webview iframe 沙箱的 Linux/WebKitGTK 运行时复验（docs/plans/plugin-webview.md §6
+M3 双平台启用前提；Windows WebView2 侧证据已在 STATUS.md 记录）。
+
+- 触发：push `main` / 手动。刻意独立于 `ci.yml`：有显示环境依赖、构建重，不拖慢主链路。
+- 链路：`pnpm --filter @lite-code/web build` → `cargo build -p lc-desktop --features
+  custom-protocol`（dev 等价物，`frontendDist` 嵌二进制，不打包安装包）→ demo 插件拷入
+  `$HOME/.lite-code/extensions/` → `xvfb-run ./target/debug/lc-desktop --webview-selftest`。
+- 判定：自测模式内 Rust 注入幂等脚本走真实 UI（活动栏「插件」→ webview「打开视图」→
+  iframe 沙箱），断言 demo 插件经握手 + MessageChannel 桥写入的 greet 值在 Rust 状态
+  存储可读回；`WEBVIEW_SELFTEST: PASS` 标记行 + 退出码 0 双断言，60s 硬超时强退 1。
+- WebKitGTK 无 GPU 环境变量：`WEBKIT_DISABLE_COMPOSITING_MODE=1` /
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`；失败上传 `webview-selftest.log` artifact。
+
+## 4. `perf.yml`
 
 只在 Windows 上跑（一等公民），四个指标与 `PLAN.md` §4 一致：
 
@@ -82,7 +98,7 @@ ci.yml env.RUST_TOOLCHAIN
 - 更新基线需要 `perf-baseline` 标签 + 人工合并，不允许 PR 自动改基线——否则"改基线让 CI 绿"会成为默认操作。
 - `perf.yml` 失败不阻塞合并（`ci.yml` 才阻塞），但会挂 PR 评论 + `performance` 标签。P2 起改为阻塞。
 
-## 4. `release.yml`
+## 5. `release.yml`
 
 ```
 tag v* ──▶ verify（复用 ci 的 fmt/clippy/test/audit/manifest 测试）
@@ -157,20 +173,20 @@ Linux arm64 使用 GitHub 托管的 `ubuntu-24.04-arm` 原生构建（公共仓�
 - [ ] 人工发布后再确认 `updater-manifest` release 的 `latest.json` 版本等于新 tag，
       且 `previous` 指向上一版。
 
-## 5. `nightly.yml`
+## 6. `nightly.yml`
 
 - 每天 02:00 UTC 全量构建 + 冒烟（启动、打开仓库、编辑保存、Agent 一次 headless 任务）。
 - 产物保留 7 天，不发布。
 - 失败开 issue（tag `nightly`），同一失败只开一次。
 
-## 6. 分支与合并
+## 7. 分支与合并
 
 - trunk-based，`main` 受保护：必须 `ci.yml` 绿 + 1 个 review。
 - 不要求线性历史，但禁止 merge commit 之外的直接 push。
 - lane 分支命名 `lane/<name>-<topic>`，合入前必须过 `lanes` 检查。
 - 契约变更单独 PR，标题前缀 `[contract]`，需要 Contracts 所有者批准。
 
-## 7. Secrets 清单
+## 8. Secrets 清单
 
 | 名称 | 作用域 | 说明 |
 |---|---|---|
@@ -181,7 +197,7 @@ Linux arm64 使用 GitHub 托管的 `ubuntu-24.04-arm` 原生构建（公共仓�
 | `LLM_TEST_API_KEY` | perf / nightly | headless agent 冒烟，用独立额度 |
 | — | — | PR 环境**不需要**任何 secret；缺 secret 的 job 自动跳过 |
 
-## 8. 本地复现
+## 9. 本地复现
 
 ```bash
 # 与 ci.yml 等价
@@ -198,7 +214,7 @@ node scripts/check-version.mjs
 
 `scripts/check-lanes.sh` 规则：`crates/lc-core/<lane>` 之间不允许互相引用内部模块，只允许引用 `lc_proto` 与同 crate 的 `pub` 接口。实现用 `cargo metadata` + grep，不引入额外工具。
 
-## 9. 明确不做
+## 10. 明确不做
 
 - **不建 macOS 矩阵**，即使 runner 免费。
 - 不做 Windows 的 `aarch64` 构建。
