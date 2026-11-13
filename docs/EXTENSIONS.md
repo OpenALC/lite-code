@@ -392,4 +392,6 @@ webview UI（`contributes.ui.webviews` 校验、宿主生成 `lc-plugin` 资源 
 白名单 handler + Content-Type 闭集 + 子文档 CSP、per-plugin bridge 状态
 `ext_webview_state_get/set`、postCommand 命令归属校验，§3.8/§7）。
 
-未实现：插件市场、插件签名、VS Code API 兼容。
+未实现：VS Code API 兼容（v0 文档首行即不承诺）；插件市场仅缺发布端仓库
+（客户端浏览/安装/签名校验/多源/镜像已实现，见
+docs/plans/plugin-marketplace.md §3.7）。

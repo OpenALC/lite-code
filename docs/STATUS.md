@@ -1092,5 +1092,5 @@ cargo deny --locked check
 
 ## 测试基线（本机 Windows，最近一次全绿）
 
-lc-core 462 · lc-cli 33 · lc-proto 10 · lc-desktop 99 · lsp stdio 2 · web 601（41 文件）· 合计 **1209**（含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、lspDiagnostics 7、history 7、quickPalette 6、tabs 51、agentFind 3、quickRecent 3、pluginUi 32、marketplace 67）。
+lc-core 462+ · lc-cli 33 · lc-proto 10 · lc-desktop 109 · lsp stdio 2 · web 639（42 文件）· workspace 合计 **810**（2026-11-11 M3 收口基线，含 `db_agent` 2、`fs::search` 14、ext 18、lsp 18、lspDiagnostics 7、history 7、quickPalette 6、tabs 51、agentFind 3、quickRecent 3、pluginUi 40、pluginWebview 30、marketplace 67）。
 Linux 额外跑 `write_file_rejects_dangling_symlink_escape` 与权限保留测试。
