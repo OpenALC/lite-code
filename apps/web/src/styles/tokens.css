@@ -133,3 +133,12 @@ textarea {
     animation: none !important;
   }
 }
+
+/* 连续曲率圆角（squircle，Apple 风格）：所有圆角元素默认走连续曲率，
+   与 border-radius 组合生效；不支持 corner-shape 的环境（老 WebView2 /
+   WebKitGTK / ArkWeb）自动回落经典圆角，无需其它改动。
+   真圆元素（状态点、圆形头像/按钮，border-radius: 50%）在各自规则里用
+   `corner-shape: round` 显式退出。 */
+* {
+  corner-shape: squircle;
+}

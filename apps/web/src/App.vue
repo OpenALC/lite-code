@@ -2318,6 +2318,7 @@ onBeforeUnmount(() => {
   width: 5px;
   height: 5px;
   border-radius: 50%;
+  corner-shape: round;
   background: transparent;
 }
 
@@ -2557,6 +2558,7 @@ onBeforeUnmount(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--fg-faint);
 }
 

@@ -856,6 +856,7 @@ onMounted(load)
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--fg-faint);
   flex: 0 0 auto;
 }

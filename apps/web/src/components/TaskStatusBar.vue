@@ -67,6 +67,7 @@ function jump(): void {
   width: 5px;
   height: 5px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--yellow);
 }
 </style>

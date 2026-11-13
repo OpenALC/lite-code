@@ -1818,6 +1818,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--fg-faint);
 }
 
@@ -2557,6 +2558,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   display: grid;
   place-items: center;
   border-radius: 50%;
+  corner-shape: round;
   color: var(--fg-faint);
 }
 
@@ -2644,6 +2646,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 50%;
+  corner-shape: round;
   background: var(--panel-2);
   color: var(--fg-2);
   box-shadow: var(--shadow-soft);
@@ -2812,6 +2815,7 @@ function decide(approvalId: number, decision: ApprovalDecision): void {
   width: 16px;
   height: 16px;
   border-radius: 50%;
+  corner-shape: round;
   color: var(--fg-faint);
 }
 

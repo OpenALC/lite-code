@@ -1098,6 +1098,8 @@ button.st:hover{color:var(--fg)}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
 }
+/* 连续曲率圆角（squircle）：与本仓应用同一约定；不支持的环境回落经典圆角。 */
+* { corner-shape: squircle; }
 </style>
 </head>
 <body>

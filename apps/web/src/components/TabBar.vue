@@ -376,6 +376,7 @@ function onClose(tabId: string): void {
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--yellow);
 }
 

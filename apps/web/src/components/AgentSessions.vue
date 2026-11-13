@@ -1077,6 +1077,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   border-radius: 50%;
+  corner-shape: round;
   color: var(--fg-faint);
   opacity: 0;
 }
@@ -1088,6 +1089,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   border-radius: 50%;
+  corner-shape: round;
   color: var(--fg-faint);
   opacity: 0;
 }
@@ -1250,6 +1252,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   border-radius: 50%;
+  corner-shape: round;
   color: var(--fg-faint);
   opacity: 0;
 }
