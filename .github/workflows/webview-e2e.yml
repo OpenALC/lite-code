@@ -67,7 +67,8 @@ jobs:
             ./target/debug/lc-desktop --webview-selftest 2>&1 | tee webview-selftest.log
       - name: assert PASS marker
         shell: bash
-        run: grep -q 'WEBVIEW_SELFTEST: PASS' webview-selftest.log
+        run: |
+          grep -q "WEBVIEW_SELFTEST: PASS" webview-selftest.log
       - name: upload selftest log on failure
         if: failure()
         uses: actions/upload-artifact@v4
