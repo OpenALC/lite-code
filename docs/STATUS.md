@@ -465,8 +465,16 @@ iframe 沙箱 v2 规格化（附 §7 修订建议文本）——EXTENSIONS §8 �
   setState=ok → getState="hello-from-sandbox"（Rust 存储直读复核）→
   postCommand={"from":"sandbox","pong":true} → 跨插件命令 rejected=true。
 - **基线**：workspace 810 / web 639 / ext-host 21 全绿 + fmt/clippy/vue-tsc。
-- **遗留**：Linux WebKitGTK 运行时复验（形状单测已覆盖双平台；真实 iframe
-  加载需 Linux 环境按 §5 M3 清单执行后 M3 方可宣称双平台启用）。
+- **Linux WebKitGTK 运行时复验已关**（2026-11-13，main `6ce1c25`/`c7bf6ee`）：
+  lc-desktop 新增 `--webview-selftest` 自测模式（Rust 注入幂等脚本走真实 UI：
+  活动栏「插件」→ webview「打开视图」→ sandbox iframe，断言握手 +
+  MessageChannel 桥 setState 写入的 greet 可读回；`WEBVIEW_SELFTEST: PASS`
+  标记行 + 退出码双断言，60s 硬超时强退 1）；独立工作流
+  `webview-e2e.yml`（push main，xvfb + WebKitGTK 无 GPU 环境变量）首跑即绿：
+  <https://github.com/OpenALC/lite-code/actions/runs/43356165068>——
+  `WEBVIEW_SELFTEST: PASS greet=hello-from-sandbox`。demo.webview-sandbox
+  迁入 `examples/plugins/demo-webview-sandbox/`（CI 从仓库拷贝安装）。
+  M3 双平台启用前提（Windows WebView2 + Linux WebKitGTK）全部具备。
 
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
