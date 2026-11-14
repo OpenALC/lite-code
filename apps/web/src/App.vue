@@ -21,6 +21,7 @@ import TabBar from './components/TabBar.vue'
 import TaskList from './components/TaskList.vue'
 import TaskStatusBar from './components/TaskStatusBar.vue'
 import TaskWorkbench from './components/TaskWorkbench.vue'
+import TerminalPanel from './components/TerminalPanel.vue'
 import { createAgentSession } from './services/agentSession'
 import { createHistoryRecorder, flushHistory, loadStoredSession } from './services/agentHistory'
 import {
@@ -1596,6 +1597,10 @@ onBeforeUnmount(() => {
               </span>
             </button>
           </div>
+          <TerminalPanel
+            v-else-if="bottomTab === 'terminal'"
+            class="bottom-terminal"
+          />
           <div
             v-else
             class="bottom-body"
@@ -2605,6 +2610,11 @@ onBeforeUnmount(() => {
   color: var(--fg-faint);
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+.bottom-terminal {
+  flex: 1;
+  min-height: 0;
 }
 
 .right {
