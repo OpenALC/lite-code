@@ -1,7 +1,7 @@
 # 工作进度快照（交接文档）
 
 > 本文件是会话间的工作状态交接，由主 agent 维护；里程碑的权威定义仍在
-> MILESTONES.md。快照时间：2026-11-11，main HEAD `9f2a67b`（见 `git log`）；发布版本 `0.6.1-preview.66`，契约 **v0.9**（v0.8 LSP DTO / v0.9 db 远程字段）。
+> MILESTONES.md。快照时间：2026-11-14，main HEAD `c6e89ee`（见 `git log`）；发布版本 `0.6.1-preview.69`（已发布，10 资产，updater 滚动 previous=.68），契约 **v0.9**（v0.8 LSP DTO / v0.9 db 远程字段）。
 > P3 发布：`v0.3.1-preview.1` draft 已产出 6 个资产。
 > P4 发布：`v0.4.1-preview.2` draft 已产出 6 个资产（NSIS/AppImage/deb/两个 CLI/SHA256SUMS）。
 > P0 发布线：tag `v0.0.1-preview.2` + draft release 已产出。
