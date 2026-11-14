@@ -651,7 +651,17 @@ export async function ptyList(): Promise<PtyCallResult<PtyListResult>> {
 }
 
 export async function ptyReplay(sessionId: string): Promise<PtyCallResult<PtyReplayResult>> {
-  return invokePty<PtyReplayResult>('pty_replay', { sessionId })
+  // 契约面统一为 `{ data }`；Rust 实现曾直接返回 base64 字符串（裸值），
+  // 两种形状都接受，避免双端漂移导致回放静默失败。
+  const res = await invokePty<unknown>('pty_replay', { sessionId })
+  if (!res.ok) return res
+  if (typeof res.data === 'string') {
+    return { ok: true, data: { data: res.data } }
+  }
+  if (isPtyReplayResult(res.data)) {
+    return { ok: true, data: res.data }
+  }
+  return { ok: false, error: internalError('pty_replay 返回了非预期载荷') }
 }
 
 /**
