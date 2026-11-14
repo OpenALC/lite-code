@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "lc-cli"
-version = "0.6.1-preview.68"
+version = "0.6.1-preview.69"
 dependencies = [
  "clap",
  "lc-core",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "lc-core"
-version = "0.6.1-preview.68"
+version = "0.6.1-preview.69"
 dependencies = [
  "dirs",
  "ed25519-dalek",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "lc-desktop"
-version = "0.6.1-preview.68"
+version = "0.6.1-preview.69"
 dependencies = [
  "lc-core",
  "lc-host",
@@ -2340,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "lc-host"
-version = "0.6.1-preview.68"
+version = "0.6.1-preview.69"
 dependencies = [
  "lc-proto",
  "serde_json",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "lc-ohos"
-version = "0.6.1-preview.68"
+version = "0.6.1-preview.69"
 dependencies = [
  "lc-core",
  "lc-host",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "lc-proto"
-version = "0.6.1-preview.68"
+version = "0.6.1-preview.69"
 dependencies = [
  "serde",
  "serde_json",
