@@ -318,6 +318,8 @@ jobs:
           node-version: 22
       # 生成器无第三方依赖；覆盖 signed:false / 混合签名 / previous / URL 资产。
       - run: node --test scripts/gen-update-manifest.test.mjs
+      # 市场 index 生成器（发布端约定）：sha256/排序/签名门禁/URL 白名单/一致性。
+      - run: node --test scripts/gen-plugin-index.test.mjs
 
   deny:
     name: cargo-deny
