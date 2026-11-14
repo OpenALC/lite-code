@@ -143,6 +143,9 @@
 - 插件 Webview UI M3（iframe 沙箱，§7 修订后启用）：`contributes.ui.webviews` 声明+洁净路径 fail-closed、`lc-plugin` 协议 handler（白名单/Content-Type 闭集/nosniff/子文档 CSP 钉死视图资源前缀）、bridge 状态存储（键 64/值 64 KiB/插件 256 KiB）+ postCommand 归属双校验、一次性 nonce 握手 + MessageChannel 专属端口（错误 source/nonce/代次/重复握手/旧端口/跨插件命令全拒）、导航 containment、市场 webviews 派生+安装确认固定文案；运行时 e2e 又抓两真缺陷（Windows handler 实收 lc-plugin:// 原生形式需双形解析；子页解析期握手先于 load 致导航误判，每代次首 load 容忍）；Windows WebView2 全链绿（资产加载→握手→getState/setState/postCommand→跨插件拒绝），Linux WebKitGTK 官方源自测经 CI xvfb 全绿（`webview-e2e.yml`，`WEBVIEW_SELFTEST: PASS`）——M3 双平台启用前提全部具备（agent-103/104/105）
 - 市场发布端脚手架：`scripts/gen-plugin-index.mjs`（无第三方依赖——目录树扫描、manifest/目录双向一致性、sha256、签名门禁 `--require-signatures`、URL 白名单 https/回环/file、排序与幂等；+5 项测试入 CI）+ `docs/marketplace-publishing.md`（市场仓库布局/PR 流/签名命令/CI 模板）——建仓即可用
 - UI：全局连续曲率圆角（`corner-shape: squircle` 基线，不支持环境回落经典圆角；13 处真圆元素显式 `round` 退出）
+- 终端（P5 #63，本地 + SSH）：`lc-core::pty` portable-pty 会话层——会话活在 Rust（app 级 State，窗口销毁不中断）、256 KiB 环形滚动缓冲、非用户关闭自动重连一次并重放缓冲、退出/kill_all 全量回收；本地 shell pwsh7→powershell.exe→cmd / Unix `$SHELL`，SSH 以系统 `ssh` 二进制在 pty 内启动；桌面 6 命令 + `pty:data/state/exit` 三通道；web xterm.js 多会话面板（标签切换/关闭、`+本地`/`+SSH` 表单、FitAddon 自适应、主题 token、i18n 中英）
+- 编辑器：保存前外部修改冲突检测（#24）——写盘前读磁盘比对 `savedContent` 基线，冲突弹「覆盖保存/重新加载磁盘内容/取消」，文件被删提示重建，浏览器 dev 不判定
+- 运行时 e2e 抓出并修复：pty 事件载荷缺 `type` 被守卫整帧丢弃（按订阅通道注入 + 回归测试）；保存冲突快照误读字段（`FileContentResult.text`，此前恒空串会清空缓冲）
 
 ## [0.6.1-preview.64] - 2026-11-10
 
