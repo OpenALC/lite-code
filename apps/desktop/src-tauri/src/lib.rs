@@ -18,6 +18,7 @@ mod history;
 mod lsp;
 mod lsp_plugins;
 mod providers;
+mod pty;
 mod selftest;
 mod task;
 mod updater;
@@ -894,6 +895,12 @@ pub fn run() {
             task_discard,
             task_diff,
             task_bind_session,
+            pty::pty_open,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_close,
+            pty::pty_list,
+            pty::pty_replay,
             git_status,
             git_diff,
             git_stage,
@@ -908,6 +915,9 @@ pub fn run() {
                 selftest::start(app.handle());
                 return Ok(());
             }
+            // P5 终端会话（issue #63）：会话活在 Rust 侧，窗口销毁不中断。
+            // AppHandle 要等 setup 才能拿，所以这里 manage。
+            app.manage(pty::PtyState::new(app.handle().clone()));
             #[cfg(desktop)]
             build_tray(app.handle())?;
             Ok(())
@@ -924,10 +934,17 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building lite-code")
         .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { code, api, .. } = event
-                && code.is_none()
-            {
-                api.prevent_exit();
+            match event {
+                tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
+                    api.prevent_exit();
+                }
+                // 应用退出：回收全部 pty 子进程（issue #63 验收第 5 条）。
+                tauri::RunEvent::Exit => {
+                    if let Some(pty) = _app.try_state::<pty::PtyState>() {
+                        pty.shutdown();
+                    }
+                }
+                _ => {}
             }
         });
 }

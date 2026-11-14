@@ -13,6 +13,7 @@ pub mod llm;
 pub mod lsp;
 pub mod mcp;
 pub mod process;
+pub mod pty;
 pub mod runtime;
 pub mod task;
 pub mod version;

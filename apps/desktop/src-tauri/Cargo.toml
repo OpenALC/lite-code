@@ -37,3 +37,5 @@ lc-host = { workspace = true }
 lc-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# pty_* 命令的 base64 编解码（与 lc-core 同版本，复用已锁定的依赖）。
+base64 = "0.22.1"

@@ -29,6 +29,11 @@ zip = { version = "9.3.0", default-features = false, features = ["deflate"] }
 sha2 = "0.11.1"
 # M3 签名强制档（§3.7）：minisign 验签（trusted comment 内嵌 sha256 比对）。
 minisign-verify = { workspace = true }
+# P5 终端会话（issue #63）：native pty（Windows ConPTY / unix openpty）；
+# SSH 不引库，走系统 ssh 二进制。
+portable-pty = "0.9"
+# pty 字节流的 base64 传输（pty_write / pty:data / pty_replay）。
+base64 = "0.22.1"
 
 [dev-dependencies]
 # 仅测试用：手工构造 minisign 正样本签名（ed25519-dalek 私钥签名 +
