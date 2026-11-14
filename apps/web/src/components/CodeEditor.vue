@@ -425,8 +425,9 @@ async function readDiskSnapshot(path: string): Promise<DiskSnapshot | null> {
     const res = await readFile(root.data.root, path)
     if (res.fallback) return null
     if (!res.ok) return { kind: 'error', error: { code: res.error.code } }
-    const content = (res.data as { content?: unknown }).content
-    return { kind: 'content', content: typeof content === 'string' ? content : '' }
+    // 契约 FileContentResult 的文本字段是 `text`（bridge.readFile 原样透传）。
+    const text = (res.data as { text?: unknown }).text
+    return { kind: 'content', content: typeof text === 'string' ? text : '' }
   } catch {
     return null
   }

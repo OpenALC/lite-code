@@ -17,6 +17,7 @@ import {
   isPtyOpenResult,
   isPtyReplayResult,
   isPtySessionInfo,
+  onPtyEvent,
   parseSshPort,
   terminalActiveChanged,
   terminalDataAppended,
@@ -457,5 +458,47 @@ describe('默认依赖与通道封装', () => {
     const off = defaultTerminalDeps().onPtyEvent(handler)
     expect(() => off()).not.toThrow()
     expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('onPtyEvent 给裸载荷注入通道 type（Rust 事件不带 type；回归：曾整帧被守卫丢弃）', async () => {
+    const handlers = new Map<number, (raw: unknown) => void>()
+    let nextId = 1
+    const internals = {
+      transformCallback: (cb: (raw: unknown) => void) => {
+        const id = nextId++
+        handlers.set(id, cb)
+        return id
+      },
+      invoke: async (cmd: string) => (cmd === 'plugin:event|listen' ? nextId - 1 : undefined),
+    }
+    // node 测试环境无 window：临时挂一个全局替身供模块内 internals() 读取。
+    const scope = globalThis as unknown as { window?: { __TAURI_INTERNALS__?: unknown } }
+    const previousWindow = scope.window
+    scope.window = { __TAURI_INTERNALS__: internals }
+    try {
+      const received: Array<Record<string, unknown>> = []
+      const off = onPtyEvent(event => received.push(event as unknown as Record<string, unknown>))
+      // 等 listen 完成（transformCallback 同步注册，invoke 异步返回）。
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const callbacks = [...handlers.values()]
+      expect(callbacks).toHaveLength(3)
+      const dataCb = callbacks[0] as (raw: unknown) => void
+      const stateCb = callbacks[1] as (raw: unknown) => void
+      const exitCb = callbacks[2] as (raw: unknown) => void
+      // Tauri 包封形态：{ event, payload, id }。
+      dataCb({ event: 'pty:data', id: 1, payload: { sessionId: 's1', data: btoa('hi') } })
+      stateCb({ event: 'pty:state', id: 2, payload: { sessionId: 's1', state: 'connected' } })
+      exitCb({ event: 'pty:exit', id: 3, payload: { sessionId: 's1', code: 0 } })
+      // 畸形帧丢弃。
+      dataCb({ event: 'pty:data', id: 4, payload: { sessionId: '', data: btoa('x') } })
+      expect(received).toEqual([
+        { type: 'pty:data', sessionId: 's1', data: btoa('hi') },
+        { type: 'pty:state', sessionId: 's1', state: 'connected', },
+        { type: 'pty:exit', sessionId: 's1', code: 0 },
+      ])
+      off()
+    } finally {
+      scope.window = previousWindow
+    }
   })
 })

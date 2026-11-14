@@ -728,17 +728,30 @@ function onPtyChannel(channel: string, handler: (payload: unknown) => void): () 
   }
 }
 
+/**
+ * 事件载荷归一：Rust 侧三通道的负载是 `{ sessionId, ... }`（不带 `type`，
+ * 通道即是类型）；守卫与 reducer 依赖 `type` 判别。这里按订阅通道注入，
+ * 保留对已带 `type` 载荷的兼容（旧实现/直发场景）。
+ */
+function withChannelType(channel: string, raw: unknown): unknown {
+  if (!isRecord(raw) || raw.type !== undefined) return raw
+  return { ...raw, type: channel }
+}
+
 /** 订阅全部 pty 事件流；载荷过 DTO 守卫，畸形帧直接丢弃。 */
 export function onPtyEvent(handler: (event: PtyEvent) => void): () => void {
   const offs = [
     onPtyChannel(PTY_DATA_CHANNEL, raw => {
-      if (isPtyEvent(raw) && raw.type === 'pty:data') handler(raw)
+      const event = withChannelType('pty:data', raw)
+      if (isPtyEvent(event) && event.type === 'pty:data') handler(event)
     }),
     onPtyChannel(PTY_STATE_CHANNEL, raw => {
-      if (isPtyEvent(raw) && raw.type === 'pty:state') handler(raw)
+      const event = withChannelType('pty:state', raw)
+      if (isPtyEvent(event) && event.type === 'pty:state') handler(event)
     }),
     onPtyChannel(PTY_EXIT_CHANNEL, raw => {
-      if (isPtyEvent(raw) && raw.type === 'pty:exit') handler(raw)
+      const event = withChannelType('pty:exit', raw)
+      if (isPtyEvent(event) && event.type === 'pty:exit') handler(event)
     }),
   ]
   return () => {
