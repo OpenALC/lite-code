@@ -2319,7 +2319,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "lc-cli"
-version = "0.6.1-preview.69"
+version = "0.6.1-preview.70"
 dependencies = [
  "clap",
  "lc-core",
@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "lc-core"
-version = "0.6.1-preview.69"
+version = "0.6.1-preview.70"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "lc-desktop"
-version = "0.6.1-preview.69"
+version = "0.6.1-preview.70"
 dependencies = [
  "base64 0.22.1",
  "lc-core",
@@ -2372,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "lc-host"
-version = "0.6.1-preview.69"
+version = "0.6.1-preview.70"
 dependencies = [
  "lc-proto",
  "serde_json",
@@ -2380,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "lc-ohos"
-version = "0.6.1-preview.69"
+version = "0.6.1-preview.70"
 dependencies = [
  "lc-core",
  "lc-host",
@@ -2391,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "lc-proto"
-version = "0.6.1-preview.69"
+version = "0.6.1-preview.70"
 dependencies = [
  "serde",
  "serde_json",
