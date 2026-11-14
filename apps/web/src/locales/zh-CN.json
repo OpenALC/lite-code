@@ -33,7 +33,14 @@
     "savedDemo": "已保存（浏览器演示，未写磁盘）",
     "saveFailed": "保存失败",
     "sampleNotSaveable": "示例缓冲区不可保存",
-    "readOnlyPreview": "大文件只读预览；请用系统编辑器打开"
+    "readOnlyPreview": "大文件只读预览；请用系统编辑器打开",
+    "conflictChanged": "文件已在磁盘上被外部修改。覆盖会丢失外部改动。",
+    "conflictDeleted": "文件已从磁盘删除。保存将重新创建它。",
+    "conflictUnreadable": "无法读取磁盘上的当前内容（可能无权限）。仍要覆盖保存吗？",
+    "conflictOverwrite": "覆盖保存",
+    "conflictReload": "重新加载磁盘内容",
+    "conflictCancel": "取消",
+    "conflictReloaded": "已重新加载磁盘内容"
   },
   "workspace": {
     "open": "打开工作区",

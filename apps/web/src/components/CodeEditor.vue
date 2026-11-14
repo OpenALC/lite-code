@@ -35,6 +35,13 @@ import {
   tabsStore,
   updateContent,
 } from '../services/tabs'
+import {
+  classifySaveConflict,
+  conflictMessageKey,
+  needsConfirmation,
+  type DiskSnapshot,
+  type SaveConflictVerdict,
+} from '../services/saveConflict'
 import { subscribePrefs, uiPrefs, type UiPrefs } from '../services/themeStore'
 import type { Tab, TabsState } from '../services/tabs'
 
@@ -75,6 +82,12 @@ const viewStates = new Map<string, monacoNs.editor.ICodeEditorViewState | null>(
 
 type SaveState = { kind: 'saved' | 'demo' | 'error' | 'sample' | 'readonly'; text: string }
 const saveState = ref<SaveState | null>(null)
+/** issue #24：保存前外部修改冲突（非 null 时弹三选处理层）。 */
+const saveConflict = ref<{
+  verdict: SaveConflictVerdict
+  diskContent: string | null
+  tabId: string
+} | null>(null)
 const activeStrategy = ref<EditorFileStrategy | null>(null)
 const contextMenu = ref<{ x: number; y: number } | null>(null)
 const hasSelection = ref(false)
@@ -387,6 +400,38 @@ function syncFromStore(state: TabsState): void {
   applyDiagnostics()
 }
 
+/** 写盘并更新保存注记（从 saveActive 拆出，冲突确认后复用）。 */
+async function writeActiveTab(tab: Tab): Promise<void> {
+  const snapshot = tab.content
+  const res = await writeFile(tab.path as string, snapshot)
+  if (!res.ok) {
+    saveState.value = { kind: 'error', text: `${t('editor.saveFailed')} (${res.error.code})` }
+    return
+  }
+  // 保存期间可能继续输入：只有内容仍是落盘快照时才清 dirty。
+  // 浏览器 fallback 的 ack 不是真实落盘，不能清 dirty。
+  const latest = tabsStore.get().tabs.find(t => t.id === tab.id)
+  if (!res.fallback && latest?.content === snapshot) markSaved(tab.id)
+  saveState.value = res.fallback
+    ? { kind: 'demo', text: t('editor.savedDemo') }
+    : { kind: 'saved', text: t('editor.saved') }
+}
+
+/** 写盘前读磁盘快照；浏览器 dev / 无工作区 → null（不做冲突判定）。 */
+async function readDiskSnapshot(path: string): Promise<DiskSnapshot | null> {
+  try {
+    const root = await workspaceRoot()
+    if (!root.ok || !root.data.root) return null
+    const res = await readFile(root.data.root, path)
+    if (res.fallback) return null
+    if (!res.ok) return { kind: 'error', error: { code: res.error.code } }
+    const content = (res.data as { content?: unknown }).content
+    return { kind: 'content', content: typeof content === 'string' ? content : '' }
+  } catch {
+    return null
+  }
+}
+
 async function saveActive(): Promise<void> {
   const tab = currentTab()
   if (!tab) return
@@ -402,19 +447,42 @@ async function saveActive(): Promise<void> {
     saveState.value = { kind: 'saved', text: t('editor.saved') }
     return
   }
-  const snapshot = tab.content
-  const res = await writeFile(tab.path, snapshot)
-  if (!res.ok) {
-    saveState.value = { kind: 'error', text: `${t('editor.saveFailed')} (${res.error.code})` }
+  // issue #24：保存前比对磁盘内容与 savedContent 基线，外部修改不静默覆盖。
+  const snapshot = await readDiskSnapshot(tab.path)
+  const verdict = classifySaveConflict(snapshot, tab.savedContent)
+  if (needsConfirmation(verdict)) {
+    saveState.value = null
+    saveConflict.value = {
+      verdict,
+      diskContent: snapshot?.kind === 'content' ? snapshot.content : null,
+      tabId: tab.id,
+    }
     return
   }
-  // 保存期间可能继续输入：只有内容仍是落盘快照时才清 dirty。
-  // 浏览器 fallback 的 ack 不是真实落盘，不能清 dirty。
-  const latest = tabsStore.get().tabs.find(t => t.id === tab.id)
-  if (!res.fallback && latest?.content === snapshot) markSaved(tab.id)
-  saveState.value = res.fallback
-    ? { kind: 'demo', text: t('editor.savedDemo') }
-    : { kind: 'saved', text: t('editor.saved') }
+  await writeActiveTab(tab)
+}
+
+/** 冲突对话框：覆盖保存。 */
+function confirmOverwrite(): void {
+  const conflict = saveConflict.value
+  saveConflict.value = null
+  if (!conflict) return
+  const tab = tabsStore.get().tabs.find(t => t.id === conflict.tabId)
+  if (tab) void writeActiveTab(tab)
+}
+
+/** 冲突对话框：重新加载磁盘内容（丢弃本地未保存修改）。 */
+function reloadFromDisk(): void {
+  const conflict = saveConflict.value
+  saveConflict.value = null
+  if (!conflict || conflict.diskContent === null) return
+  updateContent(conflict.tabId, conflict.diskContent)
+  markSaved(conflict.tabId)
+  saveState.value = { kind: 'saved', text: t('editor.conflictReloaded') }
+}
+
+function dismissConflict(): void {
+  saveConflict.value = null
 }
 
 function onSaveKeydown(e: KeyboardEvent): void {
@@ -661,6 +729,47 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </Teleport>
+    <Teleport to="body">
+      <div
+        v-if="saveConflict"
+        class="conflict-mask"
+        @click.self="dismissConflict"
+      >
+        <div
+          class="conflict-dialog"
+          role="alertdialog"
+          aria-modal="true"
+        >
+          <p class="conflict-msg">
+            {{ t(conflictMessageKey(saveConflict.verdict)) }}
+          </p>
+          <div class="conflict-actions">
+            <button
+              type="button"
+              class="conflict-btn primary"
+              @click="confirmOverwrite"
+            >
+              {{ t('editor.conflictOverwrite') }}
+            </button>
+            <button
+              v-if="saveConflict.verdict === 'changed'"
+              type="button"
+              class="conflict-btn"
+              @click="reloadFromDisk"
+            >
+              {{ t('editor.conflictReload') }}
+            </button>
+            <button
+              type="button"
+              class="conflict-btn"
+              @click="dismissConflict"
+            >
+              {{ t('editor.conflictCancel') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -722,5 +831,58 @@ onBeforeUnmount(() => {
 .save-note.save-demo,
 .save-note.save-readonly {
   color: #d19a66;
+}
+
+/* issue #24：保存冲突确认层（Teleport 至 body） */
+.conflict-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 35%);
+}
+
+.conflict-dialog {
+  width: min(420px, calc(100vw - 48px));
+  padding: 18px 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+}
+
+.conflict-msg {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.conflict-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.conflict-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.conflict-btn:hover {
+  background: var(--panel-3);
+}
+
+.conflict-btn.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
 }
 </style>

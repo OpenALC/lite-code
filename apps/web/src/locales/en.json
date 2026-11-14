@@ -33,7 +33,14 @@
     "savedDemo": "Saved (browser demo, not written to disk)",
     "saveFailed": "Save failed",
     "sampleNotSaveable": "Sample buffer is not saveable",
-    "readOnlyPreview": "Large file read-only preview; open it in a system editor"
+    "readOnlyPreview": "Large file read-only preview; open it in a system editor",
+    "conflictChanged": "The file was modified on disk. Overwriting will lose those external changes.",
+    "conflictDeleted": "The file was deleted from disk. Saving will recreate it.",
+    "conflictUnreadable": "Could not read the current file on disk (permissions?). Overwrite anyway?",
+    "conflictOverwrite": "Overwrite",
+    "conflictReload": "Reload from disk",
+    "conflictCancel": "Cancel",
+    "conflictReloaded": "Reloaded from disk"
   },
   "workspace": {
     "open": "Open workspace",
