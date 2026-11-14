@@ -475,6 +475,16 @@ iframe 沙箱 v2 规格化（附 §7 修订建议文本）——EXTENSIONS §8 �
   `WEBVIEW_SELFTEST: PASS greet=hello-from-sandbox`。demo.webview-sandbox
   迁入 `examples/plugins/demo-webview-sandbox/`（CI 从仓库拷贝安装）。
   M3 双平台启用前提（Windows WebView2 + Linux WebKitGTK）全部具备。
+- **preview.69 已发布**（2026-11-14，tag `v0.6.1-preview.69` @ `32e4c8c`）：
+  release 工作流 11m53s 全绿（verify 17 项 + 三平台 build + publish draft），
+  10 资产（NSIS/AppImage×2/deb×2/lc-cli×3/SHA256SUMS/latest.json），
+  draft=false；updater-manifest 已滚动到 .69（previous=.68，signed:false
+  与既有披露一致）。本版内容：M2-R 协议整改 + M3 iframe 沙箱双平台 +
+  响应式三修复 + 全局连续曲率圆角。
+- **发布端脚手架已入库**（`281ef56`）：`scripts/gen-plugin-index.mjs`（无
+  第三方依赖：目录树扫描/manifest-目录双向一致性/sha256/签名门禁/URL
+  白名单/排序幂等，5 项测试入 CI）+ `docs/marketplace-publishing.md`
+  （市场仓库布局/PR 流/签名命令/CI 模板）——维护者建仓后复制即用。
 
 ## 审查回合（2026-11-10 上午，main `30ec40c`）
 
